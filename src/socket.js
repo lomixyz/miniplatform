@@ -1283,10 +1283,15 @@ function attachSocket(io, sessionMiddleware) {
       performUnban(roomId, target.id);
     }
 
-    // "username [level]" — matches the bracket format used everywhere else
-    // (join/leave, kick/bump/ban system messages, gift messages).
+    // Plain username, no "[level]" suffix — used by roleplay/emote commands
+    // (/hug, /brb, /cupid, /flame, ...) and other "special" commands. Kept
+    // as its own function (rather than inlining `username` at each call
+    // site) so the couple of remaining callers that DO still want the level
+    // bracket — kick/bump/ban/unban's own system messages, which build
+    // "username [level]" inline themselves — are easy to spot as the
+    // deliberate exception, not something this quietly also changed.
     function nameWithLevel(userId, username) {
-      return `${username} [${currentLevel(userId)}]`;
+      return username;
     }
 
     // Roleplay/emote commands — posts a canned third-person action line to
