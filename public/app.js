@@ -47,12 +47,11 @@ const roomMessageCache = new Map(); // roomId -> #messages innerHTML snapshot
 // The "managed by / welcome / currently in this room" banner is useful the
 // moment you walk into a room, but once people are actively chatting it just
 // pushes the conversation down and stays there forever if left alone. So it
-// auto-collapses into a single tappable summary line after a few messages
-// have gone by, and can be re-expanded (or re-collapsed) any time with a tap.
-// Collapse state persists per room for the session; the message count that
-// triggers it resets every time you (re-)enter a room.
+// disappears automatically once a few messages have gone by — no tap, no way
+// to pin it back open — and comes back fresh the next time the room is
+// (re-)entered, via the reset in enterRoom.
 const ROOM_BANNER_COLLAPSE_AFTER = 6;
-const roomBannerCollapsed = new Map(); // roomId -> bool
+const roomBannerCollapsed = new Map(); // roomId -> bool (true once auto-hidden)
 const roomBannerMsgCount = new Map(); // roomId -> number of messages seen since entering
 
 // Persisted chat messages (chat/gift/voucher — anything with a real DB id)
@@ -2080,43 +2079,30 @@ function renderRoomInfoBanner() {
     : descLines[0];
 
   // Once the room is actively chatting, appendMessage() flips this to true
-  // (see ROOM_BANNER_COLLAPSE_AFTER) so the full banner stops eating vertical
-  // space above the conversation — it shrinks to one tappable summary line
-  // instead of disappearing outright, and either state can be toggled by tap.
+  // (see ROOM_BANNER_COLLAPSE_AFTER) and the banner just disappears entirely
+  // — no tap-to-expand, nothing pinned in place — so it never sits fixed
+  // above a busy conversation. It comes back on its own next time the room
+  // is (re-)entered, via the reset in enterRoom.
   const collapsed = !!roomBannerCollapsed.get(currentRoomId);
-
   if (collapsed) {
-    banner.innerHTML = `
-      <div class="room-banner-row room-banner-collapsed" id="roomBannerToggle" role="button" tabindex="0">
-        <span class="room-banner-icon">👥</span>
-        <span class="room-banner-text room-banner-sub" style="display:inline">${memberNames.length} in room · tap for room info</span>
-        <span class="room-banner-chevron">▾</span>
-      </div>
-    `;
-  } else {
-    banner.innerHTML = `
-      <div class="room-banner-row">
-        <span class="room-banner-icon">👥</span>
-        <span class="room-banner-text">This room is managed by: <span class="room-banner-link">${escapeHtml(ownerName)}</span></span>
-      </div>
-      <div class="room-banner-row">
-        <span class="room-banner-icon">🏷️</span>
-        <span class="room-banner-text">${descHtml}</span>
-      </div>
-      <div class="room-banner-row room-banner-collapsed" id="roomBannerToggle" role="button" tabindex="0">
-        <span class="room-banner-icon">👥</span>
-        <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}</span>
-        <span class="room-banner-chevron">▴</span>
-      </div>
-    `;
+    banner.innerHTML = '';
+    return;
   }
-  const toggle = $('#roomBannerToggle');
-  if (toggle) {
-    toggle.addEventListener('click', () => {
-      roomBannerCollapsed.set(currentRoomId, !collapsed);
-      renderRoomInfoBanner();
-    });
-  }
+
+  banner.innerHTML = `
+    <div class="room-banner-row">
+      <span class="room-banner-icon">👥</span>
+      <span class="room-banner-text">This room is managed by: <span class="room-banner-link">${escapeHtml(ownerName)}</span></span>
+    </div>
+    <div class="room-banner-row">
+      <span class="room-banner-icon">🏷️</span>
+      <span class="room-banner-text">${descHtml}</span>
+    </div>
+    <div class="room-banner-row">
+      <span class="room-banner-icon">👥</span>
+      <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}</span>
+    </div>
+  `;
 }
 
 // ---------- ROOM SETTINGS (⋮ → Room Settings) ----------
