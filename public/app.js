@@ -44,6 +44,17 @@ let openRoomTabs = []; // [{id, name}] quick-switch pills for rooms visited this
 // into that room starts blank again, exactly as intended.
 const roomMessageCache = new Map(); // roomId -> #messages innerHTML snapshot
 
+// The "managed by / welcome / currently in this room" banner is useful the
+// moment you walk into a room, but once people are actively chatting it just
+// pushes the conversation down and stays there forever if left alone. So it
+// auto-collapses into a single tappable summary line after a few messages
+// have gone by, and can be re-expanded (or re-collapsed) any time with a tap.
+// Collapse state persists per room for the session; the message count that
+// triggers it resets every time you (re-)enter a room.
+const ROOM_BANNER_COLLAPSE_AFTER = 6;
+const roomBannerCollapsed = new Map(); // roomId -> bool
+const roomBannerMsgCount = new Map(); // roomId -> number of messages seen since entering
+
 // Persisted chat messages (chat/gift/voucher — anything with a real DB id)
 // can arrive twice around a room entry: once live over the socket, once in
 // the join_room ack's history backlog, if the timing lands just right. Every
@@ -727,6 +738,7 @@ function enterRoom(id, name) {
   $('#currentRoomName').textContent = name;
   saveCurrentRoom(id, name);
   lastRoomMembers = [];
+  roomBannerMsgCount.set(id, 0);
   renderRoomInfoBanner();
 
   if (!openRoomTabs.find((r) => r.id === id)) openRoomTabs.push({ id, name });
@@ -857,6 +869,10 @@ function appendMessage(msg) {
     // Multi-line bot messages (bet confirmations, dice rolls, payouts) —
     // preserve line breaks, bold purple "Legendary Bot:" prefix, bubble bg.
     div.innerHTML = `<span class="user legendary-bot-name">Legendary Bot:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
+  } else if (msg.type === 'game_bot') {
+    // LowCard / Cricket bot messages — same bubble treatment as Legendary
+    // Bot, but the name comes from msg.username (e.g. "LowCard Bot").
+    div.innerHTML = `<span class="user legendary-bot-name">${escapeHtml(msg.username || 'Game Bot')}:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
   } else if (msg.type === 'image' || msg.type === 'voice') {
     const cls = roleClass(msg);
     const nameStyle = !cls && msg.username_color ? ` style="color:${escapeHtml(msg.username_color)}"` : '';
@@ -875,6 +891,18 @@ function appendMessage(msg) {
   const box = $('#messages');
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
+
+  // Count chat activity toward the auto-collapse threshold for the room-info
+  // banner (managed-by / welcome / who's-here) — see roomBannerCollapsed.
+  const rid = currentRoomId;
+  if (rid != null) {
+    const n = (roomBannerMsgCount.get(rid) || 0) + 1;
+    roomBannerMsgCount.set(rid, n);
+    if (n === ROOM_BANNER_COLLAPSE_AFTER && !roomBannerCollapsed.get(rid)) {
+      roomBannerCollapsed.set(rid, true);
+      renderRoomInfoBanner();
+    }
+  }
 }
 
 // Falling-emoji celebration for "/gift all" (optionally themed to one gift,
@@ -2051,20 +2079,44 @@ function renderRoomInfoBanner() {
     ? `${descLines[0]}<span class="room-banner-sub">${descLines.slice(1).join('<br>')}</span>`
     : descLines[0];
 
-  banner.innerHTML = `
-    <div class="room-banner-row">
-      <span class="room-banner-icon">👥</span>
-      <span class="room-banner-text">This room is managed by: <span class="room-banner-link">${escapeHtml(ownerName)}</span></span>
-    </div>
-    <div class="room-banner-row">
-      <span class="room-banner-icon">🏷️</span>
-      <span class="room-banner-text">${descHtml}</span>
-    </div>
-    <div class="room-banner-row">
-      <span class="room-banner-icon">👥</span>
-      <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}</span>
-    </div>
-  `;
+  // Once the room is actively chatting, appendMessage() flips this to true
+  // (see ROOM_BANNER_COLLAPSE_AFTER) so the full banner stops eating vertical
+  // space above the conversation — it shrinks to one tappable summary line
+  // instead of disappearing outright, and either state can be toggled by tap.
+  const collapsed = !!roomBannerCollapsed.get(currentRoomId);
+
+  if (collapsed) {
+    banner.innerHTML = `
+      <div class="room-banner-row room-banner-collapsed" id="roomBannerToggle" role="button" tabindex="0">
+        <span class="room-banner-icon">👥</span>
+        <span class="room-banner-text room-banner-sub" style="display:inline">${memberNames.length} in room · tap for room info</span>
+        <span class="room-banner-chevron">▾</span>
+      </div>
+    `;
+  } else {
+    banner.innerHTML = `
+      <div class="room-banner-row">
+        <span class="room-banner-icon">👥</span>
+        <span class="room-banner-text">This room is managed by: <span class="room-banner-link">${escapeHtml(ownerName)}</span></span>
+      </div>
+      <div class="room-banner-row">
+        <span class="room-banner-icon">🏷️</span>
+        <span class="room-banner-text">${descHtml}</span>
+      </div>
+      <div class="room-banner-row room-banner-collapsed" id="roomBannerToggle" role="button" tabindex="0">
+        <span class="room-banner-icon">👥</span>
+        <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}</span>
+        <span class="room-banner-chevron">▴</span>
+      </div>
+    `;
+  }
+  const toggle = $('#roomBannerToggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      roomBannerCollapsed.set(currentRoomId, !collapsed);
+      renderRoomInfoBanner();
+    });
+  }
 }
 
 // ---------- ROOM SETTINGS (⋮ → Room Settings) ----------

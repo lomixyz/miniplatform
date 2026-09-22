@@ -1,8 +1,15 @@
 const { DatabaseSync } = require('node:sqlite'); // built into Node.js — no native compilation needed
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 
-const db = new DatabaseSync(path.join(__dirname, '..', 'data', 'app.db'));
+// The data/ folder isn't tracked by git (only files are, and the .db itself
+// is gitignored), so on a fresh clone it doesn't exist yet — create it
+// before SQLite tries to open a file inside it.
+const DATA_DIR = path.join(__dirname, '..', 'data');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'));
 db.exec('PRAGMA journal_mode = WAL;');
 
 db.exec(`
@@ -306,6 +313,21 @@ if (roomCount === 0) {
   }
 }
 
+// LowCard and Cricket bot games — same migration-safe seeding pattern as
+// the Legendary Bot room above. See createEliminationGame in socket.js.
+{
+  const lowcardExists = db.prepare('SELECT 1 FROM rooms WHERE name = ?').get('Official LowCard Room');
+  if (!lowcardExists) {
+    db.prepare("INSERT INTO rooms (name, is_official, capacity, room_type, description) VALUES (?, 1, ?, 'chat', ?)")
+      .run('Official LowCard Room', 300, 'Type !start to open a new LowCard game (entry: 50 coins), !j to join within the window, then !d each round to draw a card — lowest card is eliminated until one player wins the pot.');
+  }
+  const cricketExists = db.prepare('SELECT 1 FROM rooms WHERE name = ?').get('Official Cricket Room');
+  if (!cricketExists) {
+    db.prepare("INSERT INTO rooms (name, is_official, capacity, room_type, description) VALUES (?, 1, ?, 'chat', ?)")
+      .run('Official Cricket Room', 300, 'Type !start to open a new Cricket game (entry: 50 coins), !j to join within the window, then !d each round to bat — get OUT and you\'re eliminated, last batter standing wins the pot.');
+  }
+}
+
 // Seed gift catalog
 const giftCount = db.prepare('SELECT COUNT(*) c FROM gifts_catalog').get().c;
 if (giftCount === 0) {
@@ -492,7 +514,10 @@ db.seedDefaultGiftFavorites = function seedDefaultGiftFavorites(userId) {
 // global admin privileges so they can bootstrap the rest of the role system.
 // 'admin' is the original account; 'miniplatform' is a second, equally
 // privileged account created on request — same protections as 'admin' below.
-const ADMIN_PASSWORD = 'La00280424';
+// Overridable via ADMIN_PASSWORD so the real value never has to live in
+// source control (important once this repo is on GitHub) — set it in your
+// environment (or a local .env, untracked) before running in production.
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'La00280424';
 const PROTECTED_ACCOUNTS = ['admin', 'miniplatform'];
 for (const username of PROTECTED_ACCOUNTS) {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);

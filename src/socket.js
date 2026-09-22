@@ -741,6 +741,211 @@ function attachSocket(io, sessionMiddleware) {
   // sitting empty waiting for someone to type !start.
   setTimeout(() => { if (getLegendaryRoomId() >= 0) tryStartLegendaryRound(); }, 15_000).unref?.();
 
+  // ---------- Generic "last player standing" bot games (LowCard, Cricket) ----------
+  // Both games share the same shape: "!start" opens a join window ("!j" to
+  // join, an entry fee escrowed from each joiner into the pot), then repeated
+  // rounds where every remaining player types "!d" once; a game-specific
+  // draw() decides whether that player survives the round. Play continues
+  // until one player remains, who takes the whole pot. Entirely
+  // server-authoritative and confined to each game's own dedicated room
+  // (seeded in db.js), same pattern as the Legendary Bot dice game above.
+  function createEliminationGame({ roomName, botName, entryFee, joinMs, roundMs, draw, decideSurvivors }) {
+    let roomId = null;
+    let phase = 'idle'; // 'idle' | 'joining' | 'drawing'
+    let round = 0;
+    let players = new Map(); // userId -> username
+    let draws = new Map(); // userId -> { survives, label }
+    let pot = 0;
+    let timer = null;
+
+    function getRoomId() {
+      if (roomId == null) {
+        const row = db.prepare('SELECT id FROM rooms WHERE name = ?').get(roomName);
+        roomId = row ? row.id : -1;
+      }
+      return roomId;
+    }
+    function botMessage(text) {
+      postMessage(getRoomId(), { userId: null, username: botName, type: 'game_bot', content: text });
+    }
+    function creditCoins(userId, amount) {
+      db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(amount, userId);
+      emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
+    }
+    function refundAllPlayers() {
+      for (const userId of players.keys()) creditCoins(userId, entryFee);
+    }
+    function clearTimer() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    function endGame() {
+      clearTimer();
+      phase = 'idle'; round = 0; players = new Map(); draws = new Map(); pot = 0;
+    }
+
+    function tryStart() {
+      const rid = getRoomId();
+      if (rid < 0) return false; // room not seeded yet (very old DB mid-migration)
+      if (phase !== 'idle') return false;
+      clearTimer();
+      phase = 'joining'; players = new Map(); draws = new Map(); pot = 0; round = 0;
+      botMessage(`🎮 New game started! Type !j to join (Entry: ${entryFee} coins) — ${Math.round(joinMs / 1000)} seconds.`);
+      timer = setTimeout(afterJoinWindow, joinMs);
+      timer.unref?.();
+      return true;
+    }
+
+    function join(user) {
+      const rid = getRoomId();
+      if (phase !== 'joining') return;
+      if (players.has(user.id)) return;
+      if (!isActiveMember(user.id, rid)) return;
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(entryFee, user.id, entryFee);
+      if (result.changes === 0) {
+        emitToUser(user.id, 'error_message', `You need ${entryFee} coins to join.`);
+        return;
+      }
+      emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+      pot += entryFee;
+      players.set(user.id, user.username);
+      botMessage(`${user.username} joined! (${players.size} player${players.size === 1 ? '' : 's'} in, pot: ${pot} coins)`);
+    }
+
+    function afterJoinWindow() {
+      if (players.size < 2) {
+        botMessage(players.size === 0 ? 'No one joined — game cancelled.' : 'Not enough players joined (need at least 2) — game cancelled, entry fees refunded.');
+        refundAllPlayers();
+        endGame();
+        return;
+      }
+      startRound();
+    }
+
+    function startRound() {
+      round += 1;
+      phase = 'drawing';
+      draws = new Map();
+      botMessage(`Round #${round}. Players !d to draw [${Math.round(roundMs / 1000)} seconds]`);
+      timer = setTimeout(resolveRound, roundMs);
+      timer.unref?.();
+    }
+
+    function takeDraw(user) {
+      const rid = getRoomId();
+      if (phase !== 'drawing') return;
+      if (!players.has(user.id)) return;
+      if (draws.has(user.id)) return;
+      if (!isActiveMember(user.id, rid)) return;
+      const result = draw(user.username);
+      draws.set(user.id, result);
+      botMessage(result.label);
+    }
+
+    // Default: a draw survives on its own merit (result.survives) — right
+    // for Cricket (each ball is independently "out" or not). LowCard passes
+    // its own decideSurvivors that compares every draw against the round's
+    // lowest card instead.
+    function defaultDecideSurvivors() {
+      const survivorIds = new Set();
+      for (const [userId] of players) {
+        const d = draws.get(userId);
+        if (d && d.survives) survivorIds.add(userId);
+      }
+      return survivorIds;
+    }
+
+    function resolveRound() {
+      if (draws.size === 0) {
+        botMessage('No one drew this round — trying again!');
+        return startRound();
+      }
+      const survivorIds = (decideSurvivors || defaultDecideSurvivors)(players, draws);
+      const eliminatedNames = [...players.entries()].filter(([uid]) => !survivorIds.has(uid)).map(([, name]) => name);
+      if (eliminatedNames.length) botMessage(`Eliminated this round: ${eliminatedNames.join(', ')}`);
+
+      const survivors = new Map([...players].filter(([uid]) => survivorIds.has(uid)));
+
+      if (survivors.size === 0) {
+        // Everyone still in was eliminated together (a full tie/sweep) — split the pot evenly rather than losing it.
+        const names = [...players.values()];
+        const share = Math.floor(pot / players.size);
+        for (const userId of players.keys()) creditCoins(userId, share);
+        botMessage(`Everyone was eliminated at once — the pot (${pot} coins) is split evenly between ${names.join(', ')} (${share} each)!`);
+        endGame();
+        return;
+      }
+      if (survivors.size === 1) {
+        const [[winnerId, winnerName]] = survivors;
+        creditCoins(winnerId, pot);
+        botMessage(`🏆 ${winnerName} wins the pot of ${pot} coins! Type !start to play again.`);
+        endGame();
+        return;
+      }
+      players = survivors;
+      timer = setTimeout(startRound, 2_000);
+      timer.unref?.();
+    }
+
+    // Kick off the very first round shortly after boot, same as Legendary Bot.
+    setTimeout(() => { if (getRoomId() >= 0) tryStart(); }, 15_000).unref?.();
+
+    return { getRoomId, tryStart, join, takeDraw };
+  }
+
+  // LowCard — draw a card each round; whoever drew the lowest card (or
+  // didn't draw at all) is eliminated. Ties at the lowest value are all
+  // eliminated together.
+  function drawLowcard(username) {
+    const RANK_LABELS = { 11: 'J', 12: 'Q', 13: 'K', 14: 'A' };
+    const SUITS = ['♠', '♥', '♦', '♣'];
+    const value = 2 + Math.floor(Math.random() * 13); // 2–14
+    const rankLabel = RANK_LABELS[value] || String(value);
+    const suit = SUITS[Math.floor(Math.random() * SUITS.length)];
+    return { value, label: `${username}: ${rankLabel}${suit}` };
+  }
+  function lowcardDecideSurvivors(players, draws) {
+    let minVal = Infinity;
+    for (const d of draws.values()) if (d.value < minVal) minVal = d.value;
+    const survivorIds = new Set();
+    for (const [userId] of players) {
+      const d = draws.get(userId);
+      if (d && d.value > minVal) survivorIds.add(userId);
+    }
+    return survivorIds;
+  }
+  const lowcardGame = createEliminationGame({
+    roomName: 'Official LowCard Room', botName: 'LowCard Bot', entryFee: 50, joinMs: 20_000, roundMs: 15_000,
+    draw: drawLowcard, decideSurvivors: lowcardDecideSurvivors,
+  });
+
+  // Cricket — "bat" each round; a ball can score runs (you stay in) or get
+  // you OUT (eliminated). Roughly cricket-realistic scoring odds.
+  const CRICKET_OUTCOMES = [
+    { runs: 0, weight: 3, label: 'Dot ball.' },
+    { runs: 1, weight: 4, label: 'takes a single: 1' },
+    { runs: 2, weight: 3, label: 'runs a two: 2' },
+    { runs: 3, weight: 1, label: 'runs a three: 3' },
+    { runs: 4, weight: 3, label: 'hits a boundary: 4 Four!' },
+    { runs: 6, weight: 2, label: 'sends it out of the park: 6 Six!' },
+    { runs: -1, weight: 2, label: 'is OUT! 🏏' },
+  ];
+  const CRICKET_WEIGHT_TOTAL = CRICKET_OUTCOMES.reduce((sum, o) => sum + o.weight, 0);
+  function drawCricket(username) {
+    let roll = Math.random() * CRICKET_WEIGHT_TOTAL;
+    let picked = CRICKET_OUTCOMES[CRICKET_OUTCOMES.length - 1];
+    for (const o of CRICKET_OUTCOMES) {
+      if (roll < o.weight) { picked = o; break; }
+      roll -= o.weight;
+    }
+    const out = picked.runs < 0;
+    return { survives: !out, label: `${username} ${picked.label}` };
+  }
+  const cricketGame = createEliminationGame({
+    roomName: 'Official Cricket Room', botName: 'Cricket Bot', entryFee: 50, joinMs: 20_000, roundMs: 15_000,
+    draw: drawCricket,
+  });
+
   io.on('connection', (socket) => {
     const session = socket.request.session;
     const user = session && session.user;
@@ -929,6 +1134,20 @@ function attachSocket(io, sessionMiddleware) {
       if (roomId === getLegendaryRoomId() && /^!start$/i.test(clean)) {
         if (!tryStartLegendaryRound()) socket.emit('error_message', 'A round is already in progress.');
         return;
+      }
+
+      // LowCard / Cricket — "!start" opens a join window, "!j" joins it
+      // (escrowing the entry fee), "!d" draws/bats once the round is live.
+      // Each game is confined to its own dedicated room; typing these
+      // elsewhere just falls through to a normal chat message below.
+      for (const game of [lowcardGame, cricketGame]) {
+        if (roomId !== game.getRoomId()) continue;
+        if (/^!start$/i.test(clean)) {
+          if (!game.tryStart()) socket.emit('error_message', 'A game is already in progress.');
+          return;
+        }
+        if (/^!j$/i.test(clean)) { game.join(user); return; }
+        if (/^!d$/i.test(clean)) { game.takeDraw(user); return; }
       }
 
       // "/silence <seconds>" / "/unsilence" — Staff or Global Admin only.
@@ -1406,7 +1625,14 @@ function attachSocket(io, sessionMiddleware) {
       }
       db.prepare("DELETE FROM room_blocks WHERE user_id = ? AND room_id = ? AND reason = 'ban'").run(targetUserId, roomId);
       const targetRow = db.prepare('SELECT username FROM users WHERE id = ?').get(targetUserId);
-      io.to(`room:${roomId}`).emit('room_unbanned', { roomId, targetUserId, username: targetRow ? targetRow.username : 'User' });
+      const targetUsername = targetRow ? targetRow.username : 'User';
+      io.to(`room:${roomId}`).emit('room_unbanned', { roomId, targetUserId, username: targetUsername });
+      // Mirror the "was banned by ..." system line so an unban is just as
+      // visible in the room's chat log, not just reflected silently in the
+      // Banned list.
+      const targetLevel = currentLevel(targetUserId);
+      const actorLevel = currentLevel(user.id);
+      io.to(`room:${roomId}`).emit('system_message', `${targetUsername} [${targetLevel}] was unbanned by ${user.username} [${actorLevel}]`);
       return true;
     }
 
