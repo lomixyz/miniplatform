@@ -2367,15 +2367,70 @@ async function renderAvatarMaker(box) {
 }
 
 // ---------- COMMAND LIST ----------
+// Moderation/utility commands, shown on the "Commands" tab above the emote list.
+const UTILITY_COMMANDS = [
+  { cmd: '/gift all <gift>', desc: 'Send a gift to everyone currently in the room' },
+  { cmd: '/gift <user> <gift>', desc: 'Send a gift to one user by name' },
+  { cmd: '/pick <code>', desc: 'Redeem a gift code' },
+  { cmd: '/kick <user>', desc: 'Staff/Global Admin/moderator: remove a user from the room for 10 minutes' },
+  { cmd: '/bump <user>', desc: 'Staff/Global Admin/moderator: remove a user from the room for 5 minutes' },
+  { cmd: '/ban <user>', desc: "Staff/Global Admin/room owner: remove a user from the room until unbanned" },
+  { cmd: '/unban <user>', desc: "Staff/Global Admin/room owner: lift a room ban" },
+  { cmd: '/mod <user>', desc: "Room owner/Staff/Global Admin: add a room moderator" },
+  { cmd: '/unmod <user>', desc: 'Remove a room moderator' },
+  { cmd: '/silence <seconds>', desc: 'Staff/Global Admin/moderator: stop everyone else from typing for a while' },
+  { cmd: '/unsilence', desc: 'Lift an active room silence early' },
+];
+
+// Roleplay/emote commands — kept in sync by hand with src/roleplayCommands.js
+// (the actual server-side behavior); this list is for display only.
+const EMOTE_COMMANDS = [
+  'hi', 'hello', 'bye', 'afk', 'back', 'brb', 'gtg', 'bbl', 'sleep', 'wakeup', 'yawn',
+  'agree', 'disagree', 'laugh', 'lol', 'smile', 'grin', 'cry', 'sad', 'angry', 'shock',
+  'surprised', 'confused', 'blush', 'wink', 'eyeroll', 'facepalm', 'shrug', 'bored', 'sweat',
+  'scared', 'proud', 'cool', 'think', 'sick', 'faint',
+  'hug', 'kiss', 'slap', 'punch', 'poke', 'tickle', 'pat', 'nudge', 'highfive', 'handshake',
+  'clap', 'cheer', 'dance', 'sing', 'bow', 'salute', 'pray', 'bless', 'crown', 'cuddle',
+  'snuggle', 'love', 'glare', 'stare', 'wave', 'tackle', 'carry', 'spin', 'bite',
+  'eat', 'drink', 'cheers', 'toast', 'party', 'smoke', 'yum',
+  'act <text>',
+  'aish', 'ami_beshi', 'amio_achi', 'apu_go', 'bujhini', 'charge_nai', 'dada_mane', 'dhur', 'dhivehi', 'goru',
+].map((c) => ({ cmd: `/${c}`, desc: c.includes('<') ? 'Free-form custom action — post a custom third-person action line' : 'Optionally add a username to target them: e.g. /' + c.split(' ')[0] + ' username' }));
+
+const SPECIAL_COMMANDS_LIST = [
+  { cmd: '/8ball <question>', desc: 'Ask the Magic 8-Ball a yes/no question' },
+  { cmd: '/coffee', desc: 'Offer everyone in the room a cup of coffee' },
+  { cmd: '/cupid <user1> [<user2>]', desc: 'Match two users (or yourself + one user) with a random compatibility %' },
+  { cmd: '/findmymatch', desc: 'Official rooms only — get randomly paired with someone else currently in the room' },
+  { cmd: '/flame <username>', desc: 'Playfully roast a user' },
+  { cmd: '/whackit <username>', desc: 'Whack a user with a giant mallet 🔨' },
+];
+
+let commandListTab = 'commands';
 function renderCommandList(box) {
-  const commands = [
-    { cmd: '/gift all <gift>', desc: 'Send a gift to everyone currently in the room' },
-    { cmd: '/gift <user> <gift>', desc: 'Send a gift to one user by name' },
-    { cmd: '/pick <code>', desc: 'Redeem a gift code' },
-    { cmd: '/kick <user>', desc: 'Staff/Global Admin: remove a user from the room for 10 minutes' },
-    { cmd: '/bump <user>', desc: 'Staff/Global Admin: remove a user from the room for 5 minutes' },
-  ];
-  commands.forEach((c) => box.appendChild(listRow({ icon: '⌨️', iconBg: '#10b981', title: c.cmd, subtitle: c.desc, trailing: ' ' })));
+  box.innerHTML = '';
+  const tabs = document.createElement('div');
+  tabs.className = 'command-list-tabs';
+  tabs.innerHTML = `
+    <button class="command-tab-btn ${commandListTab === 'commands' ? 'active' : ''}" data-tab="commands">Commands</button>
+    <button class="command-tab-btn ${commandListTab === 'special' ? 'active' : ''}" data-tab="special">✨ Special</button>
+  `;
+  box.appendChild(tabs);
+
+  const list = document.createElement('div');
+  box.appendChild(list);
+
+  const draw = () => {
+    tabs.querySelectorAll('.command-tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === commandListTab));
+    list.innerHTML = '';
+    const rows = commandListTab === 'special' ? SPECIAL_COMMANDS_LIST : [...UTILITY_COMMANDS, ...EMOTE_COMMANDS];
+    rows.forEach((c) => list.appendChild(listRow({ icon: commandListTab === 'special' ? '✨' : '⌨️', iconBg: commandListTab === 'special' ? '#f59e0b' : '#10b981', title: c.cmd, subtitle: c.desc, trailing: ' ' })));
+  };
+  tabs.querySelectorAll('.command-tab-btn').forEach((b) => b.addEventListener('click', () => {
+    commandListTab = b.dataset.tab;
+    draw();
+  }));
+  draw();
 }
 
 // ---------- ANNOUNCEMENTS / BLOG (shared "posts" screen) ----------
@@ -2427,7 +2482,7 @@ function renderPostsScreen(type) {
             <div class="notif-icon" style="background:${type === 'announcement' ? '#3b82f6' : '#8b5cf6'}">${type === 'announcement' ? '📣' : '📰'}</div>
             <div class="notif-body">
               <div class="notif-title-line">${escapeHtml(p.title)}</div>
-              <div class="notif-desc">${escapeHtml(p.content)}</div>
+              <div class="post-desc">${escapeHtml(p.content)}</div>
             </div>
             <div class="notif-time">
               <div class="notif-relative">${escapeHtml(relative)}</div>

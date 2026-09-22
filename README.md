@@ -129,6 +129,9 @@ data/
 
 ## Recent changes (this update)
 
+- **New: `/ban <username>` and `/unban <username>` chat commands** — same permission tier and effect as Room Settings' Banned tab (Staff, Global Admin, or the room's owner), just reachable straight from chat now.
+- **New: a large set of roleplay/emote chat commands** (`/hug`, `/dance`, `/wave`, `/8ball <question>`, `/cupid`, `/findmymatch`, `/flame`, `/whackit`, plus several Bengali-slang ones, and more — see `src/roleplayCommands.js`). Most support an optional target username (e.g. `/hug lomi`); `/act <text>` posts a free-form custom action line. The Explore → Command List screen now has "Commands" and "✨ Special" tabs matching this.
+- **Fixed: Announcement/Blog post bodies no longer get cut off with "..."** — they used the same one-line-ellipsis style as short Alert descriptions; long posts now wrap and show in full.
 - **Participants panel is now read-only** — every member row shows just the avatar, online dot, role-colored username, level, and role badge icon. The Kick/Bump/Ban buttons have been removed from this panel entirely; moderation still works exactly as before via chat commands (`/kick <user>`, `/bump <user>`, and the room-owner/Staff ban flow in Room Settings) — same server-side permission checks, just no buttons in this list.
 - **The in-room favorites gift bar has been removed.** Chat no longer shows a quick-send strip above the input — sending a gift from a room now goes through ⋮ → **Send Gift**, which opens the full gift catalog (same list the Explore → Gift Store uses) to pick from.
 

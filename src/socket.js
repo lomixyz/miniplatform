@@ -7,6 +7,7 @@ const presence = require('./presence');
 const voucher = require('./voucher');
 const chatbots = require('./chatbots');
 const roomSilence = require('./roomSilence');
+const { ROLEPLAY_COMMANDS, BENGALI_COMMANDS } = require('./roleplayCommands');
 
 // Voice notes and shared pictures (see canSendMedia below) are written to
 // disk under public/uploads and served back out by express.static (already
@@ -48,9 +49,42 @@ const UNSILENCE_COMMAND = /^\/unsilence\s*$/i;
 // "/mod <username>" / "/unmod" — the room owner (or Staff/Global Admin) only.
 const MOD_COMMAND = /^\/mod\s+(\S+)\s*$/i;
 const UNMOD_COMMAND = /^\/unmod\s+(\S+)\s*$/i;
+// "/ban <username>" / "/unban <username>" — same permission tier and effect
+// as the Room Settings Banned tab, just reachable from chat.
+const BAN_COMMAND = /^\/ban\s+(\S+)\s*$/i;
+const UNBAN_COMMAND = /^\/unban\s+(\S+)\s*$/i;
 // A silence never lasts longer than this, whatever's typed after /silence —
 // a sane ceiling against a fat-fingered "/silence 999999999".
 const MAX_SILENCE_SECONDS = 24 * 60 * 60;
+
+// Roleplay/emote commands ("/hug", "/dance", "/8ball", ...) — matches "/word"
+// optionally followed by an argument (a target username, a free-text
+// argument for /act, etc). Only acts if the word is a known command; an
+// unknown "/word" still falls through to the "Unrecognized command" error.
+const ROLEPLAY_COMMAND = /^\/([a-z0-9_]+)(?:\s+(.+))?\s*$/i;
+const ROLEPLAY_MAP = new Map();
+for (const [cmd, selfTpl, targetTpl] of ROLEPLAY_COMMANDS) {
+  ROLEPLAY_MAP.set(cmd, { selfTpl, targetTpl, isFreeform: cmd === 'act' });
+}
+for (const [cmd, selfTpl] of BENGALI_COMMANDS) {
+  ROLEPLAY_MAP.set(cmd, { selfTpl, targetTpl: null, isFreeform: false });
+}
+// Commands with real custom logic rather than a canned text template — kept
+// out of ROLEPLAY_MAP and handled explicitly in the "Special" block below.
+const SPECIAL_COMMANDS = new Set(['8ball', 'coffee', 'cupid', 'findmymatch', 'flame', 'whackit']);
+const EIGHT_BALL_ANSWERS = [
+  'Yes, definitely!', 'It is certain.', 'Without a doubt.', 'You may rely on it.',
+  'Most likely.', 'Signs point to yes.', 'Ask again later.', 'Cannot predict now.',
+  'Better not tell you now.', 'Concentrate and ask again.', "Don't count on it.",
+  'My reply is no.', 'My sources say no.', 'Outlook not so good.', 'Very doubtful.',
+];
+const FLAME_LINES = [
+  '{target} is so slow, their WiFi has a WiFi. 🔥',
+  "{target} brought a spoon to a gunfight and still missed. 🔥",
+  '{target} has never won an argument in their life. 🔥',
+  "{target}'s comebacks are still loading... 🔥",
+  '{target} called, they said the roast was free. 🔥',
+];
 
 function attachSocket(io, sessionMiddleware) {
   // Share express-session with socket.io
@@ -934,6 +968,17 @@ function attachSocket(io, sessionMiddleware) {
         return handleRemovalCommand(roomId, bumpMatch[1], 'bump');
       }
 
+      // "/ban <username>" / "/unban <username>" — same permission tier and
+      // effect as Room Settings' Banned tab, just reachable from chat.
+      const banMatch = clean.match(BAN_COMMAND);
+      if (banMatch) {
+        return handleRemovalCommand(roomId, banMatch[1], 'ban');
+      }
+      const unbanMatch = clean.match(UNBAN_COMMAND);
+      if (unbanMatch) {
+        return handleUnbanCommand(roomId, unbanMatch[1]);
+      }
+
       // "/gift all" or "/gift all <gift name>" — shower to everyone currently in the room.
       const allMatch = clean.match(GIFT_ALL_COMMAND);
       if (allMatch) {
@@ -946,13 +991,27 @@ function attachSocket(io, sessionMiddleware) {
         return handleGiftCommand(roomId, toMatch[1], toMatch[2].trim());
       }
 
+      // Roleplay/emote commands ("/hug", "/dance", ...) and the "Special"
+      // tier ("/8ball", "/cupid", ...) — see roleplayCommands.js.
+      const rpMatch = clean.match(ROLEPLAY_COMMAND);
+      if (rpMatch) {
+        const cmd = rpMatch[1].toLowerCase();
+        const arg = rpMatch[2] ? rpMatch[2].trim() : '';
+        if (SPECIAL_COMMANDS.has(cmd)) {
+          return handleSpecialCommand(roomId, cmd, arg);
+        }
+        if (ROLEPLAY_MAP.has(cmd)) {
+          return handleRoleplayCommand(roomId, cmd, arg);
+        }
+      }
+
       // A message that starts with "/" but doesn't match any known command
       // used to silently get posted to the room as plain text, which looked
       // exactly like "nothing happened" for a typo'd or unrecognized command.
       // Reject it with a clear error instead, so a mismatch is obvious.
       if (/^\//.test(clean)) {
         console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
-        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /kick <username>, /bump <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, or /unmod <username>.`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
       }
 
       postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean });
@@ -992,6 +1051,99 @@ function attachSocket(io, sessionMiddleware) {
       const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
       if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
       performRemoval(roomId, target.id, mode);
+    }
+
+    function handleUnbanCommand(roomId, usernameArg) {
+      const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      performUnban(roomId, target.id);
+    }
+
+    // "username [level]" — matches the bracket format used everywhere else
+    // (join/leave, kick/bump/ban system messages, gift messages).
+    function nameWithLevel(userId, username) {
+      return `${username} [${currentLevel(userId)}]`;
+    }
+
+    // Roleplay/emote commands — posts a canned third-person action line to
+    // the room, optionally naming a target. "/act <text>" is the one
+    // freeform command (selfTpl has a literal {arg} placeholder).
+    function handleRoleplayCommand(roomId, cmd, arg) {
+      const entry = ROLEPLAY_MAP.get(cmd);
+      const me = nameWithLevel(user.id, user.username);
+
+      if (entry.isFreeform) {
+        if (!arg) return socket.emit('error_message', `Usage: /${cmd} <action text>`);
+        const text = entry.selfTpl.replace('{user}', me).replace('{arg}', arg.slice(0, 200));
+        return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+      }
+
+      if (arg && entry.targetTpl) {
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        const them = target.id === user.id ? me : nameWithLevel(target.id, target.username);
+        const text = entry.targetTpl.replace('{user}', me).replace('{target}', them);
+        return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+      }
+
+      if (!entry.selfTpl) return socket.emit('error_message', `Usage: /${cmd} <username>`);
+      const text = entry.selfTpl.replace('{user}', me);
+      return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+    }
+
+    // "Special" tier commands with real behavior, not just a canned line.
+    function handleSpecialCommand(roomId, cmd, arg) {
+      const me = nameWithLevel(user.id, user.username);
+      const post = (content) => postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content });
+
+      if (cmd === '8ball') {
+        if (!arg) return socket.emit('error_message', 'Usage: /8ball <question>');
+        const answer = EIGHT_BALL_ANSWERS[Math.floor(Math.random() * EIGHT_BALL_ANSWERS.length)];
+        return post(`🎱 ${me} asks the Magic 8-Ball: "${arg}" — ${answer}`);
+      }
+
+      if (cmd === 'coffee') {
+        return post(`☕ ${me} brews a round of coffee for the room!`);
+      }
+
+      if (cmd === 'cupid') {
+        const names = arg.split(/\s+/).filter(Boolean);
+        if (!names.length) return socket.emit('error_message', 'Usage: /cupid <username> [<username2>]');
+        const findUser = (uname) => db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(uname);
+        const a = names[0] === user.username ? { id: user.id, username: user.username } : findUser(names[0]);
+        if (!a) return socket.emit('error_message', `No user named "${names[0]}"`);
+        const b = names[1] ? findUser(names[1]) : { id: user.id, username: user.username };
+        if (names[1] && !b) return socket.emit('error_message', `No user named "${names[1]}"`);
+        const pct = 40 + Math.floor(Math.random() * 61); // 40–100%
+        return post(`💘 Cupid strikes! ${nameWithLevel(a.id, a.username)} + ${nameWithLevel(b.id, b.username)} = ${pct}% match!`);
+      }
+
+      if (cmd === 'findmymatch') {
+        const room = db.prepare('SELECT is_official FROM rooms WHERE id = ?').get(roomId);
+        if (!room || !room.is_official) {
+          return socket.emit('error_message', '/findmymatch only works in official rooms.');
+        }
+        const others = activeMemberRows(roomId).filter((r) => r.id !== user.id && !r.is_bot);
+        if (!others.length) return socket.emit('error_message', 'No one else is here to match with right now.');
+        const pick = others[Math.floor(Math.random() * others.length)];
+        const pct = 40 + Math.floor(Math.random() * 61);
+        return post(`💘 ${me} used /findmymatch and got paired with ${nameWithLevel(pick.id, pick.username)} — ${pct}% match!`);
+      }
+
+      if (cmd === 'flame') {
+        if (!arg) return socket.emit('error_message', 'Usage: /flame <username>');
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        const line = FLAME_LINES[Math.floor(Math.random() * FLAME_LINES.length)];
+        return post(`🔥 ${me} flames ${nameWithLevel(target.id, target.username)}: ${line.replace('{target}', target.username)}`);
+      }
+
+      if (cmd === 'whackit') {
+        if (!arg) return socket.emit('error_message', 'Usage: /whackit <username>');
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        return post(`🔨 ${me} whacks ${nameWithLevel(target.id, target.username)} with a giant mallet!`);
+      }
     }
 
     function handlePick(roomId, code) {
@@ -1240,19 +1392,25 @@ function attachSocket(io, sessionMiddleware) {
       if (typeof ack === 'function') ack({ ok: true, banned: rows });
     });
 
-    on('unban_user', ({ roomId, targetUserId }) => {
+    // Shared by the Room Settings "Unban" button and the "/unban <username>"
+    // chat command.
+    function performUnban(roomId, targetUserId) {
       roomId = Number(roomId);
       targetUserId = Number(targetUserId);
       const actorFlags = freshRoleFlags(user.id);
       const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
       const actorIsOwner = !!room && room.created_by === user.id;
       if (!actorFlags.is_staff && !actorFlags.is_global_admin && !actorIsOwner) {
-        return socket.emit('error_message', "Only Staff, a Global Administrator, or this room's owner can unban members");
+        socket.emit('error_message', "Only Staff, a Global Administrator, or this room's owner can unban members");
+        return false;
       }
       db.prepare("DELETE FROM room_blocks WHERE user_id = ? AND room_id = ? AND reason = 'ban'").run(targetUserId, roomId);
       const targetRow = db.prepare('SELECT username FROM users WHERE id = ?').get(targetUserId);
       io.to(`room:${roomId}`).emit('room_unbanned', { roomId, targetUserId, username: targetRow ? targetRow.username : 'User' });
-    });
+      return true;
+    }
+
+    on('unban_user', ({ roomId, targetUserId }) => performUnban(roomId, targetUserId));
 
     // ---- Room silence (Staff, Global Administrator, or a room moderator) ----
     // While a room is silenced, only Staff, Global Admin, the room's owner,
