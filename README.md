@@ -77,6 +77,12 @@ Then open http://localhost:3000 in your browser.
 
 Render's **Build Command** should be `npm run build` (installs deps + downloads the Litestream binary) and the **Start Command** should be `npm start` (runs `start.sh`, which restores from the replica then launches the app under `litestream replicate`).
 
+**If users/data keep disappearing after a redeploy or a crash-restart** (e.g. a "Server failure detected... exited with status 1" email from Render, followed by an empty user list), persistence isn't actually active — the app still boots fine either way, so nothing else looks wrong. Check the **very first lines of the boot log** in Render's Logs tab right after a restart; `start.sh` now always prints one of:
+- `⚠️ PERSISTENCE DISABLED: LITESTREAM_BUCKET is not set` — the four `LITESTREAM_*` env vars aren't set on the Render service. Add them under Environment.
+- `⚠️ PERSISTENCE DISABLED: ... doesn't exist` — the env vars ARE set, but the Litestream binary was never downloaded. This means the **Build Command** is still the default (`npm install`) instead of `npm run build` — fix it under Settings → Build Command and redeploy.
+- `❌ Litestream restore FAILED` — the env vars are set and the binary exists, but the bucket/endpoint/credentials are wrong; the error right above this line says why.
+- `✅ PERSISTENCE ENABLED` — everything is wired up correctly.
+
 **Installing as a mobile app (PWA):** once the server is reachable at a real URL (not `localhost`), opening it on a phone offers "Add to Home Screen" (Android/Chrome) or Share → "Add to Home Screen" (iOS/Safari) — it then launches full-screen with its own icon, no app-store submission needed. This requires HTTPS in production (most hosts provide this automatically); it also works over plain HTTP on `localhost` for local testing.
 
 Note: sessions are kept in memory, so logging in again is needed after a server restart. Fine for local use; swap in a persistent session store (e.g. Redis) for production. Also note: if an account's roles are changed while they're already logged in, their open browser tab picks up the new roles the next time it loads (it re-checks on page load) — an open Socket.io connection doesn't hot-swap mid-session.
@@ -129,6 +135,8 @@ data/
 
 ## Recent changes (this update)
 
+- **`start.sh` now logs its persistence status loudly on every boot** instead of silently falling back to a non-persistent run — see the new "If users/data keep disappearing" section above. This is a diagnostic/logging change only; it doesn't fix a misconfigured Render service by itself, but makes the real cause immediately visible in the deploy logs instead of only showing up as missing users after the fact.
+- **Fixed: roleplay/emote and "special" commands no longer show "[level]" after the username** (e.g. `/brb` now posts "lomi will be right back! ⏳" instead of "lomi [1] will be right back! ⏳") — applies to every emote command (`/hug`, `/afk`, `/dance`, ...) and the special-tier ones (`/cupid`, `/findmymatch`, `/flame`, `/whackit`). `/kick`, `/bump`, `/ban`, and `/unban`'s own system messages are unchanged and still show "username [level]" as before.
 - **Color Shop prices are now Staff-editable**, right on the Color Shop screen — Staff sees an inline price field + Save next to every color instead of the old fixed, code-only prices. **A purchased color is now locked in for 30 days** from the moment it's bought: neither switching to a different paid color nor "Reset to default color" is possible until the lock expires (a clear "🔒 locked for N more days" notice explains why, and both actions are disabled) — closes the loophole of buying then immediately resetting.
 - **Blog is now open to every user, not just Staff** — anyone can write a Blog post (with a picture, same as before), and each post now shows its author. You can delete your own Blog post; Staff can still delete any post in either feed. Announcements remain a Staff-only official channel, both to post and to delete — unchanged there.
 - **Fixed: the Give Coins popup was rendering broken (tiny, unstyled, stuck in the corner)** — it was missing the overlay/centering styling entirely (a leftover duplicate-id bug). Now matches the Staff/Admin Panel's look exactly: a centered card over a dimmed background, closes on Close or on tapping outside, and clears its search box every time it closes.
