@@ -49,8 +49,8 @@ router.get('/search', requireFlag('staff', 'mentor', 'merchant'), (req, res) => 
 router.post('/:id/give', requireFlag('staff', 'mentor', 'merchant'), (req, res) => {
   const targetId = Number(req.params.id);
   const amount = Math.round(Number(req.body && req.body.amount));
-  if (!Number.isFinite(amount) || amount < 1 || amount > 100000) {
-    return res.status(400).json({ error: 'Amount must be a whole number between 1 and 100000' });
+  if (!Number.isFinite(amount) || amount < 1 || amount > 100000000) {
+    return res.status(400).json({ error: 'Amount must be a whole number between 1 and 100000000' });
   }
   const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
   if (!target) return res.status(404).json({ error: 'User not found' });
