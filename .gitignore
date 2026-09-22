@@ -1,0 +1,23 @@
+node_modules/
+
+# SQLite runtime database — regenerated (seeded with rooms, bots, gift
+# catalog, etc.) automatically the first time the server boots. Keeping it
+# out of git avoids committing live user data and merge-conflict-prone
+# binary diffs.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Uploaded voice notes / pictures — user-generated runtime content, not
+# source. The folder itself is kept via .gitkeep so it exists on a fresh
+# clone.
+public/uploads/*
+!public/uploads/.gitkeep
+
+*.log
+.DS_Store
+.env
+
+# Litestream binary — downloaded fresh by scripts/install-litestream.sh on
+# every Render build (see package.json "build" script), not committed.
+/bin/

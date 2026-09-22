@@ -63,6 +63,22 @@ npm start
 
 Then open http://localhost:3000 in your browser.
 
+**Environment variables** (all optional — safe dev defaults are used if unset). Copy `.env.example` to `.env` and fill in real values before deploying anywhere public:
+
+- `SESSION_SECRET` — signs session cookies.
+- `ADMIN_PASSWORD` — password for the two built-in `admin` / `miniplatform` accounts (see below). Change this from the shipped default before deploying.
+- `PORT` — defaults to `3000`.
+
+**Permanent data storage on Render (Litestream):** Render's disk is wiped on every redeploy, which used to mean every registered user disappeared after a new push. This is now fixed with [Litestream](https://litestream.io) — a small sidecar process that continuously streams every SQLite write to S3-compatible cloud storage (e.g. Cloudflare R2's free tier) and restores the database from there automatically on boot. No code changes were needed for this — `data/app.db` is used exactly as before; only `start.sh` / `litestream.yml` / `scripts/install-litestream.sh` were added. It only activates when these four env vars are set (locally, or on any host without them, the app just runs against the local file as always):
+
+- `LITESTREAM_BUCKET` — the S3/R2 bucket name.
+- `LITESTREAM_ENDPOINT` — the S3-compatible endpoint URL (e.g. `https://<account-id>.r2.cloudflarestorage.com`).
+- `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` — the storage API credentials.
+
+Render's **Build Command** should be `npm run build` (installs deps + downloads the Litestream binary) and the **Start Command** should be `npm start` (runs `start.sh`, which restores from the replica then launches the app under `litestream replicate`).
+
+**Installing as a mobile app (PWA):** once the server is reachable at a real URL (not `localhost`), opening it on a phone offers "Add to Home Screen" (Android/Chrome) or Share → "Add to Home Screen" (iOS/Safari) — it then launches full-screen with its own icon, no app-store submission needed. This requires HTTPS in production (most hosts provide this automatically); it also works over plain HTTP on `localhost` for local testing.
+
 Note: sessions are kept in memory, so logging in again is needed after a server restart. Fine for local use; swap in a persistent session store (e.g. Redis) for production. Also note: if an account's roles are changed while they're already logged in, their open browser tab picks up the new roles the next time it loads (it re-checks on page load) — an open Socket.io connection doesn't hot-swap mid-session.
 
 Two default accounts are seeded on first run, both equally privileged:

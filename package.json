@@ -7,7 +7,8 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "start": "node src/server.js",
+    "start": "bash start.sh",
+    "build": "npm install && bash scripts/install-litestream.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,6 +16,7 @@
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "dotenv": "^18.0.1",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "socket.io": "^4.8.3"
