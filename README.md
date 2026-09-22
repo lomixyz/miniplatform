@@ -129,6 +129,9 @@ data/
 
 ## Recent changes (this update)
 
+- **Participants panel is now read-only** — every member row shows just the avatar, online dot, role-colored username, level, and role badge icon. The Kick/Bump/Ban buttons have been removed from this panel entirely; moderation still works exactly as before via chat commands (`/kick <user>`, `/bump <user>`, and the room-owner/Staff ban flow in Room Settings) — same server-side permission checks, just no buttons in this list.
+- **The in-room favorites gift bar has been removed.** Chat no longer shows a quick-send strip above the input — sending a gift from a room now goes through ⋮ → **Send Gift**, which opens the full gift catalog (same list the Explore → Gift Store uses) to pick from.
+
 - **Room tabs now live directly in the top bar itself** — there's a single topmost row (☰ 🏠 💬 + your open room pills + coin balance), not two separate rows stacked on top of each other.
 - **Personal coin/gift notices no longer leak into room chat.** Getting a "gave you 10000 coins" or "sent you a gift" ping now shows as a toast only — it used to get dropped into whatever room you happened to have open, which made it look like a room message.
 - **Give Coins has a one-tap +10000 preset.** Staff/Mentor/Merchant can still type any custom amount, or just tap "+10000" next to a searched user to hand it out instantly.

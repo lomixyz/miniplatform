@@ -14,6 +14,16 @@ function setStoredTheme(theme) {
 }
 applyTheme(getStoredTheme());
 
+// PWA install: register the service worker so the app shell loads instantly
+// and the browser offers "Add to Home Screen" / "Install app". Registered
+// after load so it never competes with the initial page render, and it's
+// safe to no-op in browsers/contexts without service worker support.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 let currentUser = null;
 let socket = null;
 let currentRoomId = null;
@@ -1051,40 +1061,14 @@ function sendChat() {
 }
 
 // ---------- GIFTS ----------
-// The in-room gift bar only ever shows this user's own favorites (max 10 —
-// see gift_favorites on the server), plus a trailing "+" chip that opens the
-// full catalog to pick/unpick which gifts appear here. Keeps the bar a
-// short, glanceable strip instead of every gift in the catalog at once.
-const MAX_FAVORITE_GIFTS = 10;
+// The in-room quick-send favorites bar has been removed — sending a gift
+// from a room now always goes through the full catalog (⋮ → Send Gift), the
+// same list the Gift Store (Explore hub) uses.
 let allGiftsCache = [];
-let favoriteGiftsCache = [];
 
 async function loadGifts() {
-  const [{ gifts }, { gifts: favorites }] = await Promise.all([api('/gifts'), api('/gifts/favorites')]);
+  const { gifts } = await api('/gifts');
   allGiftsCache = gifts;
-  favoriteGiftsCache = favorites;
-  renderGiftBar();
-}
-
-function renderGiftBar() {
-  const bar = $('#giftBar');
-  bar.innerHTML = '';
-  favoriteGiftsCache.forEach((g) => {
-    const chip = document.createElement('button');
-    chip.className = 'gift-chip';
-    chip.textContent = `${g.emoji} ${g.name} (${g.cost}🪙)`;
-    chip.addEventListener('click', () => sendGiftFlow(g));
-    bar.appendChild(chip);
-  });
-  const addChip = document.createElement('button');
-  addChip.className = 'gift-chip gift-chip-add';
-  addChip.textContent = '➕';
-  addChip.title = 'Add / manage favorite gifts';
-  addChip.addEventListener('click', () => {
-    subScreenStack = [];
-    pushSubScreen('Favorite Gifts', renderFavoriteGiftsPicker);
-  });
-  bar.appendChild(addChip);
 }
 
 function sendGiftFlow(gift) {
@@ -1094,42 +1078,22 @@ function sendGiftFlow(gift) {
   socket.emit('send_gift_by_username', { roomId: currentRoomId, toUsername: target, giftId: gift.id });
 }
 
-// Full-catalog picker (behind the gift bar's "+") for choosing which gifts
-// show up in the room's quick-send bar — a star toggles each gift in or out
-// of favoriteGiftsCache, capped at MAX_FAVORITE_GIFTS.
-function renderFavoriteGiftsPicker(box) {
+// Full-catalog picker, opened from the chat ⋮ menu's "Send Gift" action.
+function renderSendGiftPicker(box) {
   box.innerHTML = '';
   const note = document.createElement('div');
   note.className = 'empty-note';
   note.style.marginBottom = '8px';
-  note.textContent = `Pick up to ${MAX_FAVORITE_GIFTS} gifts to show in your room gift bar (${favoriteGiftsCache.length}/${MAX_FAVORITE_GIFTS} selected).`;
+  note.textContent = 'Pick a gift to send in this room.';
   box.appendChild(note);
 
   const grid = document.createElement('div');
   grid.className = 'gift-store-grid';
   allGiftsCache.forEach((g) => {
-    const isFav = favoriteGiftsCache.some((f) => f.id === g.id);
     const chip = document.createElement('button');
-    chip.className = 'gift-chip' + (isFav ? ' selected' : '');
-    chip.innerHTML = `${isFav ? '⭐' : '☆'} ${g.emoji} ${g.name} (${g.cost}🪙)`;
-    chip.addEventListener('click', async () => {
-      try {
-        if (isFav) {
-          await api(`/gifts/favorites/${g.id}`, { method: 'DELETE' });
-          favoriteGiftsCache = favoriteGiftsCache.filter((f) => f.id !== g.id);
-        } else {
-          if (favoriteGiftsCache.length >= MAX_FAVORITE_GIFTS) {
-            return toast(`You can only favorite up to ${MAX_FAVORITE_GIFTS} gifts — remove one first`);
-          }
-          await api('/gifts/favorites', { method: 'POST', body: JSON.stringify({ giftId: g.id }) });
-          favoriteGiftsCache.push(g);
-        }
-        renderGiftBar();
-        renderFavoriteGiftsPicker(box);
-      } catch (err) {
-        toast(err.message);
-      }
-    });
+    chip.className = 'gift-chip';
+    chip.innerHTML = `${g.emoji} ${g.name} (${g.cost}🪙)`;
+    chip.addEventListener('click', () => sendGiftFlow(g));
     grid.appendChild(chip);
   });
   box.appendChild(grid);
@@ -1166,9 +1130,9 @@ $('#sheetBalance').addEventListener('click', () => {
 });
 $('#sheetSendGift').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
-  const box = $('#giftBar');
-  box.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  toast('Pick a gift below to send it 🎁');
+  if (!currentRoomId) return toast('Join a room first');
+  subScreenStack = [];
+  pushSubScreen('Send Gift', renderSendGiftPicker);
 });
 $('#sheetClearChat').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
@@ -1195,10 +1159,10 @@ $('#participantsOverlay').addEventListener('click', (e) => {
   if (e.target === $('#participantsOverlay')) $('#participantsOverlay').classList.add('hidden');
 });
 
-// Render the live list of who's currently in the selected room, with Kick
-// (10-minute rejoin cooldown) and Bump (5-minute) actions for Staff/Global
-// Administrators and this room's moderators (server re-checks the permission
-// too either way).
+// Render the live list of who's currently in the selected room. Read-only:
+// avatar, online dot, role-colored name, level, and role badge icon — no
+// action buttons. Moderation (kick/bump/ban) is done via chat commands
+// (/kick, /bump, /ban, /unban) instead — see socket.js.
 function renderRoomMembers(members) {
   const box = $('#participantsList');
   box.innerHTML = '';
@@ -1206,11 +1170,6 @@ function renderRoomMembers(members) {
     box.innerHTML = '<div class="empty-note">No one here yet.</div>';
     return;
   }
-  const room = allRoomsCache.find((r) => r.id === currentRoomId);
-  const iAmModerator = !!(room && currentUser && (room.moderator_usernames || []).includes(currentUser.username));
-  const iAmPrivileged = !!(currentUser && (currentUser.is_staff || currentUser.is_global_admin));
-  const iCanModerate = iAmPrivileged || iAmModerator;
-
   members.forEach((m) => {
     const row = document.createElement('div');
     row.className = 'participant-row';
@@ -1223,46 +1182,6 @@ function renderRoomMembers(members) {
       <span class="role-badge-icon">${roleIcon(m)}</span>
       ${m.invisible ? '<span class="role-badge-icon" title="Only visible to you">👻</span>' : ''}
     `;
-    // Staff is always immune to kick/bump (server enforces this too) — don't
-    // even show the buttons for a Staff target. A Global Admin target is
-    // likewise off-limits to anyone who isn't themselves Staff/Global Admin
-    // — that includes a plain room moderator, same as the server's rule.
-    const targetIsUntouchable = m.is_staff || (m.is_global_admin && !iAmPrivileged);
-    const iAmOwner = !!(room && currentUser && room.owner_username === currentUser.username);
-    const iCanBan = iAmPrivileged || iAmOwner; // banning is permanent — owner/Staff/Global Admin only, not a plain moderator
-    if (currentUser && iCanModerate && m.id !== currentUser.id && !targetIsUntouchable) {
-      const bumpBtn = document.createElement('button');
-      bumpBtn.className = 'kick-btn bump-btn';
-      bumpBtn.textContent = 'Bump';
-      bumpBtn.addEventListener('click', () => {
-        if (confirm(`Bump ${m.username} from this room? They won't be able to rejoin for 5 minutes.`)) {
-          socket.emit('bump_user', { roomId: currentRoomId, targetUserId: m.id });
-        }
-      });
-      row.appendChild(bumpBtn);
-
-      const kickBtn = document.createElement('button');
-      kickBtn.className = 'kick-btn';
-      kickBtn.textContent = 'Kick';
-      kickBtn.addEventListener('click', () => {
-        if (confirm(`Kick ${m.username} from this room? They won't be able to rejoin for 10 minutes.`)) {
-          socket.emit('kick_user', { roomId: currentRoomId, targetUserId: m.id });
-        }
-      });
-      row.appendChild(kickBtn);
-
-      if (iCanBan) {
-        const banBtn = document.createElement('button');
-        banBtn.className = 'kick-btn danger';
-        banBtn.textContent = 'Ban';
-        banBtn.addEventListener('click', () => {
-          if (confirm(`Ban ${m.username} from this room? This is permanent until unbanned from Room Settings.`)) {
-            socket.emit('ban_user', { roomId: currentRoomId, targetUserId: m.id });
-          }
-        });
-        row.appendChild(banBtn);
-      }
-    }
     box.appendChild(row);
   });
 }
