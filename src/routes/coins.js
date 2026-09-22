@@ -1,8 +1,38 @@
 const express = require('express');
 const db = require('../db');
-const { requireFlag, publicUser } = require('../auth');
+const { requireFlag, requireLogin, publicUser } = require('../auth');
 
 const router = express.Router();
+
+// My Balance (Settings -> My Balance): current balance, today's earned/spent
+// totals, and a recent activity feed — built entirely from the
+// coin_transactions ledger (see db.logCoinTx), optionally filtered to one
+// category to match the Activity screen's tabs (All/Games/Gifts/Transfers/Other).
+const VALID_CATEGORIES = new Set(['games', 'gifts', 'transfers', 'other']);
+router.get('/activity', requireLogin, (req, res) => {
+  const userId = req.session.user.id;
+  const category = VALID_CATEGORIES.has(req.query.category) ? req.query.category : null;
+
+  const balanceRow = db.prepare('SELECT coins FROM users WHERE id = ?').get(userId);
+  const todayTotals = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS earned,
+      COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS spent
+    FROM coin_transactions
+    WHERE user_id = ? AND date(created_at) = date('now')
+  `).get(userId);
+
+  const rows = category
+    ? db.prepare('SELECT * FROM coin_transactions WHERE user_id = ? AND category = ? ORDER BY id DESC LIMIT 100').all(userId, category)
+    : db.prepare('SELECT * FROM coin_transactions WHERE user_id = ? ORDER BY id DESC LIMIT 100').all(userId);
+
+  res.json({
+    coins: balanceRow ? balanceRow.coins : 0,
+    earnedToday: todayTotals.earned,
+    spentToday: todayTotals.spent,
+    activity: rows,
+  });
+});
 
 // Staff, Mentor, and Merchant can all hand out coins to a user directly (a
 // reward, a prize, a correction) — separate from the Admin Panel, which stays
@@ -29,6 +59,7 @@ router.post('/:id/give', requireFlag('staff', 'mentor', 'merchant'), (req, res) 
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
 
   const giver = req.session.user;
+  db.logCoinTx(targetId, amount, 'transfers', `Received from ${giver.username}`);
   db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)')
     .run(targetId, 'coins', `${giver.username} sent you coins!`, `${giver.username} gave you ${amount} coins.`);
 

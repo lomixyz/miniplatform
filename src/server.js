@@ -1,3 +1,4 @@
+require('dotenv').config();
 const path = require('path');
 const http = require('http');
 const express = require('express');
@@ -39,7 +40,9 @@ const sessionMiddleware = session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 },
 });
 
-app.use(express.json());
+// 6mb limit: default (100kb) is too small for blog posts that embed a
+// base64 image data URL (POST /api/posts with an `image` field).
+app.use(express.json({ limit: '6mb' }));
 app.use(sessionMiddleware);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

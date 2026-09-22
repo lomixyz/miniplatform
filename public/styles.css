@@ -455,6 +455,12 @@ body::after {
 }
 .notif-title { display: block; font-weight: 700; font-size: 18px; }
 .notif-header-spacer { width: 32px; }
+.notif-mark-all-btn {
+  background: none; border: none; color: var(--accent-light); font-size: 13px;
+  font-weight: 600; cursor: pointer; padding: 6px 4px; white-space: nowrap;
+}
+.notif-mark-all-btn:hover { text-decoration: underline; }
+.notif-mark-all-btn:disabled { color: var(--text-dim); cursor: default; text-decoration: none; }
 .notif-title-wrap {
   position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -689,6 +695,26 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px;
 }
 .post-composer input, .post-composer textarea { width: 100%; font-family: inherit; resize: vertical; }
+.post-image-picker { display: flex; align-items: center; gap: 10px; }
+.post-image-preview-wrap { position: relative; display: inline-block; }
+.post-image-preview { max-width: 120px; max-height: 90px; border-radius: 8px; display: block; object-fit: cover; }
+.post-image-remove-btn {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; padding: 0;
+  border-radius: 50%; border: none; background: var(--danger, #ef4444); color: #fff;
+  font-size: 12px; line-height: 20px; cursor: pointer;
+}
+.post-attach-btn {
+  background: var(--panel-alt); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; width: fit-content;
+}
+.post-body-img { max-width: 100%; border-radius: 10px; margin-top: 8px; display: block; }
+.post-reactions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.post-react-btn {
+  display: flex; align-items: center; gap: 5px; background: var(--panel-alt);
+  border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px;
+  padding: 5px 12px; font-size: 13px; cursor: pointer;
+}
+.post-react-btn.active { background: rgba(8, 145, 178, 0.18); color: var(--accent); border-color: var(--accent); font-weight: 700; }
 #giftStoreSearchResults { display: flex; flex-direction: column; gap: 6px; }
 
 /* Command List (Explore) — "Commands" / "✨ Special" tabs */
@@ -788,3 +814,37 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 .save-settings-btn:hover { border-color: var(--accent); background: var(--panel); }
 
 .ban-row-remove { flex: none; }
+
+/* My Balance (Settings -> My Balance) — coin balance card + earned/spent
+   today + a filterable Activity feed built from the coin_transactions ledger. */
+.balance-card {
+  background: linear-gradient(135deg, #1e3a8a, #1e40af);
+  border-radius: 16px; padding: 20px; margin: 14px; color: #fff;
+}
+.balance-card-label { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: #93c5fd; text-transform: uppercase; }
+.balance-card-amount { font-size: 34px; font-weight: 800; margin-top: 4px; }
+.balance-card-sub { font-size: 12px; color: #bfdbfe; margin-top: 2px; }
+.balance-today-row {
+  display: flex; align-items: center; gap: 14px; margin-top: 16px; padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.15);
+}
+.balance-today-item { display: flex; align-items: center; gap: 8px; flex: 1; }
+.balance-today-icon {
+  width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 15px; flex-shrink: 0;
+}
+.balance-today-icon.earn { background: rgba(34,197,94,0.25); color: #4ade80; }
+.balance-today-icon.spend { background: rgba(248,113,113,0.25); color: #f87171; }
+.balance-today-value { font-weight: 700; font-size: 15px; }
+.balance-today-caption { font-size: 11px; color: #bfdbfe; }
+
+.balance-filter-tabs { display: flex; gap: 6px; padding: 0 14px 10px; flex-wrap: wrap; }
+.balance-filter-btn {
+  background: var(--panel-alt); border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text-dim); cursor: pointer;
+}
+.balance-filter-btn.active { background: var(--accent-light); border-color: var(--accent-light); color: #fff; }
+
+.balance-tx-amount { font-weight: 700; font-size: 14px; white-space: nowrap; }
+.balance-tx-amount.positive { color: #16a34a; }
+.balance-tx-amount.negative { color: #dc2626; }

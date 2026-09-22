@@ -42,11 +42,19 @@ router.get('/', requireLogin, (req, res) => {
 
 // Rooms this user has actually visited, most-recent first — for the Home
 // screen's "Current Chat Rooms" and the browser's "Recent Rooms" section.
+// ?activeOnly=1 (used by Home) restricts this to rooms the user is STILL an
+// active member of — once they explicitly Leave Room (or get kicked/bumped/
+// idle-timed-out), it drops off Home immediately instead of lingering just
+// because it's in their visit history. Room Browser's "Recent Rooms" section
+// omits that flag on purpose — it's meant for finding and rejoining a room
+// you've left before, so it keeps the full visit history.
 router.get('/recent', requireLogin, (req, res) => {
   const me = req.session.user.id;
+  const activeOnly = req.query.activeOnly === '1';
   const rows = db.prepare(`
     SELECT r.* FROM room_visits v
     JOIN rooms r ON r.id = v.room_id
+    ${activeOnly ? 'JOIN room_memberships rm ON rm.room_id = v.room_id AND rm.user_id = v.user_id AND rm.active = 1' : ''}
     WHERE v.user_id = ?
     ORDER BY v.visited_at DESC
     LIMIT 8

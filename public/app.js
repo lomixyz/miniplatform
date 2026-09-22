@@ -91,6 +91,14 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Chat text can contain simple **bold** markdown (a couple of roleplay/
+// special commands lean on it for emphasis) — escape first (so this never
+// opens an HTML injection route), then turn any **pair** into real <strong>
+// so it renders bold instead of showing the literal asterisks.
+function escapeChatText(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
 // Fixed country catalog for My Profile / Admin Panel — name + flag emoji.
 // A normal user picks from this list exactly once (POST /auth/country);
 // Staff can change anyone's pick at any time (POST /admin/users/:id/set-country).
@@ -528,7 +536,7 @@ function connectSocket() {
 // ---------- HOME SCREEN ----------
 async function refreshHome() {
   try {
-    const { rooms } = await api('/rooms/recent');
+    const { rooms } = await api('/rooms/recent?activeOnly=1');
     // Merge into allRoomsCache too — it's the shared lookup the chat screen's
     // owner/moderator banner and Room Info use, and a user can jump straight
     // into a room from this Home list without ever opening Room Browser
@@ -885,7 +893,7 @@ function appendMessage(msg) {
     // Participants panel and Members/Leaderboard screens — a role color
     // always wins, but a plain user's chosen color still shows in chat.
     const nameStyle = !cls && msg.username_color ? ` style="color:${escapeHtml(msg.username_color)}"` : '';
-    div.innerHTML = `<span class="user ${cls}"${nameStyle}>${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeHtml(msg.content)}`;
+    div.innerHTML = `<span class="user ${cls}"${nameStyle}>${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
   }
   const box = $('#messages');
   box.appendChild(div);
@@ -1292,6 +1300,16 @@ async function openAlerts() {
 }
 $('#closeAlertsBtn').addEventListener('click', () => $('#alertsOverlay').classList.add('hidden'));
 $('#alertsOverlay').addEventListener('click', (e) => { if (e.target === $('#alertsOverlay')) $('#alertsOverlay').classList.add('hidden'); });
+$('#markAllReadBtn').addEventListener('click', async () => {
+  try {
+    await api('/alerts/read-all', { method: 'POST' });
+    $$('#alertsList .notif-row').forEach((row) => row.classList.remove('unread'));
+    refreshBadgeCounts();
+    toast('All caught up!');
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 // ---------- EMAILS PANEL ----------
 async function openEmails() {
@@ -1477,7 +1495,16 @@ $('#friendsOverlay').addEventListener('click', (e) => { if (e.target === $('#fri
 // Staff search for a user by (partial) username instead of loading every
 // account — with 1000+ registered users a full dump is both unusable and
 // slow, so the table stays empty until a search is run.
-$('#closeAdminBtn').addEventListener('click', () => $('#adminModal').classList.add('hidden'));
+function closeAdminPanel() {
+  $('#adminModal').classList.add('hidden');
+  lastAdminSearch = '';
+  $('#adminUserSearchInput').value = '';
+  $('#userTableBody').innerHTML = '';
+  $('#adminSearchEmpty').textContent = 'Type a username above and press search.';
+  $('#adminSearchEmpty').classList.remove('hidden');
+}
+$('#closeAdminBtn').addEventListener('click', closeAdminPanel);
+$('#adminModal').addEventListener('click', (e) => { if (e.target.id === 'adminModal') closeAdminPanel(); });
 
 let lastAdminSearch = '';
 
@@ -2440,7 +2467,7 @@ const EMOTE_COMMANDS = [
 
 const SPECIAL_COMMANDS_LIST = [
   { cmd: '/8ball <question>', desc: 'Ask the Magic 8-Ball a yes/no question' },
-  { cmd: '/coffee', desc: 'Offer everyone in the room a cup of coffee' },
+  { cmd: '/coffee [username]', desc: 'Brew coffee for the room, or share one with a specific user' },
   { cmd: '/cupid <user1> [<user2>]', desc: 'Match two users (or yourself + one user) with a random compatibility %' },
   { cmd: '/findmymatch', desc: 'Official rooms only — get randomly paired with someone else currently in the room' },
   { cmd: '/flame <username>', desc: 'Playfully roast a user' },
@@ -2475,7 +2502,33 @@ function renderCommandList(box) {
 }
 
 // ---------- ANNOUNCEMENTS / BLOG (shared "posts" screen) ----------
+// Resizes/compresses a picked image file to a small JPEG data URL (max 900px
+// on the long edge) before it ever reaches the network — keeps a phone photo
+// from blowing well past the 6mb request body limit.
+function fileToCompressedDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read image'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Could not read image'));
+      img.onload = () => {
+        const maxSide = 900;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function renderPostsScreen(type) {
+  const isBlog = type === 'blog';
   return async function (box) {
     box.innerHTML = '<div class="empty-note">Loading…</div>';
     const draw = async () => {
@@ -2488,14 +2541,51 @@ function renderPostsScreen(type) {
           composer.innerHTML = `
             <input type="text" id="postTitleInput" placeholder="Title" maxlength="120" />
             <textarea id="postContentInput" placeholder="Write something..." rows="3" maxlength="2000"></textarea>
+            ${isBlog ? `
+              <input type="file" id="postImageInput" accept="image/*" class="hidden" />
+              <button type="button" id="postAttachBtn" class="post-attach-btn">🖼️ Add picture</button>
+              <div id="postImagePreviewWrap" class="post-image-picker hidden">
+                <div class="post-image-preview-wrap">
+                  <img id="postImagePreview" class="post-image-preview" />
+                  <button type="button" id="postImageRemoveBtn" class="post-image-remove-btn" title="Remove picture">✕</button>
+                </div>
+              </div>
+            ` : ''}
             <button id="postSubmitBtn" class="primary-btn">Post</button>
           `;
+          let pendingImage = null;
+          if (isBlog) {
+            const fileInput = composer.querySelector('#postImageInput');
+            const previewWrap = composer.querySelector('#postImagePreviewWrap');
+            const previewImg = composer.querySelector('#postImagePreview');
+            composer.querySelector('#postAttachBtn').addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', async () => {
+              const file = fileInput.files && fileInput.files[0];
+              if (!file) return;
+              try {
+                pendingImage = await fileToCompressedDataUrl(file);
+                previewImg.src = pendingImage;
+                previewWrap.classList.remove('hidden');
+              } catch (err) {
+                toast(err.message);
+              } finally {
+                fileInput.value = '';
+              }
+            });
+            composer.querySelector('#postImageRemoveBtn').addEventListener('click', () => {
+              pendingImage = null;
+              previewWrap.classList.add('hidden');
+              previewImg.src = '';
+            });
+          }
           composer.querySelector('#postSubmitBtn').addEventListener('click', async () => {
             const title = composer.querySelector('#postTitleInput').value.trim();
             const content = composer.querySelector('#postContentInput').value.trim();
             if (!title || !content) return toast('Title and content are required');
             try {
-              await api('/posts', { method: 'POST', body: JSON.stringify({ type, title, content }) });
+              const body = { type, title, content };
+              if (isBlog && pendingImage) body.image = pendingImage;
+              await api('/posts', { method: 'POST', body: JSON.stringify(body) });
               toast('Posted!');
               draw();
             } catch (err) {
@@ -2519,11 +2609,20 @@ function renderPostsScreen(type) {
           const { relative, exact } = formatAlertTime(p.created_at);
           const row = document.createElement('div');
           row.className = 'notif-row';
+          const reactionsHtml = isBlog ? `
+            <div class="post-reactions">
+              <button class="post-react-btn react-favorite ${p.my_reactions.includes('favorite') ? 'active' : ''}" data-id="${p.id}" data-kind="favorite">⭐ ${p.favorite_count}</button>
+              <button class="post-react-btn react-like ${p.my_reactions.includes('like') ? 'active' : ''}" data-id="${p.id}" data-kind="like">👍 ${p.like_count}</button>
+              <button class="post-react-btn react-dislike ${p.my_reactions.includes('dislike') ? 'active' : ''}" data-id="${p.id}" data-kind="dislike">👎 ${p.dislike_count}</button>
+            </div>
+          ` : '';
           row.innerHTML = `
             <div class="notif-icon" style="background:${type === 'announcement' ? '#3b82f6' : '#8b5cf6'}">${type === 'announcement' ? '📣' : '📰'}</div>
             <div class="notif-body">
               <div class="notif-title-line">${escapeHtml(p.title)}</div>
               <div class="post-desc">${escapeHtml(p.content)}</div>
+              ${p.image ? `<img class="post-body-img" src="${p.image}" alt="" />` : ''}
+              ${reactionsHtml}
             </div>
             <div class="notif-time">
               <div class="notif-relative">${escapeHtml(relative)}</div>
@@ -2537,6 +2636,19 @@ function renderPostsScreen(type) {
             await api(`/posts/${p.id}`, { method: 'DELETE' });
             draw();
           });
+          if (isBlog) {
+            row.querySelectorAll('.post-react-btn').forEach((btn) => {
+              btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                try {
+                  await api(`/posts/${p.id}/react`, { method: 'POST', body: JSON.stringify({ kind: btn.dataset.kind }) });
+                  draw();
+                } catch (err) {
+                  toast(err.message);
+                }
+              });
+            });
+          }
           box.appendChild(row);
         });
       } catch (err) {
@@ -2778,6 +2890,100 @@ function renderMyProfile(box) {
 }
 function openDrawerMyProfile() { openSubScreenFromDrawer('My Profile', renderMyProfile); }
 
+// Category icon/label for the Activity feed and filter tabs — must match
+// the categories db.logCoinTx writes server-side (games/gifts/transfers/other).
+const COIN_TX_CATEGORIES = [
+  { key: '', label: 'All', icon: '🪙' },
+  { key: 'games', label: 'Games', icon: '🎮' },
+  { key: 'gifts', label: 'Gifts', icon: '🎁' },
+  { key: 'transfers', label: 'Transfers', icon: '🤝' },
+  { key: 'other', label: 'Other', icon: '✨' },
+];
+let myBalanceActiveFilter = '';
+
+async function renderMyBalance(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  myBalanceActiveFilter = '';
+
+  const draw = async () => {
+    let data;
+    try {
+      const qs = myBalanceActiveFilter ? `?category=${myBalanceActiveFilter}` : '';
+      data = await api(`/coins/activity${qs}`);
+    } catch (err) {
+      box.innerHTML = '<div class="empty-note">Couldn\'t load your balance.</div>';
+      return;
+    }
+
+    box.innerHTML = '';
+
+    const card = document.createElement('div');
+    card.className = 'balance-card';
+    card.innerHTML = `
+      <div class="balance-card-label">My Balance</div>
+      <div class="balance-card-amount">🪙 ${data.coins.toLocaleString()}</div>
+      <div class="balance-card-sub">Coins</div>
+      <div class="balance-today-row">
+        <div class="balance-today-item">
+          <div class="balance-today-icon earn">↑</div>
+          <div>
+            <div class="balance-today-value">+${data.earnedToday.toLocaleString()}</div>
+            <div class="balance-today-caption">Earned today</div>
+          </div>
+        </div>
+        <div class="balance-today-item">
+          <div class="balance-today-icon spend">↓</div>
+          <div>
+            <div class="balance-today-value">-${data.spentToday.toLocaleString()}</div>
+            <div class="balance-today-caption">Spent today</div>
+          </div>
+        </div>
+      </div>
+    `;
+    box.appendChild(card);
+
+    box.appendChild(sectionLabel(`ACTIVITY${data.activity.length ? ` (${data.activity.length})` : ''}`));
+
+    const tabs = document.createElement('div');
+    tabs.className = 'balance-filter-tabs';
+    COIN_TX_CATEGORIES.forEach((c) => {
+      const btn = document.createElement('button');
+      btn.className = 'balance-filter-btn' + (myBalanceActiveFilter === c.key ? ' active' : '');
+      btn.textContent = `${c.icon} ${c.label}`;
+      btn.addEventListener('click', () => { myBalanceActiveFilter = c.key; draw(); });
+      tabs.appendChild(btn);
+    });
+    box.appendChild(tabs);
+
+    if (!data.activity.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-note';
+      empty.textContent = 'Nothing here yet.';
+      box.appendChild(empty);
+      return;
+    }
+
+    data.activity.forEach((tx) => {
+      const meta = COIN_TX_CATEGORIES.find((c) => c.key === tx.category) || COIN_TX_CATEGORIES[COIN_TX_CATEGORIES.length - 1];
+      const { relative, exact } = formatAlertTime(tx.created_at);
+      const positive = tx.delta > 0;
+      const row = document.createElement('div');
+      row.className = 'notif-row';
+      row.innerHTML = `
+        <div class="notif-icon" style="background:${positive ? '#16a34a' : '#dc2626'}">${meta.icon}</div>
+        <div class="notif-body">
+          <div class="notif-title-line">${escapeHtml(tx.description)}</div>
+          <div class="notif-relative">${escapeHtml(relative)} · ${escapeHtml(exact)}</div>
+        </div>
+        <div class="balance-tx-amount ${positive ? 'positive' : 'negative'}">${positive ? '+' : ''}${tx.delta.toLocaleString()}</div>
+      `;
+      box.appendChild(row);
+    });
+  };
+
+  draw();
+}
+
 function renderMyAccount(box) {
   box.innerHTML = `
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">${escapeHtml(currentUser.username)}</div><div class="list-row-subtitle">Your account username</div></div></div>
@@ -2828,6 +3034,7 @@ function renderSettings(box) {
 
   box.appendChild(listRow({ icon: '🎨', iconBg: '#06b6d4', title: 'Color Shop', subtitle: 'Customize your username color', onClick: () => pushSubScreen('Color Shop', renderColorShop) }));
   box.appendChild(listRow({ icon: '🧑‍🎨', iconBg: '#ef4444', title: 'Avatar Maker', subtitle: 'Customize your avatar', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
+  box.appendChild(listRow({ icon: '🪙', iconBg: '#f59e0b', title: 'My Balance', subtitle: 'Coins, earnings, and activity', onClick: () => pushSubScreen('My Balance', renderMyBalance) }));
   box.appendChild(listRow({ icon: '🪪', iconBg: '#64748b', title: 'My Account', subtitle: 'Password & account settings', onClick: () => pushSubScreen('My Account', renderMyAccount) }));
   box.appendChild(listRow({ icon: '🚪', iconBg: '#ef4444', title: 'Logout', subtitle: 'Sign out of MiniPlatform', onClick: doLogout }));
 }
@@ -2836,7 +3043,6 @@ function openDrawerSettings() { openSubScreenFromDrawer('Settings', renderSettin
 
 $('#drawerExplore').addEventListener('click', openDrawerExplore);
 $('#drawerMyProfile').addEventListener('click', openDrawerMyProfile);
-$('#drawerMyAccount').addEventListener('click', openDrawerMyAccount);
 $('#drawerBlog').addEventListener('click', openDrawerBlog);
 $('#drawerSettings').addEventListener('click', openDrawerSettings);
 

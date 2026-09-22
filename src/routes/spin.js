@@ -57,6 +57,7 @@ router.post('/play', requireLogin, (req, res) => {
   const io = req.app.get('io');
   if (prize.type === 'coins') {
     db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(prize.amount, userId);
+    db.logCoinTx(userId, prize.amount, 'other', 'Daily Spin reward');
     for (const [, s] of io.sockets.sockets) {
       if (s.data.user && s.data.user.id === userId) {
         s.emit('coins_update', { coins: row.coins + prize.amount });

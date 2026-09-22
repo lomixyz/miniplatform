@@ -36,6 +36,7 @@ router.post('/:id/buy', requireLogin, (req, res) => {
   }
 
   db.prepare('UPDATE users SET coins = coins - ?, username_color = ? WHERE id = ?').run(item.cost, item.hex, userId);
+  db.logCoinTx(userId, -item.cost, 'other', `Bought ${item.name} username color`);
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
 
   // Reflect the new color immediately for anyone else currently viewing this

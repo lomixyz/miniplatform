@@ -30,6 +30,7 @@ function claim(roomId, code, claimerUserId) {
 
   v.claimedBy = claimerUserId;
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(v.amount, claimerUserId);
+  db.logCoinTx(claimerUserId, v.amount, 'other', `Voucher pick — code ${v.code}`);
   activeVouchers.delete(roomId);
   return { ok: true, amount: v.amount, code: v.code };
 }

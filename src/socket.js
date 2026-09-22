@@ -300,7 +300,7 @@ function attachSocket(io, sessionMiddleware) {
   function activeMemberRows(roomId) {
     return db.prepare(`
       SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
-             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color
+             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.status
       FROM room_memberships rm JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? AND rm.active = 1
     `).all(roomId);
@@ -368,6 +368,7 @@ function attachSocket(io, sessionMiddleware) {
       invisible: !!invisibleByUser.get(r.id) || !!r.ghost_mode,
       ghost_mode: !!r.ghost_mode,
       online: presence.isOnline(r.id),
+      status: presence.effectiveStatus(r.id, r.status),
     }));
     presence.setRoomCount(roomId, members.length);
 
@@ -681,6 +682,7 @@ function attachSocket(io, sessionMiddleware) {
           if (multiplier <= 0) continue;
           const winnings = Math.round(amount * multiplier);
           db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(winnings, userId);
+          db.logCoinTx(userId, winnings, 'games', 'Legendary Bot win');
           emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
           const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
           legendaryBotMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${animal.label} ${animal.emoji}`);
@@ -724,6 +726,7 @@ function attachSocket(io, sessionMiddleware) {
     // burst of quick clicks can never overdraw a player's coins.
     const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(amount, user.id, amount);
     if (result.changes === 0) return { ok: false, error: "You don't have enough coins for that bet." };
+    db.logCoinTx(user.id, -amount, 'games', 'Legendary Bot bet');
     emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
 
     if (!legendaryBets.has(user.id)) legendaryBets.set(user.id, { username: user.username, byAnimal: new Map() });
@@ -768,12 +771,13 @@ function attachSocket(io, sessionMiddleware) {
     function botMessage(text) {
       postMessage(getRoomId(), { userId: null, username: botName, type: 'game_bot', content: text });
     }
-    function creditCoins(userId, amount) {
+    function creditCoins(userId, amount, description) {
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(amount, userId);
+      db.logCoinTx(userId, amount, 'games', description || `${botName} payout`);
       emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
     }
     function refundAllPlayers() {
-      for (const userId of players.keys()) creditCoins(userId, entryFee);
+      for (const userId of players.keys()) creditCoins(userId, entryFee, `${botName} entry refund`);
     }
     function clearTimer() {
       if (timer) clearTimeout(timer);
@@ -806,6 +810,7 @@ function attachSocket(io, sessionMiddleware) {
         emitToUser(user.id, 'error_message', `You need ${entryFee} coins to join.`);
         return;
       }
+      db.logCoinTx(user.id, -entryFee, 'games', `${botName} entry fee`);
       emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
       pot += entryFee;
       players.set(user.id, user.username);
@@ -870,14 +875,14 @@ function attachSocket(io, sessionMiddleware) {
         // Everyone still in was eliminated together (a full tie/sweep) — split the pot evenly rather than losing it.
         const names = [...players.values()];
         const share = Math.floor(pot / players.size);
-        for (const userId of players.keys()) creditCoins(userId, share);
+        for (const userId of players.keys()) creditCoins(userId, share, `${botName} split pot`);
         botMessage(`Everyone was eliminated at once — the pot (${pot} coins) is split evenly between ${names.join(', ')} (${share} each)!`);
         endGame();
         return;
       }
       if (survivors.size === 1) {
         const [[winnerId, winnerName]] = survivors;
-        creditCoins(winnerId, pot);
+        creditCoins(winnerId, pot, `${botName} win`);
         botMessage(`🏆 ${winnerName} wins the pot of ${pot} coins! Type !start to play again.`);
         endGame();
         return;
@@ -1322,6 +1327,12 @@ function attachSocket(io, sessionMiddleware) {
       }
 
       if (cmd === 'coffee') {
+        if (arg) {
+          const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+          if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+          const them = target.id === user.id ? me : nameWithLevel(target.id, target.username);
+          return post(`☕ ${me} shares a coffee with ${them}!`);
+        }
         return post(`☕ ${me} brews a round of coffee for the room!`);
       }
 
@@ -1415,8 +1426,10 @@ function attachSocket(io, sessionMiddleware) {
 
       db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
         .run(totalCost, totalCost, recipients.length, sender.id);
+      db.logCoinTx(sender.id, -totalCost, 'gifts', `Gift shower: ${gift.name} to ${recipients.length} people`);
       for (const r of recipients) {
         db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
+        db.logCoinTx(r.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username} (shower)`);
         awardXp(r.id, XP_REWARDS.GIFT_RECEIVED);
         // Gift showers deliberately don't create a persisted Alert (unlike a
         // direct/private gift) — a shower already announces itself loudly in
@@ -1482,6 +1495,8 @@ function attachSocket(io, sessionMiddleware) {
       db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + 1 WHERE id = ?')
         .run(gift.cost, gift.cost, sender.id);
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
+      db.logCoinTx(sender.id, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
+      db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);
 
       // Award xp first so the levels shown in the message reflect this gift's own reward.
       const senderXp = awardXp(sender.id, XP_REWARDS.GIFT_SENT);
@@ -1507,6 +1522,22 @@ function attachSocket(io, sessionMiddleware) {
       invisibleByUser.set(user.id, !!wantInvisible);
       socket.emit('invisible_state', { invisible: !!wantInvisible });
       if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
+    });
+
+    // ---- Presence status (online / away / busy) — anyone can set their own.
+    // "Offline" is never set here: it's purely a function of having no live
+    // socket at all (see presence.effectiveStatus), so it can't be chosen or
+    // faked — the moment every socket disconnects, everyone else sees you go
+    // offline regardless of what this was last set to.
+    const VALID_STATUSES = new Set(['online', 'away', 'busy']);
+    on('set_status', (wantStatus) => {
+      if (!VALID_STATUSES.has(wantStatus)) return;
+      db.prepare('UPDATE users SET status = ? WHERE id = ?').run(wantStatus, user.id);
+      socket.emit('status_state', { status: wantStatus });
+      if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
+      // Live-refresh anywhere else this user's status shows (Friends list,
+      // Home) for anyone with them open right now.
+      refreshUserPresence(user.id);
     });
 
     // ---- Room members + kick/bump/ban (Staff or Global Administrator only,

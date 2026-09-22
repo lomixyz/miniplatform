@@ -191,7 +191,43 @@ CREATE TABLE IF NOT EXISTS room_blocks (
   blocked_until TEXT NOT NULL,
   PRIMARY KEY (user_id, room_id)
 );
+
+-- Every coin-balance change, for the My Balance screen (Settings -> My
+-- Balance): a running ledger so "earned today" / "spent today" and the
+-- Activity list can be computed from real history instead of just the
+-- current total. delta is signed (positive = earned, negative = spent);
+-- category is one of 'games' | 'gifts' | 'transfers' | 'other', matching the
+-- Activity screen's filter tabs.
+CREATE TABLE IF NOT EXISTS coin_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  delta INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_coin_tx_user_time ON coin_transactions(user_id, created_at DESC);
+
+-- Reactions on a post (Blog: favorite/like/dislike). One row per
+-- user+post+kind; like and dislike are kept mutually exclusive by the route
+-- handler (inserting one deletes the other), favorite is independent so a
+-- post can be both liked and favorited at once.
+CREATE TABLE IF NOT EXISTS post_reactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL, -- 'like' | 'dislike' | 'favorite'
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(post_id, user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_post_reactions_post ON post_reactions(post_id);
 `);
+
+// Migrate older databases created before Blog posts could carry a picture.
+const postColumns = db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name);
+if (!postColumns.includes('image')) {
+  db.exec('ALTER TABLE posts ADD COLUMN image TEXT');
+}
 
 // Migrate older databases created before mentor/merchant roles existed —
 // CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
@@ -221,6 +257,7 @@ const newUserColumns = [
   ['gender', "TEXT"],             // 'male' | 'female', set at registration
   ['referrer_user_id', "INTEGER"], // id of the account that referred this signup, if any
   ['is_bot', "INTEGER NOT NULL DEFAULT 0"], // 0/1: an ambient chat account (see src/chatbots.js) — never a real login-worthy distinction, just keeps simulated chatter from ever picking a real user's account
+  ['status', "TEXT NOT NULL DEFAULT 'online'"], // 'online' | 'away' | 'busy' — the user's own chosen presence state while connected; the *effective* status shown to others is 'offline' whenever they have no live socket at all, regardless of this column (see presence.js effectiveStatus).
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
@@ -495,6 +532,18 @@ if (existingBotCount < BOT_TARGET_COUNT) {
 // existing account that doesn't have any favorites yet (an upgrade from a
 // version of this app before favorites existed).
 const DEFAULT_FAVORITE_GIFT_NAMES = ['Sudan', 'Rose', 'Heart', 'Coffee', 'Crown', 'Rocket', 'Diamond', 'Angel', 'Bhai', 'Boss'];
+// Records one line in the coin ledger — call this alongside every place that
+// changes a user's `coins` column, right after the UPDATE, so the My Balance
+// screen's earned/spent totals and Activity list stay accurate. delta is
+// signed (positive for a gain, negative for a spend); category must be one
+// of 'games' | 'gifts' | 'transfers' | 'other' (matches the Activity filter
+// tabs client-side).
+const insertCoinTx = db.prepare('INSERT INTO coin_transactions (user_id, delta, category, description) VALUES (?, ?, ?, ?)');
+db.logCoinTx = function logCoinTx(userId, delta, category, description) {
+  if (!userId || !delta) return;
+  insertCoinTx.run(userId, Math.round(delta), category, description);
+};
+
 db.seedDefaultGiftFavorites = function seedDefaultGiftFavorites(userId) {
   const insertFavorite = db.prepare('INSERT OR IGNORE INTO gift_favorites (user_id, gift_id) VALUES (?, ?)');
   const findGiftId = db.prepare('SELECT id FROM gifts_catalog WHERE name = ?');

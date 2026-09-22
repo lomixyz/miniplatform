@@ -37,4 +37,14 @@ function wasOnlineRecently(userId, graceMs) {
   return t != null && (Date.now() - t) < graceMs;
 }
 
-module.exports = { setRoomCount, getRoomCount, markOnline, markOffline, isOnline, wasOnlineRecently };
+// The status shown to everyone else: always 'offline' the instant a user has
+// no live socket at all (chosen status is irrelevant then — a disconnected
+// user can't be "away" or "busy", they're just gone), otherwise whatever
+// status they last chose ('online' | 'away' | 'busy', default 'online' —
+// see the users.status column and POST /users/status).
+function effectiveStatus(userId, chosenStatus) {
+  if (!onlineUserIds.has(userId)) return 'offline';
+  return chosenStatus === 'away' || chosenStatus === 'busy' ? chosenStatus : 'online';
+}
+
+module.exports = { setRoomCount, getRoomCount, markOnline, markOffline, isOnline, wasOnlineRecently, effectiveStatus };
