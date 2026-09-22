@@ -54,6 +54,7 @@ function publicUser(row) {
     gender: row.gender || null,
     referrer_user_id: row.referrer_user_id || null,
     created_at: row.created_at || null,
+    status: row.status === 'away' || row.status === 'busy' ? row.status : 'online',
   };
 }
 

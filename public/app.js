@@ -342,6 +342,124 @@ function roleIcon(u) {
 // roleClass() already resolves the Staff-only-exception priority above, so
 // this just applies whichever wins — the role badge/icon always shows
 // regardless, since it's a separate permission indicator from the color.
+// Maps a 4-state presence value ('online' | 'away' | 'busy' | 'offline') to
+// the .status-dot modifier class — '' (plain green) for 'online'.
+function statusDotClass(status) {
+  return status === 'offline' || status === 'away' || status === 'busy' ? status : '';
+}
+const STATUS_LABELS = { online: 'Online', away: 'Away', busy: 'Busy' };
+
+// ---------- LEVEL SCREEN (tap the ⚡ level badge on Home) ----------
+const LEVEL_TIERS = [
+  { min: 1, max: 9, name: 'Newcomer' },
+  { min: 10, max: 19, name: 'Rookie' },
+  { min: 20, max: 34, name: 'Skilled' },
+  { min: 35, max: 49, name: 'Expert' },
+  { min: 50, max: 74, name: 'Master' },
+  { min: 75, max: 99, name: 'Elite' },
+  { min: 100, max: 149, name: 'Legend' },
+  { min: 150, max: 199, name: 'Mythic' },
+  { min: 200, max: Infinity, name: 'Immortal' },
+];
+function tierForLevel(level) {
+  return LEVEL_TIERS.find((t) => level >= t.min && level <= t.max) || LEVEL_TIERS[LEVEL_TIERS.length - 1];
+}
+
+const LEVEL_MILESTONES = [
+  { level: 10, icon: '🥉', name: 'Bronze badge' },
+  { level: 20, icon: '🥈', name: 'Silver badge' },
+  { level: 30, icon: '🥇', name: 'Gold badge' },
+  { level: 40, icon: '🖼️', name: 'Avatar frame' },
+  { level: 50, icon: '👑', name: 'VIP perks' },
+  { level: 60, icon: '⭐', name: 'Legend status' },
+  { level: 75, icon: '💎', name: 'Elite status' },
+  { level: 100, icon: '🏆', name: 'Centurion' },
+  { level: 150, icon: '🌟', name: 'Icon status' },
+  { level: 200, icon: '👑', name: 'Royalty' },
+  { level: 300, icon: '🛡️', name: 'Titan' },
+  { level: 500, icon: '🌌', name: 'Mythic status' },
+  { level: 750, icon: '⚡', name: 'Immortal' },
+  { level: 1000, icon: '🏛️', name: 'Hall of Fame' },
+];
+
+// Current-level tile, an always-present "next level" tile (a themed
+// milestone if the very next level happens to be one, otherwise a generic
+// name-badge refresh), then up to 5 further milestones ahead.
+function levelRoadmapTiles(level) {
+  const tiles = [{ level, current: true }];
+  const next = level + 1;
+  const nextMilestone = LEVEL_MILESTONES.find((m) => m.level === next);
+  if (nextMilestone) {
+    tiles.push({ level: next, icon: nextMilestone.icon, name: nextMilestone.name });
+  } else {
+    tiles.push({ level: next, icon: '🎖️', name: 'New name badge', desc: 'A fresh badge shows next to your name' });
+  }
+  LEVEL_MILESTONES.filter((m) => m.level > next).slice(0, 5).forEach((m) => {
+    tiles.push({ level: m.level, icon: m.icon, name: m.name });
+  });
+  return tiles;
+}
+
+function renderLevelScreen(box) {
+  const level = currentUser.level;
+  const into = currentUser.xpIntoLevel || 0;
+  const need = currentUser.xpForNextLevel || 1;
+  const pct = Math.max(0, Math.min(100, Math.round((into / need) * 100)));
+  const tier = tierForLevel(level);
+  const tiles = levelRoadmapTiles(level);
+  const nextTile = tiles[1];
+
+  const radius = 80;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - pct / 100);
+
+  box.innerHTML = `
+    <div class="level-ring-wrap">
+      <div class="level-ring">
+        <svg width="180" height="180" viewBox="0 0 180 180">
+          <circle cx="90" cy="90" r="${radius}" fill="none" stroke="var(--panel-alt)" stroke-width="10" />
+          <circle cx="90" cy="90" r="${radius}" fill="none" stroke="#f59e0b" stroke-width="10" stroke-linecap="round"
+            stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
+        </svg>
+        <div class="level-ring-center">
+          <div class="level-ring-number">${level}</div>
+          <div class="level-ring-label">Level</div>
+          <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
+        </div>
+      </div>
+    </div>
+    <div class="level-progress-row">
+      <span class="level-progress-pct">${pct}%</span>
+      <span style="color:var(--text-dim); font-size:13px;"> · ${100 - pct}% to go</span>
+      <div class="level-progress-caption">Progress to level ${level + 1}</div>
+    </div>
+    <div class="level-roadmap-title">Level roadmap</div>
+    <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
+    <div class="level-next-reward-card">
+      <div class="level-next-reward-icon">${nextTile.icon}</div>
+      <div>
+        <div class="level-next-reward-title">${escapeHtml(nextTile.name)}</div>
+        <div class="level-next-reward-sub">${escapeHtml(nextTile.desc || `Unlocks at level ${nextTile.level}`)}</div>
+      </div>
+      <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
+    </div>
+  `;
+
+  const scroll = box.querySelector('#levelRoadmapScroll');
+  tiles.forEach((t) => {
+    const tile = document.createElement('div');
+    tile.className = 'level-milestone-tile' + (t.current ? ' current' : '');
+    tile.innerHTML = `
+      <div class="level-milestone-number">${t.level}</div>
+      <div class="level-milestone-label">${t.current ? 'Current' : 'Lv'}</div>
+      <div class="level-milestone-icon">${t.current ? '📍' : t.icon}</div>
+      <div class="level-milestone-name">${t.current ? 'You are here' : escapeHtml(t.name)}</div>
+    `;
+    scroll.appendChild(tile);
+  });
+}
+$('#profileLevelBadge').addEventListener('click', () => pushSubScreen('Level', renderLevelScreen));
+
 function usernameHtml(u) {
   const cls = roleClass(u);
   if (cls) return `<span class="${cls}">${escapeHtml(u.username)}</span>${roleIcon(u)}`;
@@ -360,6 +478,13 @@ function updateUserBar() {
   $('#profileLevelBadge').textContent = `⚡ ${currentUser.level}`;
   $('#profileBio').textContent = currentUser.bio || 'No bio yet.';
 
+  // Own status dot (Home profile card): always shown as your *chosen* status
+  // (never 'offline' — you can't be offline while looking at this), and
+  // tappable to change it.
+  const ownDot = $('#profileStatusDot');
+  ownDot.className = 'status-dot own ' + statusDotClass(currentUser.status);
+  ownDot.title = `${STATUS_LABELS[currentUser.status] || 'Online'} — tap to change`;
+
   const into = currentUser.xpIntoLevel || 0;
   const need = currentUser.xpForNextLevel || 1;
   const pct = Math.max(2, Math.min(100, Math.round((into / need) * 100)));
@@ -373,6 +498,43 @@ function updateUserBar() {
   $('#drawerXp').textContent = currentUser.xp;
   $('#drawerCoins').textContent = currentUser.coins;
 }
+
+// Small floating menu anchored under the Home profile card's status dot —
+// Online / Away / Busy (never "Offline": that's automatic, see
+// presence.effectiveStatus). Picking one calls the server via 'set_status';
+// the 'status_state' listener above applies the confirmed value.
+function openStatusPicker(anchorEl) {
+  document.querySelectorAll('.status-picker-menu').forEach((m) => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'status-picker-menu';
+  const rect = anchorEl.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.left = `${rect.left}px`;
+  ['online', 'away', 'busy'].forEach((status) => {
+    const opt = document.createElement('div');
+    opt.className = 'status-picker-option' + (currentUser.status === status ? ' selected' : '');
+    opt.innerHTML = `<span class="status-dot ${statusDotClass(status)}"></span> ${STATUS_LABELS[status]}`;
+    opt.addEventListener('click', () => {
+      socket.emit('set_status', status);
+      menu.remove();
+    });
+    menu.appendChild(opt);
+  });
+  document.body.appendChild(menu);
+  setTimeout(() => {
+    document.addEventListener('click', function closeOnce(e) {
+      if (!menu.contains(e.target) && e.target !== anchorEl) {
+        menu.remove();
+        document.removeEventListener('click', closeOnce);
+      }
+    });
+  }, 0);
+}
+$('#profileStatusDot').addEventListener('click', (e) => {
+  e.stopPropagation();
+  openStatusPicker(e.currentTarget);
+});
 
 // ---------- NAVIGATION ----------
 function showScreen(name) {
@@ -462,6 +624,11 @@ function connectSocket() {
   socket.on('invisible_state', ({ invisible }) => {
     isInvisible = invisible;
     toast(invisible ? '👻 You are now invisible in this room' : '👁️ You are visible again');
+  });
+
+  socket.on('status_state', ({ status }) => {
+    currentUser.status = status;
+    updateUserBar();
   });
 
   // Room silence (/silence, /unsilence — see socket.js). The system_message
@@ -568,7 +735,7 @@ async function refreshHome() {
         row.innerHTML = `
           <div class="avatar-circle small" style="background:${colorFor(f.username)}">${escapeHtml((f.username || '?').charAt(0).toUpperCase())}</div>
           <span>${escapeHtml(f.username)}</span>
-          <span class="status-dot ${f.online ? '' : 'offline'}"></span>`;
+          <span class="status-dot ${statusDotClass(f.status)}" title="${STATUS_LABELS[f.status] || 'Offline'}"></span>`;
         row.title = `Message ${f.username}`;
         row.addEventListener('click', () => { openEmails(); openEmailThread(f.username); });
         box.appendChild(row);
@@ -1211,7 +1378,7 @@ function renderRoomMembers(members) {
     const nameStyle = !roleClass(m) && m.username_color ? ` style="color:${escapeHtml(m.username_color)}"` : '';
     row.innerHTML = `
       <div class="avatar-circle small" style="background:${colorFor(m.username)}">${escapeHtml(m.username.charAt(0).toUpperCase())}</div>
-      <span class="status-dot ${m.online ? '' : 'offline'}" title="${m.online ? 'Online' : 'Offline — still in the room'}"></span>
+      <span class="status-dot ${statusDotClass(m.status)}" title="${m.status === 'offline' ? 'Offline — still in the room' : (STATUS_LABELS[m.status] || 'Online')}"></span>
       <span class="${roleClass(m)}"${nameStyle}>${escapeHtml(m.username)}</span>
       <span class="level-badge">Lv.${m.level}</span>
       <span class="role-badge-icon">${roleIcon(m)}</span>
@@ -1450,7 +1617,7 @@ async function renderFriendsPanel() {
         row.innerHTML = `
           <div class="avatar-circle small" style="background:${colorFor(f.username)}">${escapeHtml(f.username.charAt(0).toUpperCase())}</div>
           <span>${escapeHtml(f.username)}</span>
-          <span class="status-dot ${f.online ? '' : 'offline'}"></span>`;
+          <span class="status-dot ${statusDotClass(f.status)}" title="${STATUS_LABELS[f.status] || 'Offline'}"></span>`;
         const msgBtn = document.createElement('button');
         msgBtn.className = 'secondary';
         msgBtn.textContent = '✉️';
@@ -2889,6 +3056,7 @@ function renderMyProfile(box) {
   }
 }
 function openDrawerMyProfile() { openSubScreenFromDrawer('My Profile', renderMyProfile); }
+function openDrawerMyBalance() { openSubScreenFromDrawer('My Balance', renderMyBalance); }
 
 // Category icon/label for the Activity feed and filter tabs — must match
 // the categories db.logCoinTx writes server-side (games/gifts/transfers/other).
@@ -3034,7 +3202,6 @@ function renderSettings(box) {
 
   box.appendChild(listRow({ icon: '🎨', iconBg: '#06b6d4', title: 'Color Shop', subtitle: 'Customize your username color', onClick: () => pushSubScreen('Color Shop', renderColorShop) }));
   box.appendChild(listRow({ icon: '🧑‍🎨', iconBg: '#ef4444', title: 'Avatar Maker', subtitle: 'Customize your avatar', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
-  box.appendChild(listRow({ icon: '🪙', iconBg: '#f59e0b', title: 'My Balance', subtitle: 'Coins, earnings, and activity', onClick: () => pushSubScreen('My Balance', renderMyBalance) }));
   box.appendChild(listRow({ icon: '🪪', iconBg: '#64748b', title: 'My Account', subtitle: 'Password & account settings', onClick: () => pushSubScreen('My Account', renderMyAccount) }));
   box.appendChild(listRow({ icon: '🚪', iconBg: '#ef4444', title: 'Logout', subtitle: 'Sign out of MiniPlatform', onClick: doLogout }));
 }
@@ -3043,6 +3210,7 @@ function openDrawerSettings() { openSubScreenFromDrawer('Settings', renderSettin
 
 $('#drawerExplore').addEventListener('click', openDrawerExplore);
 $('#drawerMyProfile').addEventListener('click', openDrawerMyProfile);
+$('#drawerMyBalance').addEventListener('click', openDrawerMyBalance);
 $('#drawerBlog').addEventListener('click', openDrawerBlog);
 $('#drawerSettings').addEventListener('click', openDrawerSettings);
 

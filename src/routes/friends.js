@@ -36,7 +36,7 @@ router.get('/', requireLogin, (req, res) => {
   `).all(me);
 
   res.json({
-    friends: accepted.map((u) => ({ ...publicUser(u), friendship_id: u.friendship_id, online: presence.isOnline(u.id) })),
+    friends: accepted.map((u) => ({ ...publicUser(u), friendship_id: u.friendship_id, online: presence.isOnline(u.id), status: presence.effectiveStatus(u.id, u.status) })),
     incoming: incoming.map((u) => ({ ...publicUser(u), friendship_id: u.friendship_id })),
     outgoing: outgoing.map((u) => ({ ...publicUser(u), friendship_id: u.friendship_id })),
   });
