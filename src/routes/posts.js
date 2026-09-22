@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { requireLogin, requireFlag } = require('../auth');
+const { requireLogin } = require('../auth');
 
 const router = express.Router();
 
@@ -20,19 +20,24 @@ function withReactions(posts, userId) {
   }));
 }
 
-// Announcements and Blog are the same mechanism (a Staff-authored post) with
-// a different label/feed — matches the Explore hub having both as separate
-// cards, backed by one 'posts' table with a type column. Blog posts can also
-// carry a picture and take reactions (favorite/like/dislike); Announcements
-// don't use either, but the columns are harmless to leave empty for them.
+// Announcements and Blog share one 'posts' table (a type column tells them
+// apart) but have different authorship rules: Announcements are an official
+// Staff-only channel, while the Blog is open to every user — anyone can
+// post, and can take down their own post; Staff can still remove any post
+// in either feed. Blog posts can also carry a picture and take reactions
+// (favorite/like/dislike); Announcements don't use either, but the columns
+// are harmless to leave empty for them.
 router.get('/', requireLogin, (req, res) => {
   const type = req.query.type === 'blog' ? 'blog' : 'announcement';
   const posts = db.prepare('SELECT * FROM posts WHERE type = ? ORDER BY id DESC LIMIT 50').all(type);
   res.json({ posts: withReactions(posts, req.session.user.id) });
 });
 
-router.post('/', requireFlag('staff'), (req, res) => {
+router.post('/', requireLogin, (req, res) => {
   const type = req.body && req.body.type === 'blog' ? 'blog' : 'announcement';
+  if (type === 'announcement' && !req.session.user.is_staff) {
+    return res.status(403).json({ error: 'Only Staff can post an Announcement' });
+  }
   const title = String((req.body && req.body.title) || '').trim().slice(0, 140);
   const content = String((req.body && req.body.content) || '').trim().slice(0, 4000);
   if (!title || !content) return res.status(400).json({ error: 'Title and content are required' });
@@ -53,8 +58,19 @@ router.post('/', requireFlag('staff'), (req, res) => {
   res.json({ post: withReactions([post], req.session.user.id)[0] });
 });
 
-router.delete('/:id', requireFlag('staff'), (req, res) => {
+// Staff can remove any post in either feed; a Blog post can also be removed
+// by whoever wrote it (Announcements stay Staff-only to delete too, same as
+// to create).
+router.delete('/:id', requireLogin, (req, res) => {
   const id = Number(req.params.id);
+  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  const isOwnBlogPost = post.type === 'blog' && post.created_by === req.session.user.username;
+  if (!req.session.user.is_staff && !isOwnBlogPost) {
+    return res.status(403).json({ error: 'Forbidden: insufficient privileges' });
+  }
+
   db.prepare('DELETE FROM post_reactions WHERE post_id = ?').run(id);
   db.prepare('DELETE FROM posts WHERE id = ?').run(id);
   res.json({ ok: true });

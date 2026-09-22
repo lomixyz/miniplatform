@@ -1,5 +1,9 @@
 const { levelFromXp } = require('./level');
 
+// A purchased Color Shop color is locked in (can't be reset/replaced) for
+// this many days from the purchase timestamp — see routes/colors.js.
+const COLOR_LOCK_DAYS = 30;
+
 function requireLogin(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: 'Not logged in' });
   next();
@@ -19,6 +23,18 @@ function requireFlag(...flags) {
     if (!ok) return res.status(403).json({ error: 'Forbidden: insufficient privileges' });
     next();
   };
+}
+
+// Returns an ISO timestamp string while a purchased username color is still
+// locked (< COLOR_LOCK_DAYS since it was bought), or null once it's free to
+// change again / was never bought. Purely a read — routes/colors.js does the
+// actual enforcement, this just lets the client show "locked until X".
+function colorLockedUntil(boughtAt) {
+  if (!boughtAt) return null;
+  const boughtMs = new Date(boughtAt.replace(' ', 'T') + 'Z').getTime();
+  if (!Number.isFinite(boughtMs)) return null;
+  const unlockMs = boughtMs + COLOR_LOCK_DAYS * 24 * 60 * 60 * 1000;
+  return unlockMs > Date.now() ? new Date(unlockMs).toISOString() : null;
 }
 
 // Shape a raw DB user row into what's safe/useful to send to the client,
@@ -55,7 +71,8 @@ function publicUser(row) {
     referrer_user_id: row.referrer_user_id || null,
     created_at: row.created_at || null,
     status: row.status === 'away' || row.status === 'busy' ? row.status : 'online',
+    username_color_locked_until: colorLockedUntil(row.username_color_bought_at),
   };
 }
 
-module.exports = { requireLogin, requireFlag, publicUser, FLAG_MAP };
+module.exports = { requireLogin, requireFlag, publicUser, FLAG_MAP, COLOR_LOCK_DAYS, colorLockedUntil };

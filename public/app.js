@@ -1875,7 +1875,16 @@ function openGiveCoins() {
   $('#coinsUserSearchInput').focus();
   if (lastCoinsSearch) runCoinsSearch();
 }
-$('#closeGiveCoinsBtn').addEventListener('click', () => $('#giveCoinsModal').classList.add('hidden'));
+function closeGiveCoins() {
+  $('#giveCoinsModal').classList.add('hidden');
+  lastCoinsSearch = '';
+  $('#coinsUserSearchInput').value = '';
+  $('#coinsTableBody').innerHTML = '';
+  $('#coinsSearchEmpty').textContent = 'Type a username above and press search.';
+  $('#coinsSearchEmpty').classList.remove('hidden');
+}
+$('#closeGiveCoinsBtn').addEventListener('click', closeGiveCoins);
+$('#giveCoinsModal').addEventListener('click', (e) => { if (e.target.id === 'giveCoinsModal') closeGiveCoins(); });
 
 async function runCoinsSearch() {
   const q = $('#coinsUserSearchInput').value.trim();
@@ -1897,6 +1906,11 @@ async function runCoinsSearch() {
       return;
     }
     empty.classList.add('hidden');
+    // Staff can hand out much larger amounts than Mentor/Merchant — mirrors
+    // the server-side cap in POST /coins/:id/give (100,000,000 for Staff or
+    // Global Admin, 100,000 for everyone else who can reach this screen).
+    const maxGive = (currentUser.is_staff || currentUser.is_global_admin) ? 100000000 : 100000;
+    const bigPreset = maxGive >= 1000000 ? 1000000 : 10000;
     users.forEach((u) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -1906,9 +1920,9 @@ async function runCoinsSearch() {
         <td>${u.coins}</td>
         <td>
           <div class="level-control">
-            <input type="number" class="coins-amount-input" data-id="${u.id}" placeholder="Amount" min="1" max="100000" style="width:90px;" />
+            <input type="number" class="coins-amount-input" data-id="${u.id}" placeholder="Amount" min="1" max="${maxGive}" style="width:110px;" />
             <button type="button" class="give-coins-btn" data-id="${u.id}">Give</button>
-            <button type="button" class="give-coins-preset-btn" data-id="${u.id}" data-amount="10000" title="Give 10000 coins in one tap">+10000</button>
+            <button type="button" class="give-coins-preset-btn" data-id="${u.id}" data-amount="${bigPreset}" title="Give ${bigPreset.toLocaleString('en-US')} coins in one tap">+${bigPreset.toLocaleString('en-US')}</button>
           </div>
         </td>
       `;
@@ -1919,6 +1933,7 @@ async function runCoinsSearch() {
         const input = document.querySelector(`.coins-amount-input[data-id="${btn.dataset.id}"]`);
         const amount = Math.round(Number(input.value));
         if (!amount || amount < 1) return toast('Enter a valid amount');
+        if (amount > maxGive) return toast(`Amount must be at most ${maxGive.toLocaleString('en-US')}`);
         await giveCoinsToUser(btn.dataset.id, amount);
         input.value = '';
       });
@@ -2174,6 +2189,20 @@ async function renderColorShop(box) {
     const { catalog } = await api('/colors');
     box.innerHTML = '';
     box.appendChild(sectionLabel(`YOUR COINS: ${currentUser.coins} 🪙`));
+
+    // A purchased color is locked in for 30 days from purchase — Buy (on
+    // any other color) and Reset are both disabled until it passes, so
+    // buying colors can't be used to game the coin economy by flipping
+    // straight back for a refund-equivalent reset.
+    const lockedUntil = currentUser.username_color_locked_until ? new Date(currentUser.username_color_locked_until) : null;
+    if (lockedUntil) {
+      const daysLeft = Math.max(1, Math.ceil((lockedUntil.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+      const lockNote = document.createElement('div');
+      lockNote.className = 'color-lock-note';
+      lockNote.textContent = `🔒 Your color is locked in for ${daysLeft} more day${daysLeft === 1 ? '' : 's'} — you can switch or reset it after that.`;
+      box.appendChild(lockNote);
+    }
+
     catalog.forEach((c) => {
       const owned = currentUser.username_color === c.hex;
       const row = document.createElement('div');
@@ -2182,9 +2211,14 @@ async function renderColorShop(box) {
         <div class="color-shop-swatch" style="background:${c.hex}"></div>
         <div class="list-row-body">
           <div class="list-row-title" style="color:${c.hex}">${escapeHtml(c.name)}</div>
-          <div class="list-row-subtitle">${c.cost} 🪙</div>
+          <div class="list-row-subtitle">
+            ${currentUser.is_staff ? `
+              <input type="number" class="color-price-input" data-id="${c.id}" value="${c.cost}" min="1" max="1000000" />
+              <button type="button" class="color-price-save-btn" data-id="${c.id}">Save</button>
+            ` : `${c.cost} 🪙`}
+          </div>
         </div>
-        <button class="color-buy-btn" ${owned ? 'disabled' : ''}>${owned ? 'Equipped' : 'Buy'}</button>
+        <button class="color-buy-btn" ${owned || lockedUntil ? 'disabled' : ''}>${owned ? 'Equipped' : 'Buy'}</button>
       `;
       row.querySelector('.color-buy-btn').addEventListener('click', async () => {
         try {
@@ -2197,17 +2231,35 @@ async function renderColorShop(box) {
           toast(err.message);
         }
       });
+      const saveBtn = row.querySelector('.color-price-save-btn');
+      if (saveBtn) saveBtn.addEventListener('click', async () => {
+        const input = row.querySelector('.color-price-input');
+        const cost = Math.round(Number(input.value));
+        if (!cost || cost < 1) return toast('Enter a valid price');
+        try {
+          await api(`/colors/${c.id}/price`, { method: 'POST', body: JSON.stringify({ cost }) });
+          toast(`${c.name} price updated`);
+          renderColorShop(box);
+        } catch (err) {
+          toast(err.message);
+        }
+      });
       box.appendChild(row);
     });
     const resetRow = document.createElement('button');
     resetRow.className = 'primary-btn';
     resetRow.style.marginTop = '12px';
     resetRow.textContent = 'Reset to default color';
+    resetRow.disabled = !!lockedUntil;
     resetRow.addEventListener('click', async () => {
-      const { user } = await api('/colors/reset', { method: 'POST' });
-      currentUser = user;
-      updateUserBar();
-      renderColorShop(box);
+      try {
+        const { user } = await api('/colors/reset', { method: 'POST' });
+        currentUser = user;
+        updateUserBar();
+        renderColorShop(box);
+      } catch (err) {
+        toast(err.message);
+      }
     });
     box.appendChild(resetRow);
   } catch (err) {
@@ -2702,7 +2754,10 @@ function renderPostsScreen(type) {
       try {
         const { posts } = await api(`/posts?type=${type}`);
         box.innerHTML = '';
-        if (currentUser.is_staff) {
+        // Blog is open to every logged-in user; Announcements stay a
+        // Staff-only official channel — same split the server enforces.
+        const canCompose = isBlog || currentUser.is_staff;
+        if (canCompose) {
           const composer = document.createElement('div');
           composer.className = 'post-composer';
           composer.innerHTML = `
@@ -2787,6 +2842,7 @@ function renderPostsScreen(type) {
             <div class="notif-icon" style="background:${type === 'announcement' ? '#3b82f6' : '#8b5cf6'}">${type === 'announcement' ? '📣' : '📰'}</div>
             <div class="notif-body">
               <div class="notif-title-line">${escapeHtml(p.title)}</div>
+              ${isBlog ? `<div class="post-byline">by ${escapeHtml(p.created_by)}</div>` : ''}
               <div class="post-desc">${escapeHtml(p.content)}</div>
               ${p.image ? `<img class="post-body-img" src="${p.image}" alt="" />` : ''}
               ${reactionsHtml}
@@ -2794,7 +2850,7 @@ function renderPostsScreen(type) {
             <div class="notif-time">
               <div class="notif-relative">${escapeHtml(relative)}</div>
               <div class="notif-exact">${escapeHtml(exact)}</div>
-              ${currentUser.is_staff ? '<button class="post-delete-btn" title="Delete">🗑️</button>' : ''}
+              ${(currentUser.is_staff || (isBlog && p.created_by === currentUser.username)) ? '<button class="post-delete-btn" title="Delete">🗑️</button>' : ''}
             </div>
           `;
           const delBtn = row.querySelector('.post-delete-btn');

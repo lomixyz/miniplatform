@@ -544,6 +544,7 @@ body::after {
 /* Announcements/Blog post bodies can be long (up to 2000 chars) — unlike a
    short Alert description, these must wrap and show in full, never truncate. */
 .post-desc { color: var(--text-dim); font-size: 13px; margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
+.post-byline { color: var(--text-dim); font-size: 11px; margin-top: 1px; }
 .notif-time { flex: none; text-align: right; }
 .notif-relative { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 .notif-exact { font-size: 11px; color: var(--text-dim); opacity: 0.7; white-space: nowrap; margin-top: 2px; }
@@ -581,16 +582,19 @@ body::after {
 .friend-request-row .username { flex: 1; font-weight: 600; }
 .friend-request-row button { padding: 4px 10px; font-size: 12px; }
 
-/* Admin panel */
-#adminModal {
+/* Admin panel + Give Coins — both are a full-screen overlay (.modal-overlay)
+   wrapping a centered card (.modal-panel). Shared classes so every such
+   popup gets the same positioning/close behavior automatically instead of
+   each one needing its own copy-pasted (and easy to forget) CSS rule. */
+.modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
-#adminPanel {
+.modal-panel {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 20px; width: 600px; max-height: 80vh; overflow-y: auto;
 }
-#adminPanel h2 { margin-top: 0; }
+.modal-panel h2 { margin-top: 0; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
 
@@ -724,6 +728,17 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 }
 .color-shop-swatch { width: 32px; height: 32px; border-radius: 50%; flex: none; border: 2px solid rgba(255,255,255,0.2); }
 .color-buy-btn { flex: none; padding: 6px 12px; font-size: 12px; }
+.color-buy-btn:disabled, .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; background: var(--text-dim); }
+.color-lock-note {
+  background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; color: #b45309;
+  border-radius: 10px; padding: 10px 12px; font-size: 12px; font-weight: 600; margin-bottom: 10px;
+}
+:root[data-theme="dark"] .color-lock-note { color: #fbbf24; }
+.color-price-input {
+  width: 70px; font-size: 12px; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel-alt); color: var(--text);
+}
+.color-price-save-btn { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
 
 /* Avatar Maker */
 .avatar-maker-preview {

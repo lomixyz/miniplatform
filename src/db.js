@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS gifts_catalog (
   cost INTEGER NOT NULL
 );
 
+-- Color Shop catalog (Settings -> Color Shop). Was a hard-coded array in
+-- routes/colors.js; now a real table so Staff can change a color's price
+-- (POST /colors/:id/price) without a code change/redeploy. Kept a TEXT id
+-- (the old catalog's short slugs: 'sunset', 'ocean', ...) so nothing else
+-- that might reference a color by id breaks.
+CREATE TABLE IF NOT EXISTS color_catalog (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  hex TEXT NOT NULL,
+  cost INTEGER NOT NULL
+);
+
 -- Each user's own quick-send gift bar (shown in the chat room's gift row) —
 -- capped at 10 (enforced in the route), so the bar stays a short, glanceable
 -- strip instead of every gift in the catalog. Picked from the full catalog
@@ -258,6 +270,7 @@ const newUserColumns = [
   ['referrer_user_id', "INTEGER"], // id of the account that referred this signup, if any
   ['is_bot', "INTEGER NOT NULL DEFAULT 0"], // 0/1: an ambient chat account (see src/chatbots.js) — never a real login-worthy distinction, just keeps simulated chatter from ever picking a real user's account
   ['status', "TEXT NOT NULL DEFAULT 'online'"], // 'online' | 'away' | 'busy' — the user's own chosen presence state while connected; the *effective* status shown to others is 'offline' whenever they have no live socket at all, regardless of this column (see presence.js effectiveStatus).
+  ['username_color_bought_at', 'TEXT'], // when the current username_color was purchased from the Color Shop — a purchased color can't be reset/replaced for 30 days from this timestamp (see routes/colors.js COLOR_LOCK_DAYS). NULL means no active lock (never bought one, or it already expired).
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
@@ -380,6 +393,25 @@ if (giftCount === 0) {
   insertGift.run('Angel', '👼', 300);
   insertGift.run('Bhai', '🫂', 80);
   insertGift.run('Boss', '🤵', 400);
+}
+
+// Seed the Color Shop catalog once (id, name, hex, starting cost — the same
+// values the old hard-coded array used). Only inserted if the row is
+// missing, so a price a Staff member later changes is never stomped back to
+// this default on the next boot.
+const COLOR_CATALOG_SEED = [
+  ['sunset', 'Sunset Orange', '#f97316', 200],
+  ['ocean', 'Ocean Teal', '#14b8a6', 200],
+  ['violet', 'Royal Violet', '#8b5cf6', 300],
+  ['rose', 'Rose Pink', '#f43f5e', 300],
+  ['lime', 'Electric Lime', '#84cc16', 400],
+  ['gold', 'Champion Gold', '#eab308', 500],
+  ['ice', 'Ice Blue', '#38bdf8', 500],
+  ['chrome', 'Chrome Silver', '#cbd5e1', 750],
+];
+const insertColorIfMissing = db.prepare('INSERT OR IGNORE INTO color_catalog (id, name, hex, cost) VALUES (?, ?, ?, ?)');
+for (const [id, name, hex, cost] of COLOR_CATALOG_SEED) {
+  insertColorIfMissing.run(id, name, hex, cost);
 }
 
 // Seed a themed gift for every country in the app's country list (the same
