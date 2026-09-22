@@ -21,3 +21,4 @@ public/uploads/*
 # Litestream binary — downloaded fresh by scripts/install-litestream.sh on
 # every Render build (see package.json "build" script), not committed.
 /bin/
+litestream-update.bundle
