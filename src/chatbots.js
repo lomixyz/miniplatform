@@ -71,6 +71,123 @@ const REPLY_BANK = [
   (name) => `for sure, ${name}`,
 ];
 
+// Arabic mirror of REPLY_BANK, used in the 17 Arabic-speaking-country rooms
+// (see ARABIC_ROOM_NAMES below) — plain, widely-understood Arabic rather
+// than a single country's slang, so it reads naturally across all of them.
+const ARABIC_REPLY_BANK = [
+  (name) => `والله صدق يا ${name}؟`,
+  () => 'نفس الشي عندي بصراحة',
+  (name) => `${name} دايم تقول كذا 😂`,
+  () => 'ايه صح، بالضبط كذا حاسس',
+  (name) => `تسلم يا ${name}`,
+  () => 'هههه صح',
+  (name) => `${name} حاطني معاكم`,
+  () => 'تمام، يعطيك العافية',
+  () => 'هههه ايه لاحظت نفس الشي',
+  (name) => `${name} كلامك صح فعلا`,
+  () => 'بالضبط',
+  (name) => `اكيد يا ${name}`,
+];
+
+// 17 Arabic-speaking-country rooms (one per country — see COUNTRIES in
+// public/app.js) — every other room, including the three custom banks
+// above and every other country, stays in English.
+const ARABIC_ROOM_NAMES = new Set([
+  'Sudan', 'Egypt', 'Morocco', 'Saudi Arabia', 'United Arab Emirates', 'Qatar',
+  'Kuwait', 'Jordan', 'Lebanon', 'Iraq', 'Algeria', 'Tunisia', 'Libya', 'Oman',
+  'Bahrain', 'Yemen', 'Syria',
+]);
+
+// Combinatorial small-talk generation: a small set of templates × a larger
+// set of subjects gives thousands of natural-reading unique lines without
+// hand-writing each one. Used as the default bank for every room that isn't
+// one of the three custom ones above (Lobby / UNO Arena / Chill Zone).
+function buildTopicBank(templates, subjects) {
+  return templates.flatMap((t) => subjects.map((s) => t.replace('{topic}', s)));
+}
+
+const ENGLISH_TOPIC_TEMPLATES = [
+  "anyone up for talking about {topic} today?",
+  "so what's everyone's take on {topic}?",
+  'been thinking about {topic} lately, anyone else?',
+  "quick question — who else is into {topic}?",
+  '{topic} has been on my mind all day',
+  "what's the best thing about {topic} in your opinion?",
+  'not gonna lie, I could talk about {topic} for hours',
+  'does anyone here actually follow {topic}?',
+  'just saw something about {topic}, thoughts?',
+  "who's got recommendations for {topic}?",
+  'honestly {topic} is underrated',
+  'is it just me or is {topic} getting more popular lately?',
+  'what got you into {topic} in the first place?',
+  '{topic} kind of person here, anyone else?',
+  'so random question, favorite thing about {topic}?',
+  'anyone want to chat about {topic} for a bit?',
+  'curious what people think about {topic}',
+  '{topic} is such a good way to pass the time',
+  "who else spends way too much time on {topic}",
+  "what's your history with {topic}?",
+  'been getting more into {topic} recently',
+  'any {topic} fans in here?',
+  "let's talk {topic} for a sec",
+  "what's a good {topic} tip for beginners?",
+  'does {topic} interest anyone else here?',
+  'so I tried something new with {topic} today',
+  '{topic} always puts me in a good mood',
+  "what's everyone's opinion on {topic} these days?",
+  'just curious, how often do you think about {topic}?',
+  '{topic} chat, anyone in?',
+];
+const ENGLISH_SUBJECTS = [
+  'football', 'basketball', 'movies', 'tv shows', 'music', 'cooking', 'baking',
+  'travel', 'photography', 'video games', 'board games', 'reading', 'writing',
+  'fashion', 'fitness', 'yoga', 'hiking', 'camping', 'gardening', 'coffee',
+  'tea', 'art', 'painting', 'dancing', 'singing', 'cars', 'motorcycles',
+  'technology', 'gadgets', 'coding', 'anime', 'comics', 'history', 'science',
+  'space', 'animals', 'pets', 'fishing', 'swimming', 'cycling', 'running',
+  'chess', 'poetry', 'languages', 'architecture', 'design', 'crafts',
+];
+const ENGLISH_TOPICS_GENERATED = buildTopicBank(ENGLISH_TOPIC_TEMPLATES, ENGLISH_SUBJECTS);
+
+const ARABIC_TOPIC_TEMPLATES = [
+  'شو رأيكم في {topic}؟',
+  'حد يحب يتكلم عن {topic} اليوم؟',
+  'من زمان أفكر في {topic}',
+  'مين هنا يحب {topic}؟',
+  '{topic} من الأشياء اللي أحبها كثير',
+  'إيش أفضل شي في {topic} بنظركم؟',
+  'بصراحة أقدر أتكلم عن {topic} لساعات',
+  'حد يتابع {topic} هنا؟',
+  'شفت شي حلو عن {topic} اليوم',
+  'عندكم اقتراحات بخصوص {topic}؟',
+  'بصراحة {topic} ما ياخذ حقه',
+  'حسيت إن {topic} صار مشهور أكثر مؤخرا',
+  'كيف بدأ اهتمامكم بـ {topic}؟',
+  'أنا من محبين {topic}، فيه غيري؟',
+  'سؤال بسيط، إيش أكثر شي يعجبكم في {topic}؟',
+  'ودكم نتكلم شوي عن {topic}؟',
+  'فضولي أعرف رأيكم في {topic}',
+  '{topic} طريقة حلوة أمرر فيها وقتي',
+  'مين غيري يقضي وقت طويل في {topic}؟',
+  'إيش قصتكم مع {topic}؟',
+  'صرت أهتم أكثر بـ {topic} مؤخرا',
+  'فيه محبين {topic} هنا؟',
+  'خلونا نتكلم عن {topic} شوي',
+  'عندكم نصيحة للمبتدئين في {topic}؟',
+  '{topic} يحمسكم ولا لا؟',
+];
+const ARABIC_SUBJECTS = [
+  'كرة القدم', 'كرة السلة', 'الأفلام', 'المسلسلات', 'الموسيقى', 'الطبخ',
+  'الحلويات', 'السفر', 'التصوير', 'ألعاب الفيديو', 'ألعاب الطاولة', 'القراءة',
+  'الكتابة', 'الموضة', 'اللياقة', 'اليوغا', 'المشي لمسافات طويلة', 'التخييم',
+  'الزراعة', 'القهوة', 'الشاي', 'الفن', 'الرسم', 'الرقص', 'الغناء', 'السيارات',
+  'الدراجات النارية', 'التقنية', 'الأجهزة الذكية', 'البرمجة', 'الأنمي',
+  'القصص المصورة', 'التاريخ', 'العلوم', 'الفضاء', 'الحيوانات',
+  'الحيوانات الأليفة', 'صيد السمك', 'السباحة', 'ركوب الدراجات', 'الجري',
+  'الشطرنج', 'الشعر', 'اللغات', 'التصميم',
+];
+const ARABIC_TOPICS_GENERATED = buildTopicBank(ARABIC_TOPIC_TEMPLATES, ARABIC_SUBJECTS);
+
 // Pure-emoji reactions — bots drop one of these instead of a text line
 // sometimes, the same way real chat gets a quick 😂 or 🔥 instead of words.
 const EMOJI_REACTIONS = ['😂😂😂', '🔥🔥', '❤️', '👏👏', '😍', '🙌', '💯', '😅', '🤩', '😎', '👍', '🥳', '😭😭', '✨', '😱', '🤔'];
@@ -100,7 +217,14 @@ function runOneExchange(postMessage) {
   `).all(room.id);
   if (members.length < 2) return;
 
-  const bank = TOPIC_BANK[room.name] || DEFAULT_BANK;
+  // The three hand-written banks (Lobby/UNO Arena/Chill Zone) always win;
+  // otherwise an Arabic-speaking-country room gets the Arabic combinatorial
+  // bank, and every other room (all other countries, any user-created room)
+  // gets the English one — both comfortably exceed 1000 unique lines.
+  const isArabicRoom = !TOPIC_BANK[room.name] && ARABIC_ROOM_NAMES.has(room.name);
+  const bank = TOPIC_BANK[room.name] || (isArabicRoom ? ARABIC_TOPICS_GENERATED : ENGLISH_TOPICS_GENERATED);
+  const replyBank = isArabicRoom ? ARABIC_REPLY_BANK : REPLY_BANK;
+
   const speakerA = pick(members);
   const line = Math.random() < 0.18 ? pick(EMOJI_REACTIONS) : pick(bank);
   postMessage(room.id, { userId: speakerA.id, username: speakerA.username, type: 'text', content: line });
@@ -113,7 +237,7 @@ function runOneExchange(postMessage) {
       const replyDelay = 3_000 + Math.random() * 7_000;
       const t = setTimeout(() => {
         try {
-          const replyLine = Math.random() < 0.18 ? pick(EMOJI_REACTIONS) : pick(REPLY_BANK)(speakerA.username);
+          const replyLine = Math.random() < 0.18 ? pick(EMOJI_REACTIONS) : pick(replyBank)(speakerA.username);
           postMessage(room.id, { userId: speakerB.id, username: speakerB.username, type: 'text', content: replyLine });
         } catch (e) { /* never let a bad reply break the loop */ }
       }, replyDelay);
@@ -152,4 +276,7 @@ function stopAutoChat() {
   timer = null;
 }
 
-module.exports = { startAutoChat, stopAutoChat, TOPIC_BANK, REPLY_BANK, pick };
+module.exports = {
+  startAutoChat, stopAutoChat, TOPIC_BANK, REPLY_BANK, pick,
+  ARABIC_REPLY_BANK, ARABIC_ROOM_NAMES, ENGLISH_TOPICS_GENERATED, ARABIC_TOPICS_GENERATED,
+};
