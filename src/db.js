@@ -233,6 +233,20 @@ CREATE TABLE IF NOT EXISTS post_reactions (
   UNIQUE(post_id, user_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_post_reactions_post ON post_reactions(post_id);
+
+-- "Footprint" — who has viewed whose profile. One row per (visitor, visited)
+-- pair, upserted on every fresh view so re-visiting just bumps visited_at
+-- instead of piling up duplicate rows; a profile's footprint count is simply
+-- COUNT(*) of rows for that visited_id (distinct visitors who've ever
+-- looked, not a raw view counter). Never written for viewing your own
+-- profile — see GET /api/users/:username in routes/users.js.
+CREATE TABLE IF NOT EXISTS profile_visits (
+  visitor_id INTEGER NOT NULL,
+  visited_id INTEGER NOT NULL,
+  visited_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (visitor_id, visited_id)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_visits_visited ON profile_visits(visited_id, visited_at DESC);
 `);
 
 // Migrate older databases created before Blog posts could carry a picture.

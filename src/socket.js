@@ -53,6 +53,9 @@ const UNMOD_COMMAND = /^\/unmod\s+(\S+)\s*$/i;
 // as the Room Settings Banned tab, just reachable from chat.
 const BAN_COMMAND = /^\/ban\s+(\S+)\s*$/i;
 const UNBAN_COMMAND = /^\/unban\s+(\S+)\s*$/i;
+// "/whois <username>" — quick info popup (level, country, online/away/busy/offline
+// status), open to every user, not just Staff.
+const WHOIS_COMMAND = /^\/whois\s+(\S+)\s*$/i;
 // A silence never lasts longer than this, whatever's typed after /silence —
 // a sane ceiling against a fat-fingered "/silence 999999999".
 const MAX_SILENCE_SECONDS = 24 * 60 * 60;
@@ -448,6 +451,24 @@ function attachSocket(io, sessionMiddleware) {
   // it only ever picks among a bot's own currently-active/inactive rooms.
   const BOT_ROOM_ACTIVITY_MIN_GAP_MS = 8_000;
   const BOT_ROOM_ACTIVITY_MAX_GAP_MS = 25_000;
+  // A bot that "steps out" of a room always walks straight back in shortly
+  // after — never a real, lasting departure — so it reads as someone briefly
+  // stepping away rather than actually leaving for good.
+  const BOT_ROOM_REENTRY_MIN_MS = 5_000;
+  const BOT_ROOM_REENTRY_MAX_MS = 20_000;
+
+  // Shared "has entered" side-effects (membership, presence, system message,
+  // Participants-panel refresh) — used both for a bot's normal room pick and
+  // for its automatic walk-back-in after stepping out (see leave below).
+  function botEnterRoom(bot, roomId, name) {
+    ensureMembership(bot.id, roomId);
+    markEntered(bot.id, roomId);
+    presence.markOnline(bot.id);
+    const level = currentLevel(bot.id);
+    const badge = roleBadge(freshRoleFlags(bot.id));
+    io.to(`room:${roomId}`).emit('system_message', `${name}: ${bot.username} [${level}]${badge} has entered`);
+    broadcastRoomMembers(roomId);
+  }
 
   function simulateOneBotRoomMove() {
     const bots = db.prepare('SELECT id, username FROM users WHERE is_bot = 1').all();
@@ -472,20 +493,25 @@ function attachSocket(io, sessionMiddleware) {
 
     if (action === 'leave') {
       const roomId = activeRoomIds[Math.floor(Math.random() * activeRoomIds.length)];
+      const name = roomName(roomId);
       if (!leaveMembership(bot.id, roomId)) return;
-      io.to(`room:${roomId}`).emit('system_message', `${roomName(roomId)}: ${bot.username} [${level}]${badge} has left`);
+      io.to(`room:${roomId}`).emit('system_message', `${name}: ${bot.username} [${level}]${badge} has left`);
       broadcastRoomMembers(roomId);
       const stillSomewhere = db.prepare('SELECT 1 FROM room_memberships WHERE user_id = ? AND active = 1').get(bot.id);
       if (!stillSomewhere) presence.markOffline(bot.id);
+
+      // Walk straight back into the SAME room a few seconds later — "out"
+      // is always momentary, never a real departure.
+      const rejoinDelay = BOT_ROOM_REENTRY_MIN_MS + Math.random() * (BOT_ROOM_REENTRY_MAX_MS - BOT_ROOM_REENTRY_MIN_MS);
+      const t = setTimeout(() => {
+        try { botEnterRoom(bot, roomId, name); } catch (e) { /* bot may have been deleted/room removed since */ }
+      }, rejoinDelay);
+      t.unref?.();
     } else {
       const candidates = rooms.filter((r) => !activeRoomIds.includes(r.id));
       if (!candidates.length) return;
       const room = candidates[Math.floor(Math.random() * candidates.length)];
-      ensureMembership(bot.id, room.id);
-      markEntered(bot.id, room.id);
-      presence.markOnline(bot.id);
-      io.to(`room:${room.id}`).emit('system_message', `${room.name}: ${bot.username} [${level}]${badge} has entered`);
-      broadcastRoomMembers(room.id);
+      botEnterRoom(bot, room.id, room.name);
     }
   }
 
@@ -1229,13 +1255,19 @@ function attachSocket(io, sessionMiddleware) {
         }
       }
 
+      // "/whois <username>" — quick info popup, any user.
+      const whoisMatch = clean.match(WHOIS_COMMAND);
+      if (whoisMatch) {
+        return handleWhoisCommand(whoisMatch[1]);
+      }
+
       // A message that starts with "/" but doesn't match any known command
       // used to silently get posted to the room as plain text, which looked
       // exactly like "nothing happened" for a typo'd or unrecognized command.
       // Reject it with a clear error instead, so a mismatch is obvious.
       if (/^\//.test(clean)) {
         console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
-        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
       }
 
       postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean });
@@ -1404,16 +1436,17 @@ function attachSocket(io, sessionMiddleware) {
       const gift = specific || gifts[Math.floor(Math.random() * gifts.length)];
       const level = currentLevel(user.id);
 
-      // Recipients = everyone else currently in the room. If solo, it's a free
+      // Recipients = everyone else currently listed as an active member of
+      // the room — the same DB-backed roster the Participants panel shows
+      // (activeMemberRows), NOT just live socket connections. Rooms are
+      // routinely full of ambient bot members (see simulateOneBotRoomMove
+      // above) who count as real, visible room members but never hold a
+      // live socket — scanning only io.sockets.sockets would treat a room
+      // that visibly has people in it as empty, silently giving a free,
+      // uncharged shower instead of actually billing the sender. If solo
+      // (truly nobody else, not even a bot, listed as active), it's a free
       // celebratory effect only (nobody to actually gift).
-      const recipients = [];
-      const seen = new Set([user.id]);
-      for (const [, s] of io.sockets.sockets) {
-        if (s.data.roomId === roomId && s.data.user && !seen.has(s.data.user.id)) {
-          seen.add(s.data.user.id);
-          recipients.push(s.data.user);
-        }
-      }
+      const recipients = activeMemberRows(roomId).filter((r) => r.id !== user.id);
 
       if (recipients.length === 0) {
         const text = `${user.username} [${level}] triggered a ${gift.name} ${gift.emoji} GIFT SHOWER! 🎉🎁✨`;
@@ -1453,6 +1486,28 @@ function attachSocket(io, sessionMiddleware) {
       io.to(`room:${roomId}`).emit('gift_shower', { username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
       socket.emit('coins_update', { coins: sender.coins - totalCost });
       awardXp(sender.id, XP_REWARDS.GIFT_SHOWER);
+    }
+
+    // "/whois <username>" — a quick, read-only info popup: level, country, and
+    // live status (online/away/busy/offline). Sent privately back to just the
+    // requester (never posted to the room), open to every user.
+    function handleWhoisCommand(usernameArg) {
+      const target = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      socket.emit('whois_result', {
+        username: target.username,
+        level: currentLevel(target.id),
+        country: target.country || null,
+        status: presence.effectiveStatus(target.id, target.status),
+        is_staff: !!target.is_staff,
+        is_global_admin: !!target.is_global_admin,
+        is_mentor: !!target.is_mentor,
+        is_merchant: !!target.is_merchant,
+        is_exec_board: !!target.is_exec_board,
+        is_country_rep: !!target.is_country_rep,
+        is_elite: !!target.is_elite,
+        username_color: target.username_color || null,
+      });
     }
 
     function handleGiftCommand(roomId, usernameArg, giftNameArg) {

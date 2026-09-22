@@ -49,16 +49,19 @@ router.get('/search', requireFlag('staff', 'mentor', 'merchant'), (req, res) => 
 router.post('/:id/give', requireFlag('staff', 'mentor', 'merchant'), (req, res) => {
   const targetId = Number(req.params.id);
   const amount = Math.round(Number(req.body && req.body.amount));
-  if (!Number.isFinite(amount) || amount < 1 || amount > 100000) {
-    return res.status(400).json({ error: 'Amount must be a whole number between 1 and 100000' });
+  const giver = req.session.user;
+  // Staff (and Global Admin) can hand out much larger amounts than a plain
+  // Mentor/Merchant — this route stays open to all three roles, but the
+  // upper bound now scales with how trusted the role is.
+  const maxAmount = (giver.is_staff || giver.is_global_admin) ? 100_000_000 : 100_000;
+  if (!Number.isFinite(amount) || amount < 1 || amount > maxAmount) {
+    return res.status(400).json({ error: `Amount must be a whole number between 1 and ${maxAmount.toLocaleString('en-US')}` });
   }
   const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(amount, targetId);
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
-
-  const giver = req.session.user;
   db.logCoinTx(targetId, amount, 'transfers', `Received from ${giver.username}`);
   db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)')
     .run(targetId, 'coins', `${giver.username} sent you coins!`, `${giver.username} gave you ${amount} coins.`);

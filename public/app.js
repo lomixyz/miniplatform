@@ -606,6 +606,7 @@ function connectSocket() {
     if (leveledUp) toast(`⭐ Level up! You're now Lv.${level}`);
   });
   socket.on('gift_shower', (data) => playGiftShower(data));
+  socket.on('whois_result', (data) => showWhoisPopup(data));
   socket.on('room_members', (members) => { lastRoomMembers = members; renderRoomMembers(members); renderRoomInfoBanner(); });
   socket.on('kicked', ({ roomId, by, reason }) => {
     if (reason === 'timeout') toast('⏳ You were removed from the room after 5 hours of inactivity');
@@ -1053,14 +1054,14 @@ function appendMessage(msg) {
     const mediaHtml = msg.type === 'image'
       ? `<img class="chat-shared-image" src="${escapeHtml(msg.content)}" alt="shared picture" loading="lazy" />`
       : `<audio class="chat-voice-note" src="${escapeHtml(msg.content)}" controls></audio>`;
-    div.innerHTML = `<div><span class="user ${cls}"${nameStyle}>${escapeHtml(msg.username)}${roleIcon(msg)}:</span></div>${mediaHtml}`;
+    div.innerHTML = `<div><span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span></div>${mediaHtml}`;
   } else {
     const cls = roleClass(msg);
     // No role badge? Fall back to a purchased Color Shop color, same as the
     // Participants panel and Members/Leaderboard screens — a role color
     // always wins, but a plain user's chosen color still shows in chat.
     const nameStyle = !cls && msg.username_color ? ` style="color:${escapeHtml(msg.username_color)}"` : '';
-    div.innerHTML = `<span class="user ${cls}"${nameStyle}>${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
+    div.innerHTML = `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
   }
   const box = $('#messages');
   box.appendChild(div);
@@ -1078,6 +1079,14 @@ function appendMessage(msg) {
     }
   }
 }
+
+// Tap a username in chat (text/image/voice messages only — bot names aren't
+// real accounts) to view that user's profile. Delegated once on the
+// messages container instead of a listener per message.
+$('#messages').addEventListener('click', (e) => {
+  const el = e.target.closest('.clickable-username');
+  if (el && el.dataset.username) openUserProfile(el.dataset.username);
+});
 
 // Falling-emoji celebration for "/gift all" (optionally themed to one gift,
 // e.g. "/gift all sudan") — works even solo in a room.
@@ -1102,6 +1111,23 @@ function playGiftShower({ username, level, emojis, giftName }) {
   document.body.appendChild(banner);
   setTimeout(() => banner.remove(), 2300);
 }
+
+// "/whois <username>" result — a small popup with level, country, and live
+// status. Open to every user (see WHOIS_COMMAND in socket.js).
+function showWhoisPopup(u) {
+  const nameStyle = !roleClass(u) && u.username_color ? ` style="color:${escapeHtml(u.username_color)}"` : '';
+  $('#whoisContent').innerHTML = `
+    <div class="avatar-circle whois-avatar" style="background:${colorFor(u.username)}; margin-left:auto; margin-right:auto;">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
+    <div class="whois-name"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)}</div>
+    <div class="whois-row">⚡ Level ${u.level}</div>
+    <div class="whois-row">${u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : 'No country set'}</div>
+    <div class="whois-row"><span class="status-dot ${statusDotClass(u.status)}"></span> ${STATUS_LABELS[u.status] || 'Offline'}</div>
+  `;
+  $('#whoisModal').classList.remove('hidden');
+}
+function closeWhois() { $('#whoisModal').classList.add('hidden'); }
+$('#closeWhoisBtn').addEventListener('click', closeWhois);
+$('#whoisModal').addEventListener('click', (e) => { if (e.target.id === 'whoisModal') closeWhois(); });
 
 // ---------- LEGENDARY BOT (dice-betting game) ----------
 const LEGENDARY_ROOM_NAME = 'Legendary Bot Official';
@@ -1374,7 +1400,7 @@ function renderRoomMembers(members) {
   }
   members.forEach((m) => {
     const row = document.createElement('div');
-    row.className = 'participant-row';
+    row.className = 'participant-row view-profile-row';
     const nameStyle = !roleClass(m) && m.username_color ? ` style="color:${escapeHtml(m.username_color)}"` : '';
     row.innerHTML = `
       <div class="avatar-circle small" style="background:${colorFor(m.username)}">${escapeHtml(m.username.charAt(0).toUpperCase())}</div>
@@ -1384,6 +1410,8 @@ function renderRoomMembers(members) {
       <span class="role-badge-icon">${roleIcon(m)}</span>
       ${m.invisible ? '<span class="role-badge-icon" title="Only visible to you">👻</span>' : ''}
     `;
+    row.title = `View ${m.username}'s profile`;
+    row.addEventListener('click', () => openUserProfile(m.username));
     box.appendChild(row);
   });
 }
@@ -2656,6 +2684,7 @@ async function renderAvatarMaker(box) {
 // ---------- COMMAND LIST ----------
 // Moderation/utility commands, shown on the "Commands" tab above the emote list.
 const UTILITY_COMMANDS = [
+  { cmd: '/whois <user>', desc: "Show a quick popup with a user's level, country, and online/away/busy/offline status" },
   { cmd: '/gift all <gift>', desc: 'Send a gift to everyone currently in the room' },
   { cmd: '/gift <user> <gift>', desc: 'Send a gift to one user by name' },
   { cmd: '/pick <code>', desc: 'Redeem a gift code' },
@@ -3067,7 +3096,7 @@ async function renderGiftStoreAdmin(box) {
 }
 
 // ---------- MY PROFILE / MY ACCOUNT / SETTINGS / GAME LIST ----------
-function renderMyProfile(box) {
+async function renderMyProfile(box) {
   const u = currentUser;
   box.innerHTML = `
     <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
@@ -3078,6 +3107,7 @@ function renderMyProfile(box) {
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">${usernameHtml(u)}</div><div class="list-row-subtitle">Level ${u.level} · ${u.xp} XP</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🪙 ${u.coins} coins</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
+    <div class="list-row footprint-row" id="footprintRow"><div class="list-row-body"><div class="list-row-title">👣 Footprint</div><div class="list-row-subtitle">Who's seen your profile</div></div><div class="list-row-trailing"><span class="footprint-count-badge" id="footprintCountBadge">…</span></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.bio || 'No bio yet.'}</div></div></div>
     <div class="list-row"><div class="list-row-body">
       ${u.country
@@ -3110,9 +3140,86 @@ function renderMyProfile(box) {
       }
     });
   }
+  box.querySelector('#footprintRow').addEventListener('click', () => pushSubScreen('Profile Visitors', renderFootprintScreen));
+  try {
+    const { count } = await api('/users/me/footprint');
+    const badge = box.querySelector('#footprintCountBadge');
+    if (badge) badge.textContent = String(count);
+  } catch (e) {}
 }
 function openDrawerMyProfile() { openSubScreenFromDrawer('My Profile', renderMyProfile); }
 function openDrawerMyBalance() { openSubScreenFromDrawer('My Balance', renderMyBalance); }
+
+// The list of users who've viewed My Profile (pushed on top of My Profile —
+// see the footprint row above). Most-recently-viewed first.
+async function renderFootprintScreen(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let visitors;
+  try {
+    ({ visitors } = await api('/users/me/footprint'));
+  } catch (e) {
+    box.innerHTML = '<div class="empty-note">Couldn\'t load your visitors.</div>';
+    return;
+  }
+  box.innerHTML = '';
+  if (!visitors.length) {
+    box.innerHTML = '<div class="empty-note">No one has viewed your profile yet.</div>';
+    return;
+  }
+  box.appendChild(sectionLabel(`SEEN YOUR PROFILE (${visitors.length})`));
+  visitors.forEach((v) => {
+    const row = document.createElement('div');
+    row.className = 'list-row view-profile-row';
+    const nameStyle = !roleClass(v) && v.username_color ? ` style="color:${escapeHtml(v.username_color)}"` : '';
+    row.innerHTML = `
+      <div class="avatar-circle small" style="background:${colorFor(v.username)}">${escapeHtml(v.username.charAt(0).toUpperCase())}</div>
+      <div class="list-row-body">
+        <div class="list-row-title"><span class="${roleClass(v)}"${nameStyle}>${escapeHtml(v.username)}</span>${roleIcon(v)} <span class="status-dot ${statusDotClass(v.status)}" title="${STATUS_LABELS[v.status] || 'Offline'}"></span></div>
+        <div class="list-row-subtitle">Lv.${v.level}${v.country ? ` · ${countryFlag(v.country)} ${escapeHtml(v.country)}` : ''}</div>
+      </div>
+      <div class="visitor-row-time">${escapeHtml(formatAlertTime(v.visited_at).relative)}</div>
+    `;
+    row.addEventListener('click', () => openUserProfile(v.username));
+    box.appendChild(row);
+  });
+}
+
+// Viewing someone ELSE's profile (tap a username in Participants, or in
+// chat) — a read-only card, no footprint icon (that's only ever shown on
+// your OWN My Profile). Viewing it is what leaves a footprint on THEIRS.
+function openUserProfile(username) {
+  if (currentUser && username.toLowerCase() === currentUser.username.toLowerCase()) {
+    return openDrawerMyProfile();
+  }
+  pushSubScreen(username, (box) => renderUserProfile(box, username));
+}
+
+async function renderUserProfile(box, username) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let u;
+  try {
+    ({ user: u } = await api(`/users/${encodeURIComponent(username)}`));
+  } catch (e) {
+    box.innerHTML = '<div class="empty-note">User not found.</div>';
+    return;
+  }
+  const nameStyle = !roleClass(u) && u.username_color ? ` style="color:${escapeHtml(u.username_color)}"` : '';
+  box.innerHTML = `
+    <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
+      <div class="avatar-maker-scene">${u.avatar_scene || ''}</div>
+      <div class="avatar-circle" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
+      <div class="avatar-maker-pet">${u.avatar_pet || ''}</div>
+    </div>
+    <div class="list-row"><div class="list-row-body">
+      <div class="list-row-title"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span></div>
+      <div class="list-row-subtitle">Level ${u.level} · ${STATUS_LABELS[u.status] || 'Offline'}</div>
+    </div></div>
+    <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
+    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.bio ? escapeHtml(u.bio) : 'No bio yet.'}</div></div></div>
+    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : 'No country set'}</div></div></div>
+    ${u.created_at ? `<div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">Member since ${escapeHtml(formatAlertTime(u.created_at).exact)}</div></div></div>` : ''}
+  `;
+}
 
 // Category icon/label for the Activity feed and filter tabs — must match
 // the categories db.logCoinTx writes server-side (games/gifts/transfers/other).

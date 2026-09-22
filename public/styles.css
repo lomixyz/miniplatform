@@ -414,6 +414,7 @@ body::after {
 
 .msg { font-size: 14px; line-height: 1.5; }
 .msg .user { font-weight: 700; color: var(--accent-light); }
+.msg .clickable-username { cursor: pointer; }
 .msg.gift { color: var(--pink); font-weight: 600; }
 .msg.voucher { color: #facc15; font-weight: 600; }
 .msg.system { color: var(--text-dim); font-style: italic; font-size: 13px; }
@@ -919,3 +920,28 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 .balance-tx-amount { font-weight: 700; font-size: 14px; white-space: nowrap; }
 .balance-tx-amount.positive { color: #16a34a; }
 .balance-tx-amount.negative { color: #dc2626; }
+
+/* /whois popup — a small centered card (reuses .modal-overlay/.modal-panel
+   for the same click-outside-to-close + Close button behavior as the
+   Admin/Give Coins modals, just narrower). */
+.whois-panel { width: 300px; padding: 18px; text-align: center; }
+.whois-avatar { width: 64px; height: 64px; font-size: 26px; margin: 4px auto 10px; }
+.whois-name { font-size: 17px; font-weight: 700; margin-bottom: 2px; }
+.whois-row {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 13px; color: var(--text-dim); margin-top: 6px;
+}
+.whois-row .status-dot { position: static; }
+
+/* My Profile → footprint icon (who's viewed my profile) and the visitor list
+   that opens when it's tapped. */
+.footprint-row { cursor: pointer; }
+.footprint-count-badge {
+  background: var(--accent-light); color: #fff; border-radius: 999px;
+  padding: 2px 9px; font-size: 12px; font-weight: 700;
+}
+.visitor-row-time { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+/* Viewing another user's profile (Participants panel / chat username tap) —
+   same visual language as My Profile's own card. */
+.view-profile-row { cursor: pointer; }
