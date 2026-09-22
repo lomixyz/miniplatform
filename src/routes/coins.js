@@ -57,7 +57,6 @@ router.post('/:id/give', requireFlag('staff', 'mentor', 'merchant'), (req, res) 
   if (!Number.isFinite(amount) || amount < 1 || amount > maxAmount) {
     return res.status(400).json({ error: `Amount must be a whole number between 1 and ${maxAmount.toLocaleString('en-US')}` });
   }
-  }
   const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
