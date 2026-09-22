@@ -1,12 +1,54 @@
 const express = require('express');
 const db = require('../db');
-const { requireLogin } = require('../auth');
+const { requireLogin, requireFlag } = require('../auth');
 
 const router = express.Router();
 
 router.get('/', requireLogin, (req, res) => {
   const gifts = db.prepare('SELECT * FROM gifts_catalog ORDER BY cost').all();
   res.json({ gifts });
+});
+
+// ---- Gift Store management (Staff only) ----
+// Same table the whole app reads from (chat gifts, Gift Store, favorites) —
+// adding/editing/removing a gift here shows up everywhere immediately, no
+// separate "catalog" to keep in sync.
+router.post('/', requireFlag('staff'), (req, res) => {
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 60);
+  const emoji = String((req.body && req.body.emoji) || '').trim().slice(0, 8);
+  const cost = Math.round(Number(req.body && req.body.cost));
+  if (!name) return res.status(400).json({ error: 'Gift name is required' });
+  if (!emoji) return res.status(400).json({ error: 'Pick an icon/emoji for the gift' });
+  if (!Number.isFinite(cost) || cost < 1) return res.status(400).json({ error: 'Price must be a whole number of 1 or more' });
+
+  const info = db.prepare('INSERT INTO gifts_catalog (name, emoji, cost) VALUES (?, ?, ?)').run(name, emoji, cost);
+  const gift = db.prepare('SELECT * FROM gifts_catalog WHERE id = ?').get(info.lastInsertRowid);
+  res.json({ gift });
+});
+
+router.put('/:id', requireFlag('staff'), (req, res) => {
+  const giftId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM gifts_catalog WHERE id = ?').get(giftId);
+  if (!existing) return res.status(404).json({ error: 'No such gift' });
+
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 60) || existing.name;
+  const emoji = String((req.body && req.body.emoji) || '').trim().slice(0, 8) || existing.emoji;
+  const costRaw = req.body && req.body.cost;
+  const cost = costRaw === undefined || costRaw === '' ? existing.cost : Math.round(Number(costRaw));
+  if (!Number.isFinite(cost) || cost < 1) return res.status(400).json({ error: 'Price must be a whole number of 1 or more' });
+
+  db.prepare('UPDATE gifts_catalog SET name = ?, emoji = ?, cost = ? WHERE id = ?').run(name, emoji, cost, giftId);
+  const gift = db.prepare('SELECT * FROM gifts_catalog WHERE id = ?').get(giftId);
+  res.json({ gift });
+});
+
+router.delete('/:id', requireFlag('staff'), (req, res) => {
+  const giftId = Number(req.params.id);
+  db.prepare('DELETE FROM gifts_catalog WHERE id = ?').run(giftId);
+  // Clean up anything pointing at the deleted gift so it doesn't linger as a
+  // dangling reference in a user's favorites bar.
+  db.prepare('DELETE FROM gift_favorites WHERE gift_id = ?').run(giftId);
+  res.json({ ok: true });
 });
 
 const MAX_FAVORITES = 10;

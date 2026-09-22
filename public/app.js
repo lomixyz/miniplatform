@@ -1822,6 +1822,9 @@ function renderExplore(box) {
     { icon: '🧑‍🎨', bg: '#ef4444', title: 'Avatar Maker', subtitle: 'Frame, pet & scene', open: () => pushSubScreen('Avatar Maker', renderAvatarMaker) },
     { icon: '📜', bg: '#10b981', title: 'Command List', subtitle: 'Chat commands you can use', open: () => pushSubScreen('Command List', renderCommandList) },
   ];
+  if (currentUser.is_staff) {
+    cards.push({ icon: '🛠️', bg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts (Staff)', open: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) });
+  }
   cards.forEach((c) => box.appendChild(listRow({ icon: c.icon, iconBg: c.bg, title: c.title, subtitle: c.subtitle, onClick: c.open })));
 }
 function openDrawerExplore() { openSubScreenFromDrawer('Explore', renderExplore); }
@@ -2621,6 +2624,111 @@ async function renderGiftStore(box) {
       toast(err.message);
     }
   });
+}
+
+// ---------- GIFT STORE ADMIN (Explore -> Gift Store Admin, Staff only) ----------
+// Full CRUD over gifts_catalog — the same table every gift picker in the app
+// (chat's Send Gift, Explore's Gift Store, favorites) reads from, so adding,
+// editing, or removing a gift here shows up everywhere else right away.
+async function renderGiftStoreAdmin(box) {
+  if (!currentUser.is_staff) { box.innerHTML = '<div class="empty-note">Staff only.</div>'; return; }
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+
+  const draw = async () => {
+    let gifts;
+    try {
+      gifts = (await api('/gifts')).gifts;
+    } catch (err) {
+      box.innerHTML = '<div class="empty-note">Couldn\'t load the gift catalog.</div>';
+      return;
+    }
+
+    box.innerHTML = '';
+    const composer = document.createElement('div');
+    composer.className = 'post-composer';
+    composer.innerHTML = `
+      <input type="text" id="giftAdminEmojiInput" placeholder="Icon (emoji, e.g. 🌹)" maxlength="8" style="max-width:120px;" />
+      <input type="text" id="giftAdminNameInput" placeholder="Gift name" maxlength="60" />
+      <input type="number" id="giftAdminCostInput" placeholder="Price (coins)" min="1" />
+      <button id="giftAdminAddBtn" class="primary-btn">Add Gift</button>
+    `;
+    composer.querySelector('#giftAdminAddBtn').addEventListener('click', async () => {
+      const emoji = composer.querySelector('#giftAdminEmojiInput').value.trim();
+      const name = composer.querySelector('#giftAdminNameInput').value.trim();
+      const cost = Number(composer.querySelector('#giftAdminCostInput').value);
+      if (!emoji || !name || !cost) return toast('Icon, name, and price are all required');
+      try {
+        await api('/gifts', { method: 'POST', body: JSON.stringify({ emoji, name, cost }) });
+        toast('Gift added!');
+        await loadGifts(); // refresh every other gift picker's cache
+        giftStoreCatalog = null;
+        draw();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    box.appendChild(composer);
+
+    if (!gifts.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-note';
+      empty.textContent = 'No gifts in the catalog yet — add one above.';
+      box.appendChild(empty);
+      return;
+    }
+
+    gifts.forEach((g) => {
+      const row = document.createElement('div');
+      row.className = 'notif-row';
+      row.innerHTML = `
+        <div class="notif-icon" style="background:#64748b;">${escapeHtml(g.emoji)}</div>
+        <div class="notif-body">
+          <input type="text" class="gift-admin-name" data-id="${g.id}" value="${escapeHtml(g.name)}" maxlength="60" style="width:100%; margin-bottom:4px;" />
+          <div style="display:flex; gap:6px; align-items:center;">
+            <input type="text" class="gift-admin-emoji" data-id="${g.id}" value="${escapeHtml(g.emoji)}" maxlength="8" style="width:60px;" />
+            <input type="number" class="gift-admin-cost" data-id="${g.id}" value="${g.cost}" min="1" style="width:90px;" />
+            <button type="button" class="gift-admin-save-btn" data-id="${g.id}">Save</button>
+            <button type="button" class="gift-admin-delete-btn" data-id="${g.id}" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `;
+      box.appendChild(row);
+    });
+
+    box.querySelectorAll('.gift-admin-save-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        const name = box.querySelector(`.gift-admin-name[data-id="${id}"]`).value.trim();
+        const emoji = box.querySelector(`.gift-admin-emoji[data-id="${id}"]`).value.trim();
+        const cost = Number(box.querySelector(`.gift-admin-cost[data-id="${id}"]`).value);
+        if (!name || !emoji || !cost) return toast('Icon, name, and price are all required');
+        try {
+          await api(`/gifts/${id}`, { method: 'PUT', body: JSON.stringify({ name, emoji, cost }) });
+          toast('Gift updated');
+          await loadGifts();
+          giftStoreCatalog = null;
+          draw();
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+    });
+    box.querySelectorAll('.gift-admin-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api(`/gifts/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('Gift removed');
+          await loadGifts();
+          giftStoreCatalog = null;
+          draw();
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+    });
+  };
+
+  draw();
 }
 
 // ---------- MY PROFILE / MY ACCOUNT / SETTINGS / GAME LIST ----------
