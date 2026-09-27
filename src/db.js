@@ -10,6 +10,13 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'));
+// On Render, a fresh deploy briefly overlaps with the outgoing instance
+// still finishing its own final write/snapshot to the SAME restored
+// database file — without this, that split-second lock contention throws
+// "database is locked" (SQLITE_BUSY) and crashes the app on boot instead of
+// just waiting the handful of milliseconds it takes for the other side to
+// finish. This tells SQLite to quietly retry for up to 5s before giving up.
+db.exec('PRAGMA busy_timeout = 5000;');
 db.exec('PRAGMA journal_mode = WAL;');
 
 db.exec(`
