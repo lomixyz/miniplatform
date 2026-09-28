@@ -56,6 +56,12 @@ const UNBAN_COMMAND = /^\/unban\s+(\S+)\s*$/i;
 // "/whois <username>" — quick info popup (level, country, online/away/busy/offline
 // status), open to every user, not just Staff.
 const WHOIS_COMMAND = /^\/whois\s+(\S+)\s*$/i;
+// "/announcement <text>" / "/announcement clear" — Staff or Global Admin
+// only; a mig66/mig33-style site-wide announcement, broadcast immediately to
+// everyone online and shown again to anyone entering any room while it's
+// still active. See trySetAnnouncement/tryClearAnnouncement below.
+const ANNOUNCEMENT_COMMAND = /^\/announcement\s+clear\s*$/i;
+const ANNOUNCEMENT_SET_COMMAND = /^\/announcement\s+(.+)$/is;
 // A silence never lasts longer than this, whatever's typed after /silence —
 // a sane ceiling against a fat-fingered "/silence 999999999".
 const MAX_SILENCE_SECONDS = 24 * 60 * 60;
@@ -103,16 +109,16 @@ function attachSocket(io, sessionMiddleware) {
 
   function freshRoleFlags(userId) {
     const row = db.prepare(`
-      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color
+      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient
       FROM users WHERE id = ?
     `).get(userId);
     return row
       ? {
           is_staff: !!row.is_staff, is_global_admin: !!row.is_global_admin, is_mentor: !!row.is_mentor, is_merchant: !!row.is_merchant,
           is_exec_board: !!row.is_exec_board, is_country_rep: !!row.is_country_rep, is_elite: !!row.is_elite,
-          username_color: row.username_color || null,
+          username_color: row.username_color || null, username_gradient: row.username_gradient || null,
         }
-      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null };
+      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null };
   }
 
   // Small inline badge shown after a bracketed level in system/gift text,
@@ -204,7 +210,7 @@ function attachSocket(io, sessionMiddleware) {
              COALESCE(u.is_staff, 0) AS is_staff, COALESCE(u.is_global_admin, 0) AS is_global_admin,
              COALESCE(u.is_mentor, 0) AS is_mentor, COALESCE(u.is_merchant, 0) AS is_merchant,
              COALESCE(u.is_exec_board, 0) AS is_exec_board, COALESCE(u.is_country_rep, 0) AS is_country_rep,
-             COALESCE(u.is_elite, 0) AS is_elite, u.username_color
+             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient
       FROM messages m LEFT JOIN users u ON u.id = m.user_id
       WHERE m.room_id = ? AND m.created_at > ?
       ORDER BY m.id ASC LIMIT 300
@@ -215,6 +221,7 @@ function attachSocket(io, sessionMiddleware) {
       is_staff: !!r.is_staff, is_global_admin: !!r.is_global_admin, is_mentor: !!r.is_mentor,
       is_merchant: !!r.is_merchant, is_exec_board: !!r.is_exec_board, is_country_rep: !!r.is_country_rep,
       is_elite: !!r.is_elite, is_moderator: r.user_id != null && moderatorIds.has(r.user_id), username_color: r.username_color || null,
+      username_gradient: r.username_gradient || null,
     }));
   }
 
@@ -303,7 +310,7 @@ function attachSocket(io, sessionMiddleware) {
   function activeMemberRows(roomId) {
     return db.prepare(`
       SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
-             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.status
+             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status
       FROM room_memberships rm JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? AND rm.active = 1
     `).all(roomId);
@@ -368,6 +375,7 @@ function attachSocket(io, sessionMiddleware) {
       is_elite: !!r.is_elite,
       is_moderator: moderatorIds.has(r.id),
       username_color: r.username_color || null,
+      username_gradient: r.username_gradient || null,
       invisible: !!invisibleByUser.get(r.id) || !!r.ghost_mode,
       ghost_mode: !!r.ghost_mode,
       online: presence.isOnline(r.id),
@@ -571,6 +579,7 @@ function attachSocket(io, sessionMiddleware) {
 
     db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
       .run(totalCost, totalCost, recipients.length, sender.id);
+    db.checkEliteEligibility(sender.id);
     for (const r of recipients) {
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
       awardXp(r.id, XP_REWARDS.GIFT_RECEIVED);
@@ -1105,6 +1114,15 @@ function attachSocket(io, sessionMiddleware) {
         socket.emit('system_message', `A voucher is active in this room! Type /pick <code> within ${remaining}s to try (you'll need the code from chat).`);
       }
 
+      // Show the current site-wide announcement (if any) to anyone entering
+      // this room — same mig66/mig33-style behavior as the live broadcast
+      // when Staff first posts it (see trySetAnnouncement above).
+      const announcement = db.getAnnouncement();
+      if (announcement) {
+        socket.emit('announcement', { text: announcement.text, by: announcement.by });
+        socket.emit('system_message', `📢 Announcement from ${announcement.by}: ${announcement.text}`);
+      }
+
       // Let a client joining (or refreshing into) a room mid-silence disable
       // its chat input right away, instead of waiting for a room_silenced
       // broadcast that already happened before they connected.
@@ -1261,13 +1279,24 @@ function attachSocket(io, sessionMiddleware) {
         return handleWhoisCommand(whoisMatch[1]);
       }
 
+      // "/announcement clear" / "/announcement <text>" — Staff/Global Admin
+      // only, site-wide. Checked as two separate patterns (clear first) so
+      // "/announcement clear" never gets swallowed as literal announcement text.
+      if (ANNOUNCEMENT_COMMAND.test(clean)) {
+        return tryClearAnnouncement();
+      }
+      const announceMatch = clean.match(ANNOUNCEMENT_SET_COMMAND);
+      if (announceMatch) {
+        return trySetAnnouncement(announceMatch[1]);
+      }
+
       // A message that starts with "/" but doesn't match any known command
       // used to silently get posted to the room as plain text, which looked
       // exactly like "nothing happened" for a typo'd or unrecognized command.
       // Reject it with a clear error instead, so a mismatch is obvious.
       if (/^\//.test(clean)) {
         console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
-        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, /announcement <text>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
       }
 
       postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean });
@@ -1464,6 +1493,7 @@ function attachSocket(io, sessionMiddleware) {
 
       db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
         .run(totalCost, totalCost, recipients.length, sender.id);
+      db.checkEliteEligibility(sender.id);
       db.logCoinTx(sender.id, -totalCost, 'gifts', `Gift shower: ${gift.name} to ${recipients.length} people`);
       for (const r of recipients) {
         db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
@@ -1554,6 +1584,7 @@ function attachSocket(io, sessionMiddleware) {
 
       db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + 1 WHERE id = ?')
         .run(gift.cost, gift.cost, sender.id);
+      db.checkEliteEligibility(sender.id);
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
       db.logCoinTx(sender.id, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
       db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);
@@ -1728,6 +1759,47 @@ function attachSocket(io, sessionMiddleware) {
     }
 
     on('unban_user', ({ roomId, targetUserId }) => performUnban(roomId, targetUserId));
+
+    // ---- Global announcement (Staff/Global Admin only) ----
+    // A mig66/mig33-style banner: set once, shown immediately to every
+    // connected socket (as a system message + a dedicated 'announcement'
+    // event the client can render as a banner/toast), and shown again to
+    // anyone who enters ANY room afterwards while it's still active — see
+    // the 'announcement' emit in join_room. Persisted in app_settings so a
+    // restart doesn't silently drop it.
+    function trySetAnnouncement(rawText) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can post an announcement');
+        return;
+      }
+      const text = String(rawText || '').trim().slice(0, 500);
+      if (!text) {
+        socket.emit('error_message', 'Usage: /announcement <text> — or /announcement clear to remove it');
+        return;
+      }
+      db.setAnnouncement(text, user.username);
+      io.emit('announcement', { text, by: user.username });
+      io.emit('system_message', `📢 Announcement from ${user.username}: ${text}`);
+    }
+
+    function tryClearAnnouncement() {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can clear the announcement');
+        return;
+      }
+      if (!db.getAnnouncement()) {
+        socket.emit('error_message', 'There is no active announcement to clear');
+        return;
+      }
+      db.clearAnnouncement();
+      io.emit('announcement', { text: null });
+      io.emit('system_message', `📢 ${user.username} cleared the site announcement`);
+    }
+
+    on('set_announcement', ({ text }) => trySetAnnouncement(text));
+    on('clear_announcement', () => tryClearAnnouncement());
 
     // ---- Room silence (Staff, Global Administrator, or a room moderator) ----
     // While a room is silenced, only Staff, Global Admin, the room's owner,

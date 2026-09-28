@@ -41,6 +41,7 @@ function publicProfileCard(row) {
     uno_wins: row.uno_wins || 0,
     gifts_sent_count: row.gifts_sent_count || 0,
     username_color: row.username_color || null,
+    username_gradient: row.username_gradient || null,
     avatar_frame_color: row.avatar_frame_color || null,
     avatar_pet: row.avatar_pet || null,
     avatar_scene: row.avatar_scene || null,
@@ -55,7 +56,7 @@ function publicProfileCard(row) {
 router.get('/me/footprint', requireLogin, (req, res) => {
   const meId = req.session.user.id;
   const rows = db.prepare(`
-    SELECT pv.visited_at, u.id, u.username, u.xp, u.country, u.status, u.username_color,
+    SELECT pv.visited_at, u.id, u.username, u.xp, u.country, u.status, u.username_color, u.username_gradient,
            u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant, u.is_exec_board, u.is_country_rep, u.is_elite
     FROM profile_visits pv
     JOIN users u ON u.id = pv.visitor_id
@@ -68,6 +69,7 @@ router.get('/me/footprint', requireLogin, (req, res) => {
     country: r.country || null,
     status: presence.effectiveStatus(r.id, r.status),
     username_color: r.username_color || null,
+    username_gradient: r.username_gradient || null,
     is_staff: !!r.is_staff,
     is_global_admin: !!r.is_global_admin,
     is_mentor: !!r.is_mentor,

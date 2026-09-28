@@ -27,6 +27,7 @@ router.post('/send', requireLogin, (req, res) => {
 
   db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + 1 WHERE id = ?')
     .run(gift.cost, gift.cost, senderId);
+  db.checkEliteEligibility(senderId);
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
   db.logCoinTx(senderId, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
   db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);

@@ -2,6 +2,7 @@ const { DatabaseSync } = require('node:sqlite'); // built into Node.js — no na
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const { xpForLevel } = require('./level');
 
 // The data/ folder isn't tracked by git (only files are, and the .db itself
 // is gitignored), so on a fresh clone it doesn't exist yet — create it
@@ -254,6 +255,19 @@ CREATE TABLE IF NOT EXISTS profile_visits (
   PRIMARY KEY (visitor_id, visited_id)
 );
 CREATE INDEX IF NOT EXISTS idx_profile_visits_visited ON profile_visits(visited_id, visited_at DESC);
+
+-- A single, global site-wide announcement (mig66/mig33-style), set by Staff
+-- or a Global Admin via the "/announcement <text>" chat command (or
+-- "/announcement clear" to remove it). Shown to every user the moment it's
+-- posted, and again to anyone entering ANY room while it's still active —
+-- see the ANNOUNCEMENT_COMMAND handling and join_room in socket.js. Only
+-- ever one row (id = 1), upserted in place rather than accumulating history.
+CREATE TABLE IF NOT EXISTS app_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  announcement TEXT,
+  announcement_by TEXT,
+  announcement_at TEXT
+);
 `);
 
 // Migrate older databases created before Blog posts could carry a picture.
@@ -282,6 +296,7 @@ const newUserColumns = [
   ['gifts_sent_count', "INTEGER NOT NULL DEFAULT 0"],
   ['last_spin_at', "TEXT"],
   ['username_color', "TEXT"],
+  ['username_gradient', "TEXT"], // Staff-only: JSON array of 5-8 hex colors for a custom multi-color gradient name (Settings -> Color Shop -> Staff Gradient), overriding the default 3-color role-staff gradient. NULL = use the default.
   ['avatar_frame_color', "TEXT"],
   ['avatar_pet', "TEXT"],
   ['avatar_scene', "TEXT"],
@@ -614,19 +629,27 @@ db.seedDefaultGiftFavorites = function seedDefaultGiftFavorites(userId) {
 
 // Seed default accounts if they don't already exist, both with BOTH staff and
 // global admin privileges so they can bootstrap the rest of the role system.
-// 'admin' is the original account; 'miniplatform' is a second, equally
-// privileged account created on request — same protections as 'admin' below.
-// Overridable via ADMIN_PASSWORD so the real value never has to live in
-// source control (important once this repo is on GitHub) — set it in your
-// environment (or a local .env, untracked) before running in production.
+// 'admin' is the original account; 'miniplatform' and 'boss-3llam' are
+// additional, equally privileged accounts created on request — same
+// protections as 'admin' below. Overridable via ADMIN_PASSWORD so the real
+// value never has to live in source control (important once this repo is on
+// GitHub) — set it in your environment (or a local .env, untracked) before
+// running in production.
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'La00280424';
-const PROTECTED_ACCOUNTS = ['admin', 'miniplatform'];
+const PROTECTED_ACCOUNTS = ['admin', 'miniplatform', 'boss-3llam'];
+// Each protected account's baseline level is enforced on every boot (via
+// xpForLevel), same as its Staff/Global Admin flags and password below —
+// this is what guarantees it survives even a database that got rebuilt from
+// an older/incomplete backup rather than quietly staying at whatever XP a
+// stale snapshot happened to have.
+const PROTECTED_LEVELS = { admin: 91, miniplatform: 118, 'boss-3llam': 104 };
 for (const username of PROTECTED_ACCOUNTS) {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (!exists) {
     const hash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
-    db.prepare('INSERT INTO users (username, password_hash, is_staff, is_global_admin, coins, bio) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(username, hash, 1, 1, 100000, 'living in everyone\'s head rent-free');
+    const xp = xpForLevel(PROTECTED_LEVELS[username] || 1);
+    db.prepare('INSERT INTO users (username, password_hash, is_staff, is_global_admin, coins, bio, xp) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(username, hash, 1, 1, 100000, 'living in everyone\'s head rent-free', xp);
   }
 }
 
@@ -634,16 +657,55 @@ for (const username of PROTECTED_ACCOUNTS) {
 // how the very first role gets granted to anyone else, so they must never
 // lose those flags (the Admin Panel also locks their Staff checkbox — see
 // routes/admin.js). Enforced again here on every boot so they self-heal even
-// if the DB was edited by hand, and their password is kept at the fixed
-// value above regardless of prior state, so this always works whether the DB
-// was just created or a server from an earlier version of this app is being
-// upgraded in place.
+// if the DB was edited by hand or restored from an older backup, and their
+// password/level are kept at the fixed values above regardless of prior
+// state, so this always works whether the DB was just created or a server
+// from an earlier version of this app is being upgraded in place.
 for (const username of PROTECTED_ACCOUNTS) {
-  const row = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  const row = db.prepare('SELECT id, xp FROM users WHERE username = ?').get(username);
   if (row) {
+    const minXp = xpForLevel(PROTECTED_LEVELS[username] || 1);
+    if ((row.xp || 0) < minXp) {
+      db.prepare('UPDATE users SET xp = ? WHERE id = ?').run(minXp, row.id);
+    }
     db.prepare('UPDATE users SET is_staff = 1, is_global_admin = 1, password_hash = ? WHERE id = ?')
       .run(bcrypt.hashSync(ADMIN_PASSWORD, 10), row.id);
   }
 }
+
+// ---- Global announcement (mig66/mig33-style "/announcement" command) ----
+// A single row (id = 1), upserted in place. getAnnouncement() returns null
+// when there's nothing active so callers can just `if (announcement)`.
+db.getAnnouncement = function getAnnouncement() {
+  const row = db.prepare('SELECT announcement, announcement_by, announcement_at FROM app_settings WHERE id = 1').get();
+  if (!row || !row.announcement) return null;
+  return { text: row.announcement, by: row.announcement_by, at: row.announcement_at };
+};
+db.setAnnouncement = function setAnnouncement(text, by) {
+  db.prepare(`
+    INSERT INTO app_settings (id, announcement, announcement_by, announcement_at) VALUES (1, ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET announcement = excluded.announcement, announcement_by = excluded.announcement_by, announcement_at = excluded.announcement_at
+  `).run(text, by);
+};
+db.clearAnnouncement = function clearAnnouncement() {
+  db.prepare("UPDATE app_settings SET announcement = NULL, announcement_by = NULL, announcement_at = NULL WHERE id = 1").run();
+};
+
+// ---- Elite User auto-grant ----
+// Any active user who sends more than ELITE_GIFT_THRESHOLD gifts (lifetime —
+// gifts_sent_count, the same counter behind the Gift Contest leaderboard)
+// automatically receives the Elite User role, no Staff action needed. Call
+// this right after any UPDATE that bumps gifts_sent_count (see socket.js and
+// routes/giftstore.js) — it's a cheap no-op once someone is already Elite.
+const ELITE_GIFT_THRESHOLD = 5000;
+db.checkEliteEligibility = function checkEliteEligibility(userId) {
+  const row = db.prepare('SELECT is_elite, gifts_sent_count, username FROM users WHERE id = ?').get(userId);
+  if (!row || row.is_elite || row.gifts_sent_count < ELITE_GIFT_THRESHOLD) return;
+  db.prepare('UPDATE users SET is_elite = 1 WHERE id = ?').run(userId);
+  db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)').run(
+    userId, 'system', 'You are now an Elite User! 🏅',
+    `You've sent over ${ELITE_GIFT_THRESHOLD.toLocaleString()} gifts — Elite User status has been granted automatically.`
+  );
+};
 
 module.exports = db;

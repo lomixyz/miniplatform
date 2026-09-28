@@ -338,6 +338,29 @@ function roleIcon(u) {
   return '';
 }
 
+// Inline style="" for a rendered username, in priority order:
+// 1) A Staff member's own custom multi-color gradient (username_gradient —
+//    5 to 8 hex colors picked in Settings -> Color Shop -> Staff Gradient),
+//    which overrides the default 3-color green/blue/red .role-staff CSS
+//    gradient with their personal mix.
+// 2) A plain user's purchased Color Shop color — only applies when no role
+//    color/gradient is in play (a role always communicates permission level
+//    first, same priority rule as roleClass() above).
+function usernameStyleAttr(u) {
+  if (u.is_staff && u.username_gradient) {
+    let colors = null;
+    try { colors = JSON.parse(u.username_gradient); } catch (e) { /* ignore malformed value */ }
+    if (Array.isArray(colors) && colors.length >= 2) {
+      const stops = colors.map((c) => escapeHtml(c)).join(', ');
+      return ` style="background-image:linear-gradient(90deg, ${stops});-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;"`;
+    }
+  }
+  if (!roleClass(u) && u.username_color) {
+    return ` style="color:${escapeHtml(u.username_color)}"`;
+  }
+  return '';
+}
+
 // For screens (Members, Leaderboards) that render a username from scratch:
 // roleClass() already resolves the Staff-only-exception priority above, so
 // this just applies whichever wins — the role badge/icon always shows
@@ -462,8 +485,9 @@ $('#profileLevelBadge').addEventListener('click', () => pushSubScreen('Level', r
 
 function usernameHtml(u) {
   const cls = roleClass(u);
+  const style = usernameStyleAttr(u);
+  if (style) return `<span class="${cls}"${style}>${escapeHtml(u.username)}</span>${roleIcon(u)}`;
   if (cls) return `<span class="${cls}">${escapeHtml(u.username)}</span>${roleIcon(u)}`;
-  if (u.username_color) return `<span style="color:${escapeHtml(u.username_color)}">${escapeHtml(u.username)}</span>${roleIcon(u)}`;
   return escapeHtml(u.username);
 }
 
@@ -583,6 +607,12 @@ function connectSocket() {
   // show as a toast only, never as a message inside whatever room happens to be open.
   socket.on('personal_notice', (text) => toast(text));
   socket.on('error_message', (msg) => toast('⚠️ ' + msg));
+  // Site-wide announcement (Staff/Global Admin "/announcement" command) —
+  // the chat system_message line (posted server-side) already shows it
+  // wherever a room is open; this toast makes a freshly-posted one visible
+  // even if the person isn't looking at a room right now. `text: null` means
+  // it was cleared — nothing to show.
+  socket.on('announcement', ({ text }) => { if (text) toast('📢 ' + text); });
   socket.on('coins_update', ({ coins }) => { currentUser.coins = coins; updateUserBar(); });
   socket.on('legendary_state', (state) => {
     legendaryState = state;
@@ -1050,7 +1080,7 @@ function appendMessage(msg) {
     div.innerHTML = `<span class="user legendary-bot-name">${escapeHtml(msg.username || 'Game Bot')}:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
   } else if (msg.type === 'image' || msg.type === 'voice') {
     const cls = roleClass(msg);
-    const nameStyle = !cls && msg.username_color ? ` style="color:${escapeHtml(msg.username_color)}"` : '';
+    const nameStyle = usernameStyleAttr(msg);
     const mediaHtml = msg.type === 'image'
       ? `<img class="chat-shared-image" src="${escapeHtml(msg.content)}" alt="shared picture" loading="lazy" />`
       : `<audio class="chat-voice-note" src="${escapeHtml(msg.content)}" controls></audio>`;
@@ -1060,7 +1090,7 @@ function appendMessage(msg) {
     // No role badge? Fall back to a purchased Color Shop color, same as the
     // Participants panel and Members/Leaderboard screens — a role color
     // always wins, but a plain user's chosen color still shows in chat.
-    const nameStyle = !cls && msg.username_color ? ` style="color:${escapeHtml(msg.username_color)}"` : '';
+    const nameStyle = usernameStyleAttr(msg);
     div.innerHTML = `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
   }
   const box = $('#messages');
@@ -1115,7 +1145,7 @@ function playGiftShower({ username, level, emojis, giftName }) {
 // "/whois <username>" result — a small popup with level, country, and live
 // status. Open to every user (see WHOIS_COMMAND in socket.js).
 function showWhoisPopup(u) {
-  const nameStyle = !roleClass(u) && u.username_color ? ` style="color:${escapeHtml(u.username_color)}"` : '';
+  const nameStyle = usernameStyleAttr(u);
   $('#whoisContent').innerHTML = `
     <div class="avatar-circle whois-avatar" style="background:${colorFor(u.username)}; margin-left:auto; margin-right:auto;">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
     <div class="whois-name"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)}</div>
@@ -1401,7 +1431,7 @@ function renderRoomMembers(members) {
   members.forEach((m) => {
     const row = document.createElement('div');
     row.className = 'participant-row view-profile-row';
-    const nameStyle = !roleClass(m) && m.username_color ? ` style="color:${escapeHtml(m.username_color)}"` : '';
+    const nameStyle = usernameStyleAttr(m);
     row.innerHTML = `
       <div class="avatar-circle small" style="background:${colorFor(m.username)}">${escapeHtml(m.username.charAt(0).toUpperCase())}</div>
       <span class="status-dot ${statusDotClass(m.status)}" title="${m.status === 'offline' ? 'Offline — still in the room' : (STATUS_LABELS[m.status] || 'Online')}"></span>
@@ -2229,6 +2259,74 @@ async function renderColorShop(box) {
       lockNote.className = 'color-lock-note';
       lockNote.textContent = `🔒 Your color is locked in for ${daysLeft} more day${daysLeft === 1 ? '' : 's'} — you can switch or reset it after that.`;
       box.appendChild(lockNote);
+    }
+
+    // Staff-only: a personal 5-8 color gradient for your username, replacing
+    // the fixed green/blue/red Staff gradient everyone else gets — free,
+    // no Color Shop cost or lock (it's a role perk, not a purchase).
+    if (currentUser.is_staff) {
+      box.appendChild(sectionLabel('STAFF GRADIENT — YOUR OWN COLOR MIX'));
+      const gradBox = document.createElement('div');
+      gradBox.className = 'color-shop-row';
+      gradBox.style.flexDirection = 'column';
+      gradBox.style.alignItems = 'stretch';
+      gradBox.style.gap = '8px';
+      let current = [];
+      try { current = currentUser.username_gradient ? JSON.parse(currentUser.username_gradient) : []; } catch (e) { current = []; }
+      const preview = document.createElement('div');
+      preview.style.fontWeight = '800';
+      preview.style.fontSize = '18px';
+      preview.className = current.length ? 'role-staff-preview' : '';
+      if (current.length) {
+        preview.style.backgroundImage = `linear-gradient(90deg, ${current.join(', ')})`;
+        preview.style.webkitBackgroundClip = 'text';
+        preview.style.backgroundClip = 'text';
+        preview.style.webkitTextFillColor = 'transparent';
+      }
+      preview.textContent = currentUser.username;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = '#22c55e, #2563eb, #ef4444, #eab308, #a855f7 (5-8 hex colors)';
+      input.value = current.join(', ');
+      input.style.width = '100%';
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'primary-btn';
+      saveBtn.textContent = 'Save gradient';
+      saveBtn.addEventListener('click', async () => {
+        const colors = input.value.split(',').map((c) => c.trim()).filter(Boolean);
+        try {
+          const { user } = await api('/colors/gradient', { method: 'POST', body: JSON.stringify({ colors }) });
+          currentUser = user;
+          toast('Gradient saved!');
+          renderColorShop(box);
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'secondary-btn';
+      resetBtn.textContent = 'Reset to default';
+      resetBtn.disabled = !current.length;
+      resetBtn.addEventListener('click', async () => {
+        try {
+          const { user } = await api('/colors/gradient/reset', { method: 'POST' });
+          currentUser = user;
+          renderColorShop(box);
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+      gradBox.appendChild(preview);
+      gradBox.appendChild(input);
+      const btnRow = document.createElement('div');
+      btnRow.style.display = 'flex';
+      btnRow.style.gap = '8px';
+      btnRow.appendChild(saveBtn);
+      btnRow.appendChild(resetBtn);
+      gradBox.appendChild(btnRow);
+      box.appendChild(gradBox);
     }
 
     catalog.forEach((c) => {
@@ -3170,7 +3268,7 @@ async function renderFootprintScreen(box) {
   visitors.forEach((v) => {
     const row = document.createElement('div');
     row.className = 'list-row view-profile-row';
-    const nameStyle = !roleClass(v) && v.username_color ? ` style="color:${escapeHtml(v.username_color)}"` : '';
+    const nameStyle = usernameStyleAttr(v);
     row.innerHTML = `
       <div class="avatar-circle small" style="background:${colorFor(v.username)}">${escapeHtml(v.username.charAt(0).toUpperCase())}</div>
       <div class="list-row-body">
@@ -3203,7 +3301,7 @@ async function renderUserProfile(box, username) {
     box.innerHTML = '<div class="empty-note">User not found.</div>';
     return;
   }
-  const nameStyle = !roleClass(u) && u.username_color ? ` style="color:${escapeHtml(u.username_color)}"` : '';
+  const nameStyle = usernameStyleAttr(u);
   box.innerHTML = `
     <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
       <div class="avatar-maker-scene">${u.avatar_scene || ''}</div>

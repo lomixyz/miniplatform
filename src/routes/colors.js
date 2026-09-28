@@ -87,4 +87,39 @@ router.post('/reset', requireLogin, (req, res) => {
   res.json({ user: publicUser(updated) });
 });
 
+// ---- Staff Gradient (Settings -> Color Shop -> Staff Gradient) ----
+// Staff-only perk: pick your own 5-8 color mix for your username, instead of
+// the fixed 3-color green/blue/red .role-staff gradient everyone else gets.
+// Free (no Color Shop cost/lock) — it's a role perk, not a purchase.
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+router.post('/gradient', requireFlag('staff'), (req, res) => {
+  const userId = req.session.user.id;
+  const colors = Array.isArray(req.body && req.body.colors) ? req.body.colors.map((c) => String(c || '').trim()) : [];
+  if (colors.length < 5 || colors.length > 8) {
+    return res.status(400).json({ error: 'Pick between 5 and 8 colors for your gradient' });
+  }
+  if (!colors.every((c) => HEX_RE.test(c))) {
+    return res.status(400).json({ error: 'Every color must be a valid hex code, e.g. #22c55e' });
+  }
+  db.prepare('UPDATE users SET username_gradient = ? WHERE id = ?').run(JSON.stringify(colors), userId);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+
+  const refresh = req.app.get('refreshUserPresence');
+  if (refresh) refresh(userId);
+
+  res.json({ user: publicUser(updated) });
+});
+
+// Back to the default 3-color Staff gradient.
+router.post('/gradient/reset', requireFlag('staff'), (req, res) => {
+  const userId = req.session.user.id;
+  db.prepare('UPDATE users SET username_gradient = NULL WHERE id = ?').run(userId);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+
+  const refresh = req.app.get('refreshUserPresence');
+  if (refresh) refresh(userId);
+
+  res.json({ user: publicUser(updated) });
+});
+
 module.exports = router;

@@ -62,6 +62,7 @@ function publicUser(row) {
     total_spent: row.total_spent || 0,
     gifts_sent_count: row.gifts_sent_count || 0,
     username_color: row.username_color || null,
+    username_gradient: row.username_gradient || null,
     avatar_frame_color: row.avatar_frame_color || null,
     avatar_pet: row.avatar_pet || null,
     avatar_scene: row.avatar_scene || null,
