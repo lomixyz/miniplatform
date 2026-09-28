@@ -1119,7 +1119,7 @@ function attachSocket(io, sessionMiddleware) {
       // when Staff first posts it (see trySetAnnouncement above).
       const announcement = db.getAnnouncement();
       if (announcement) {
-        socket.emit('announcement', { text: announcement.text, by: announcement.by });
+        socket.emit('announcement', { text: announcement.text, by: announcement.by, live: false });
         socket.emit('system_message', `📢 Announcement from ${announcement.by}: ${announcement.text}`);
       }
 
@@ -1779,7 +1779,7 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
       db.setAnnouncement(text, user.username);
-      io.emit('announcement', { text, by: user.username });
+      io.emit('announcement', { text, by: user.username, live: true });
       io.emit('system_message', `📢 Announcement from ${user.username}: ${text}`);
     }
 
@@ -1794,7 +1794,7 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
       db.clearAnnouncement();
-      io.emit('announcement', { text: null });
+      io.emit('announcement', { text: null, live: true });
       io.emit('system_message', `📢 ${user.username} cleared the site announcement`);
     }
 

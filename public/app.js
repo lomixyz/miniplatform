@@ -54,6 +54,13 @@ const ROOM_BANNER_COLLAPSE_AFTER = 6;
 const roomBannerCollapsed = new Map(); // roomId -> bool (true once auto-hidden)
 const roomBannerMsgCount = new Map(); // roomId -> number of messages seen since entering
 
+// The current site-wide announcement (Staff/Global Admin "/announcement"
+// command), or null when none is active — kept in sync by the 'announcement'
+// socket event (both the live broadcast and the replay on room join) and
+// rendered as the pinned #announcementBanner inside the chat screen. See
+// renderAnnouncementBanner() and showBroadcastBanner() below.
+let currentAnnouncement = null;
+
 // Persisted chat messages (chat/gift/voucher — anything with a real DB id)
 // can arrive twice around a room entry: once live over the socket, once in
 // the join_room ack's history backlog, if the timing lands just right. Every
@@ -607,12 +614,20 @@ function connectSocket() {
   // show as a toast only, never as a message inside whatever room happens to be open.
   socket.on('personal_notice', (text) => toast(text));
   socket.on('error_message', (msg) => toast('⚠️ ' + msg));
-  // Site-wide announcement (Staff/Global Admin "/announcement" command) —
-  // the chat system_message line (posted server-side) already shows it
-  // wherever a room is open; this toast makes a freshly-posted one visible
-  // even if the person isn't looking at a room right now. `text: null` means
-  // it was cleared — nothing to show.
-  socket.on('announcement', ({ text }) => { if (text) toast('📢 ' + text); });
+  // Site-wide announcement (Staff/Global Admin "/announcement" command).
+  // Fires two different ways: `live: true` is a fresh post/clear, flashed to
+  // everyone online right now via the full-width Broadcast banner; a plain
+  // (non-live) copy is also sent to a socket on join_room as a replay of
+  // whatever's currently active, which only needs to update the pinned
+  // Announcement banner quietly (no flash — they didn't just miss anything).
+  socket.on('announcement', ({ text, by, live }) => {
+    currentAnnouncement = text ? { text, by } : null;
+    renderAnnouncementBanner();
+    if (live) {
+      if (text) showBroadcastBanner(by, text);
+      else toast('📢 Announcement cleared');
+    }
+  });
   socket.on('coins_update', ({ coins }) => { currentUser.coins = coins; updateUserBar(); });
   socket.on('legendary_state', (state) => {
     legendaryState = state;
@@ -2419,7 +2434,43 @@ function infoRow(icon, iconBg, title, subtitle) {
 // opening a menu, mirroring mig66's per-room chat header. Silence/moderator
 // management stays in the ⋮ → Room Info screen; this is just the always-on
 // summary view of the same data.
+// Pinned Announcement banner — shows/hides itself alongside the room-info
+// banner (same trigger points: entering a room, switching rooms, a live
+// membership update), so it's always in sync with whichever chat screen is
+// on view without needing its own separate set of call sites.
+function renderAnnouncementBanner() {
+  const el = $('#announcementBanner');
+  if (!el) return;
+  if (!currentAnnouncement) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <span class="announcement-label">📌 Announcement</span>
+    <span class="announcement-text">${escapeHtml(currentAnnouncement.text)}</span>
+  `;
+}
+
+// Live Broadcast flash banner — shown only for a genuinely fresh
+// "/announcement" post (not the replay a joining user gets), visible across
+// every screen for a few seconds then auto-hides.
+let broadcastBannerTimer = null;
+function showBroadcastBanner(by, text) {
+  const el = $('#broadcastBanner');
+  if (!el) return;
+  el.innerHTML = `
+    <span class="broadcast-label">📣 Broadcast</span>
+    <span class="broadcast-text">📣 <b>${escapeHtml(by || 'Staff')}</b> · ${escapeHtml(text)}</span>
+  `;
+  el.classList.remove('hidden');
+  clearTimeout(broadcastBannerTimer);
+  broadcastBannerTimer = setTimeout(() => el.classList.add('hidden'), 6000);
+}
+
 function renderRoomInfoBanner() {
+  renderAnnouncementBanner();
   const banner = $('#roomInfoBanner');
   if (!banner) return;
   const room = allRoomsCache.find((r) => r.id === currentRoomId);
