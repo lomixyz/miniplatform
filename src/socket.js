@@ -62,6 +62,12 @@ const WHOIS_COMMAND = /^\/whois\s+(\S+)\s*$/i;
 // still active. See trySetAnnouncement/tryClearAnnouncement below.
 const ANNOUNCEMENT_COMMAND = /^\/announcement\s+clear\s*$/i;
 const ANNOUNCEMENT_SET_COMMAND = /^\/announcement\s+(.+)$/is;
+// "/broadcast <text>" — Staff or Global Admin only; a one-time flash push to
+// everyone online right now (the blue "📣 Broadcast" banner). Unlike
+// "/announcement", it's never persisted and never replayed to someone
+// entering a room later — it's a moment, not a standing notice. See
+// tryBroadcast below.
+const BROADCAST_COMMAND = /^\/broadcast\s+(.+)$/is;
 // A silence never lasts longer than this, whatever's typed after /silence —
 // a sane ceiling against a fat-fingered "/silence 999999999".
 const MAX_SILENCE_SECONDS = 24 * 60 * 60;
@@ -1290,13 +1296,20 @@ function attachSocket(io, sessionMiddleware) {
         return trySetAnnouncement(announceMatch[1]);
       }
 
+      // "/broadcast <text>" — Staff/Global Admin only, one-time flash push
+      // (see BROADCAST_COMMAND above — never persisted, unlike /announcement).
+      const broadcastMatch = clean.match(BROADCAST_COMMAND);
+      if (broadcastMatch) {
+        return tryBroadcast(broadcastMatch[1]);
+      }
+
       // A message that starts with "/" but doesn't match any known command
       // used to silently get posted to the room as plain text, which looked
       // exactly like "nothing happened" for a typo'd or unrecognized command.
       // Reject it with a clear error instead, so a mismatch is obvious.
       if (/^\//.test(clean)) {
         console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
-        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, /announcement <text>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, /announcement <text>, /broadcast <text>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
       }
 
       postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean });
@@ -1800,6 +1813,26 @@ function attachSocket(io, sessionMiddleware) {
 
     on('set_announcement', ({ text }) => trySetAnnouncement(text));
     on('clear_announcement', () => tryClearAnnouncement());
+
+    // ---- Broadcast (Staff/Global Admin only) — a one-time flash push ----
+    // Unlike /announcement, this is never written to app_settings and never
+    // replayed to someone entering a room later: it's a "right now" push
+    // (the blue 📣 Broadcast banner on the client), not a standing notice.
+    function tryBroadcast(rawText) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can send a broadcast');
+        return;
+      }
+      const text = String(rawText || '').trim().slice(0, 500);
+      if (!text) {
+        socket.emit('error_message', 'Usage: /broadcast <text>');
+        return;
+      }
+      io.emit('broadcast', { text, by: user.username });
+    }
+
+    on('send_broadcast', ({ text }) => tryBroadcast(text));
 
     // ---- Room silence (Staff, Global Administrator, or a room moderator) ----
     // While a room is silenced, only Staff, Global Admin, the room's owner,

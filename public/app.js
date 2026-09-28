@@ -628,6 +628,10 @@ function connectSocket() {
       else toast('📢 Announcement cleared');
     }
   });
+  // "/broadcast <text>" (Staff/Global Admin) — a one-time flash push, always
+  // shown via the same blue banner as a fresh /announcement, but never
+  // persisted or replayed — see tryBroadcast in socket.js.
+  socket.on('broadcast', ({ text, by }) => { if (text) showBroadcastBanner(by, text); });
   socket.on('coins_update', ({ coins }) => { currentUser.coins = coins; updateUserBar(); });
   socket.on('legendary_state', (state) => {
     legendaryState = state;
