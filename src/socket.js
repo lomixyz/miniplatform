@@ -1985,6 +1985,12 @@ function attachSocket(io, sessionMiddleware) {
       if (!stillConnected) {
         presence.markOffline(user.id);
         invisibleByUser.delete(user.id);
+        // Push a live Participants/room-banner refresh to whoever's still in
+        // this room — without this, everyone else keeps seeing this user's
+        // last-known (online) status until something unrelated happens to
+        // trigger a re-broadcast (someone else joining/leaving). That's what
+        // made a logged-out/disconnected user appear stuck "in the room".
+        if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
       }
     });
   });

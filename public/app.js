@@ -2512,7 +2512,11 @@ function renderRoomInfoBanner() {
   }
 
   const ownerName = room.owner_username || 'MiniPlatform';
-  const memberNames = (lastRoomMembers || []).map((m) => m.username);
+  // "Currently in this room" should mean actually here right now — the
+  // Participants panel is the place that still lists offline/logged-out
+  // members (with an offline dot) since room membership itself is
+  // persistent; this line is not, so it only counts online members.
+  const memberNames = (lastRoomMembers || []).filter((m) => m.status !== 'offline').map((m) => m.username);
   const flag = countryFlag(room.name);
   const hasFlag = flag && flag !== '🌐';
   // Room Settings' free-text Room Description, when the owner/Staff has set
