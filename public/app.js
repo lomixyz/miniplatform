@@ -368,6 +368,21 @@ function usernameStyleAttr(u) {
   return '';
 }
 
+// Same priority logic as usernameStyleAttr(), but for the handful of spots
+// (Home profile card, nav drawer) that set an element's name via
+// .textContent instead of building an innerHTML string — those never picked
+// up the inline gradient/color style, so the username showed correctly
+// colored everywhere it was rendered via usernameHtml() (chat, lists,
+// leaderboards) but plain on Home/drawer. Call this right after setting
+// .textContent/.className on the element.
+function applyUsernameStyle(el, u) {
+  if (!el) return;
+  const raw = usernameStyleAttr(u); // '' or ' style="...;"'
+  const match = raw.match(/style="([^"]*)"/);
+  if (match) el.setAttribute('style', match[1]);
+  else el.removeAttribute('style');
+}
+
 // For screens (Members, Leaderboards) that render a username from scratch:
 // roleClass() already resolves the Staff-only-exception priority above, so
 // this just applies whichever wins — the role badge/icon always shows
@@ -506,6 +521,7 @@ function updateUserBar() {
   paintAvatar($('#profileAvatar'), currentUser.username);
   $('#profileUsername').textContent = currentUser.username;
   $('#profileUsername').className = roleClass(currentUser);
+  applyUsernameStyle($('#profileUsername'), currentUser);
   $('#profileLevelBadge').textContent = `⚡ ${currentUser.level}`;
   $('#profileBio').textContent = currentUser.bio || 'No bio yet.';
 
@@ -525,6 +541,7 @@ function updateUserBar() {
   paintAvatar($('#drawerAvatar'), currentUser.username);
   $('#drawerUsername').textContent = currentUser.username;
   $('#drawerUsername').className = 'drawer-profile-name ' + roleClass(currentUser);
+  applyUsernameStyle($('#drawerUsername'), currentUser);
   $('#drawerLevel').textContent = currentUser.level;
   $('#drawerXp').textContent = currentUser.xp;
   $('#drawerCoins').textContent = currentUser.coins;
