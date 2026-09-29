@@ -48,6 +48,9 @@ function publicProfileCard(row) {
     country: row.country || null,
     created_at: row.created_at || null,
     status: presence.effectiveStatus(row.id, row.status),
+    equipped_badge: row.equipped_badge_id
+      ? db.prepare('SELECT id, name, emoji FROM badges_catalog WHERE id = ?').get(row.equipped_badge_id) || null
+      : null,
   };
 }
 

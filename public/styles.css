@@ -239,6 +239,60 @@ body::after {
 /* Screens */
 .screen { padding: 16px; max-width: 900px; margin: 0 auto; height: calc(100vh - 57px); overflow-y: auto; }
 
+/* ===================== Desktop 3-column shell =====================
+   Mobile/PWA (below 960px) is untouched — .desktop-only simply stays
+   hidden and #appBody behaves like a plain block wrapper, so the phone
+   experience is exactly what it was before this shell existed. At
+   desktop widths, a persistent profile sidebar (left) and room-list
+   sidebar (right) frame the existing Home/Rooms/Chat screens, iNwe-style. */
+.desktop-only { display: none; }
+#topbar { flex-wrap: wrap; }
+.desktop-nav-btn { display: none; }
+
+@media (min-width: 960px) {
+  .desktop-only { display: block; }
+  .desktop-nav-btn { display: inline-flex; }
+  #appBody {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr) 280px;
+    align-items: start;
+    gap: 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  #leftSidebar, #rightSidebar {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
+  }
+  #centerColumn .screen { max-width: none; margin: 0; padding: 0; height: auto; }
+}
+
+#leftSidebar .profile-card { margin-bottom: 12px; }
+#leftSidebar .quick-actions-row { margin-bottom: 0; }
+
+.sidebar-create-room-btn { width: 100%; margin-bottom: 14px; padding: 12px; border-radius: 10px; font-weight: 700; }
+.sidebar-room-section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
+.sidebar-section-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  font-weight: 700; font-size: 13px; background: var(--panel-alt); cursor: pointer;
+}
+.sidebar-section-header span:first-child { flex: 1; }
+.sidebar-refresh-btn { padding: 2px 4px; font-size: 12px; background: transparent; }
+.sidebar-chevron { font-size: 12px; color: var(--text-dim); transition: transform 0.15s; }
+.sidebar-room-section.collapsed .sidebar-chevron { transform: rotate(180deg); }
+.sidebar-room-section.collapsed .sidebar-room-list { display: none; }
+.sidebar-room-list { padding: 4px; max-height: 260px; overflow-y: auto; }
+.sidebar-room-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.sidebar-room-row:hover { background: var(--panel-alt); }
+.sidebar-room-row .sidebar-room-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--success); flex: none; }
+.sidebar-room-row .sidebar-room-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-room-row .sidebar-room-count { font-size: 11px; color: var(--text-dim); flex: none; }
+
 /* Home: profile card */
 .profile-card {
   background: linear-gradient(135deg, var(--card), var(--panel-alt));
@@ -428,9 +482,17 @@ body::after {
 #emojiPickerPopover {
   position: absolute; right: 20px; bottom: 62px; z-index: 20;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-  padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25); width: 216px;
+  padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); width: 216px;
+  max-height: 260px; overflow-y: auto;
 }
+/* Emoji / Stickers tab row (Stickers tab shows owned Sticker Store packs —
+   see renderEmojiPickerPopover() in app.js). */
+.emoji-picker-tabs { display: flex; gap: 4px; margin-bottom: 6px; }
+.emoji-picker-tab {
+  flex: 1; background: var(--panel-alt); border-radius: 8px; padding: 5px; font-size: 11px; font-weight: 700;
+}
+.emoji-picker-tab.active { background: var(--accent); color: #fff; }
+.emoji-picker-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
 .emoji-picker-item { background: transparent; padding: 4px; font-size: 18px; border-radius: 6px; }
 .emoji-picker-item:hover { background: var(--panel-alt); }
 
@@ -727,6 +789,24 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
    .notif-screen family for its outer chrome; the pieces below are specific
    to list-style content inside it. */
 #subScreenOverlay { position: fixed; inset: 0; z-index: 75; }
+/* Explore / Family — a 2-column card grid (iNwe-style category tiles)
+   instead of a flat list-row per item. Built by exploreCard() in app.js;
+   used by renderExplore() and renderMembersGroups(). */
+.explore-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 10px; }
+@media (max-width: 480px) { .explore-grid { grid-template-columns: 1fr; } }
+.explore-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 10px;
+}
+.explore-card:hover { border-color: var(--accent); }
+.explore-card-icon {
+  width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center;
+  justify-content: center; font-size: 20px;
+}
+.explore-card-title { font-weight: 800; font-size: 15px; }
+.explore-card-subtitle { color: var(--text-dim); font-size: 12px; line-height: 1.4; flex: 1; }
+.explore-card-link { font-size: 12px; font-weight: 700; color: var(--accent-light); letter-spacing: 0.3px; }
+
 .list-row {
   display: flex; align-items: center; gap: 12px; padding: 12px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;

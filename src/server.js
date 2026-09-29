@@ -22,6 +22,8 @@ const postRoutes = require('./routes/posts');
 const giftStoreRoutes = require('./routes/giftstore');
 const userRoutes = require('./routes/users');
 const merchantRoutes = require('./routes/merchant');
+const badgeRoutes = require('./routes/badges');
+const stickerRoutes = require('./routes/stickers');
 const { attachSocket } = require('./socket');
 
 const app = express();
@@ -64,6 +66,8 @@ app.use('/api/posts', postRoutes);
 app.use('/api/giftstore', giftStoreRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/merchant', merchantRoutes);
+app.use('/api/badges', badgeRoutes);
+app.use('/api/stickers', stickerRoutes);
 
 const { refreshUserPresence } = attachSocket(io, sessionMiddleware);
 app.set('refreshUserPresence', refreshUserPresence); // lets HTTP routes (Color Shop, Avatar Maker) live-refresh a user's room presence

@@ -1387,25 +1387,80 @@ $('#voiceNoteBtn').addEventListener('click', async () => {
   }
 });
 
-// ---------- EMOJI PICKER ----------
+// ---------- EMOJI PICKER (+ Stickers tab — Sticker Store purchases) ----------
 const EMOJI_PICKER_SET = ['😀','😂','😍','😎','🥳','😢','😡','👍','👎','🙏','🔥','💯','❤️','🎉','😅','🤔','👏','🙌','😴','🤩','😱','🥰','😭','🫡','✨','💪','🎁','🌹','☕','🚀'];
+let emojiPickerTab = 'emoji'; // 'emoji' | 'stickers'
+let ownedStickerPacksCache = null; // lazy-loaded, refreshed each time the Sticker Store buys something
+
+function insertIntoChatInput(text) {
+  const input = $('#chatInput');
+  input.value += text;
+  input.focus();
+}
+
+function renderEmojiPickerPopover() {
+  const pop = $('#emojiPickerPopover');
+  pop.innerHTML = '';
+
+  const tabs = document.createElement('div');
+  tabs.className = 'emoji-picker-tabs';
+  ['emoji', 'stickers'].forEach((tab) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'emoji-picker-tab' + (emojiPickerTab === tab ? ' active' : '');
+    btn.textContent = tab === 'emoji' ? '😊 Emoji' : '🌟 Stickers';
+    btn.addEventListener('click', () => { emojiPickerTab = tab; renderEmojiPickerPopover(); });
+    tabs.appendChild(btn);
+  });
+  pop.appendChild(tabs);
+
+  const grid = document.createElement('div');
+  grid.className = 'emoji-picker-grid';
+  pop.appendChild(grid);
+
+  if (emojiPickerTab === 'emoji') {
+    EMOJI_PICKER_SET.forEach((emoji) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'emoji-picker-item';
+      btn.textContent = emoji;
+      btn.addEventListener('click', () => insertIntoChatInput(emoji));
+      grid.appendChild(btn);
+    });
+    return;
+  }
+
+  // Stickers tab — owned packs only (bought from Explore -> Sticker Store).
+  if (!ownedStickerPacksCache) {
+    grid.innerHTML = '<div class="empty-note">Loading…</div>';
+    api('/stickers').then((data) => {
+      ownedStickerPacksCache = data.packs.filter((p) => p.owned);
+      if (emojiPickerTab === 'stickers') renderEmojiPickerPopover();
+    }).catch(() => { grid.innerHTML = '<div class="empty-note">Couldn\'t load stickers.</div>'; });
+    return;
+  }
+  if (!ownedStickerPacksCache.length) {
+    grid.innerHTML = '<div class="empty-note">No sticker packs yet — check out the Sticker Store in Explore.</div>';
+    return;
+  }
+  ownedStickerPacksCache.forEach((pack) => {
+    pack.stickers.forEach((sticker) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'emoji-picker-item';
+      btn.title = pack.name;
+      btn.textContent = sticker;
+      btn.addEventListener('click', () => insertIntoChatInput(sticker));
+      grid.appendChild(btn);
+    });
+  });
+}
+
 $('#emojiPickerBtn').addEventListener('click', (e) => {
   e.stopPropagation();
   const pop = $('#emojiPickerPopover');
   if (!pop.classList.contains('hidden')) { pop.classList.add('hidden'); return; }
-  pop.innerHTML = '';
-  EMOJI_PICKER_SET.forEach((emoji) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'emoji-picker-item';
-    btn.textContent = emoji;
-    btn.addEventListener('click', () => {
-      const input = $('#chatInput');
-      input.value += emoji;
-      input.focus();
-    });
-    pop.appendChild(btn);
-  });
+  renderEmojiPickerPopover();
   pop.classList.remove('hidden');
 });
 document.addEventListener('click', (e) => {
@@ -2212,6 +2267,9 @@ function renderExplore(box) {
   if (!currentUser.is_merchant) {
     cards.push({ icon: '🧑‍💼', bg: '#0ea5e9', title: 'Become a Merchant', subtitle: 'Apply for the Merchant role', open: () => pushSubScreen('Become a Merchant', renderMerchantApply) });
   }
+  cards.push({ icon: '🎖️', bg: '#a855f7', title: 'Badge Store', subtitle: 'Purchase and unlock unique badges', open: () => pushSubScreen('Badge Store', renderBadgeStore) });
+  cards.push({ icon: '🛡️', bg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your earned badges', open: () => pushSubScreen('Badge Panel', renderBadgePanel) });
+  cards.push({ icon: '🌟', bg: '#f43f5e', title: 'Sticker Store', subtitle: 'Browse sticker packs to use in chat', open: () => pushSubScreen('Sticker Store', renderStickerStore) });
   if (currentUser.is_staff) {
     cards.push({ icon: '🛠️', bg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts (Staff)', open: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) });
     cards.push({ icon: '📋', bg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (Staff)', open: () => pushSubScreen('Merchant Applications', renderMerchantApplications) });
@@ -3266,6 +3324,116 @@ async function renderGiftStore(box) {
   });
 }
 
+// ---------- BADGE STORE (Explore -> Badge Store) ----------
+async function renderBadgeStore(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let data;
+  try {
+    data = await api('/badges');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'explore-grid';
+  data.catalog.forEach((b) => {
+    const card = exploreCard({
+      icon: b.emoji, iconBg: '#a855f7',
+      title: b.name,
+      subtitle: b.owned ? 'Owned — manage it in Badge Panel' : `${b.cost.toLocaleString()} coins`,
+      linkLabel: b.owned ? 'OWNED' : 'BUY',
+      onClick: b.owned ? null : async () => {
+        try {
+          await api(`/badges/${b.id}/buy`, { method: 'POST' });
+          toast(`Bought ${b.name}!`);
+          renderBadgeStore(box);
+        } catch (err) { toast(err.message); }
+      },
+    });
+    if (b.owned) card.style.opacity = '0.6';
+    grid.appendChild(card);
+  });
+  box.appendChild(grid);
+}
+
+// ---------- BADGE PANEL (Explore -> Badge Panel) — equip/unequip owned badges ----------
+async function renderBadgePanel(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let data;
+  try {
+    data = await api('/badges');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  const owned = data.catalog.filter((b) => b.owned);
+  box.innerHTML = '';
+  if (!owned.length) {
+    box.innerHTML = '<div class="empty-note">You don\'t own any badges yet — check out the Badge Store.</div>';
+    return;
+  }
+  const grid = document.createElement('div');
+  grid.className = 'explore-grid';
+  owned.forEach((b) => {
+    const equipped = data.equippedBadgeId === b.id;
+    const card = exploreCard({
+      icon: b.emoji, iconBg: equipped ? '#22c55e' : '#64748b',
+      title: b.name,
+      subtitle: equipped ? 'Equipped — shown on your profile' : 'Tap to equip on your profile',
+      linkLabel: equipped ? 'UNEQUIP' : 'EQUIP',
+      onClick: async () => {
+        try {
+          const { user } = await api('/badges/equip', { method: 'POST', body: JSON.stringify({ badgeId: equipped ? null : b.id }) });
+          currentUser = user;
+          renderBadgePanel(box);
+        } catch (err) { toast(err.message); }
+      },
+    });
+    grid.appendChild(card);
+  });
+  box.appendChild(grid);
+}
+
+// ---------- STICKER STORE (Explore -> Sticker Store) ----------
+async function renderStickerStore(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let data;
+  try {
+    data = await api('/stickers');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+  data.packs.forEach((p) => {
+    const section = document.createElement('div');
+    section.className = 'section-card';
+    section.innerHTML = `
+      <div class="section-header">
+        <span style="flex:1;">${escapeHtml(p.name)} — ${p.stickers.join(' ')}</span>
+        <span class="count-chip">${p.owned ? 'Owned' : `${p.cost.toLocaleString()} 🪙`}</span>
+      </div>
+    `;
+    if (!p.owned) {
+      const btn = document.createElement('button');
+      btn.className = 'primary-btn';
+      btn.style.margin = '10px';
+      btn.textContent = `Buy for ${p.cost.toLocaleString()} coins`;
+      btn.addEventListener('click', async () => {
+        try {
+          await api(`/stickers/${p.id}/buy`, { method: 'POST' });
+          toast(`Unlocked ${p.name}!`);
+          ownedStickerPacksCache = null; // so the chat emoji picker's Stickers tab picks it up
+          renderStickerStore(box);
+        } catch (err) { toast(err.message); }
+      });
+      section.appendChild(btn);
+    }
+    box.appendChild(section);
+  });
+}
+
 // ---------- BECOME A MERCHANT (Explore -> Become a Merchant) ----------
 async function renderMerchantApply(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
@@ -3475,7 +3643,7 @@ async function renderMyProfile(box) {
       <div class="avatar-circle" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
       <div class="avatar-maker-pet">${u.avatar_pet || ''}</div>
     </div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${usernameHtml(u)}</div><div class="list-row-subtitle">Level ${u.level} · ${u.xp} XP</div></div></div>
+    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${usernameHtml(u)}${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div><div class="list-row-subtitle">Level ${u.level} · ${u.xp} XP</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🪙 ${u.coins} coins</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
     <div class="list-row footprint-row" id="footprintRow"><div class="list-row-body"><div class="list-row-title">👣 Footprint</div><div class="list-row-subtitle">Who's seen your profile</div></div><div class="list-row-trailing"><span class="footprint-count-badge" id="footprintCountBadge">…</span></div></div>
@@ -3582,7 +3750,7 @@ async function renderUserProfile(box, username) {
       <div class="avatar-maker-pet">${u.avatar_pet || ''}</div>
     </div>
     <div class="list-row"><div class="list-row-body">
-      <div class="list-row-title"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span></div>
+      <div class="list-row-title"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
       <div class="list-row-subtitle">Level ${u.level} · ${STATUS_LABELS[u.status] || 'Offline'}</div>
     </div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>

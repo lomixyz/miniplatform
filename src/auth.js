@@ -1,4 +1,5 @@
 const { levelFromXp } = require('./level');
+const db = require('./db');
 
 // A purchased Color Shop color is locked in (can't be reset/replaced) for
 // this many days from the purchase timestamp — see routes/colors.js.
@@ -42,6 +43,11 @@ function colorLockedUntil(boughtAt) {
 function publicUser(row) {
   if (!row) return null;
   const { level, xpIntoLevel, xpForNextLevel } = levelFromXp(row.xp || 0);
+  // Badge Store (Explore -> Badge Panel to equip) — resolved here (not just
+  // the bare id) so the profile card can show it without a second round trip.
+  const equippedBadge = row.equipped_badge_id
+    ? db.prepare('SELECT id, name, emoji FROM badges_catalog WHERE id = ?').get(row.equipped_badge_id)
+    : null;
   return {
     id: row.id,
     username: row.username,
@@ -73,6 +79,7 @@ function publicUser(row) {
     created_at: row.created_at || null,
     status: row.status === 'away' || row.status === 'busy' ? row.status : 'online',
     username_color_locked_until: colorLockedUntil(row.username_color_bought_at),
+    equipped_badge: equippedBadge || null,
   };
 }
 

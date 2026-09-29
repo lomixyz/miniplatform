@@ -91,6 +91,40 @@ CREATE TABLE IF NOT EXISTS gifts_catalog (
   cost INTEGER NOT NULL
 );
 
+-- Badge Store (Explore -> Badge Store to buy with coins, Badge Panel to
+-- equip/unequip) — a purely cosmetic one-time purchase, showcased on the
+-- buyer's profile card (see users.equipped_badge_id above). Ownership is
+-- tracked in user_badges; a badge can only be bought once per user.
+CREATE TABLE IF NOT EXISTS badges_catalog (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  cost INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_badges (
+  user_id INTEGER NOT NULL,
+  badge_id INTEGER NOT NULL,
+  purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, badge_id)
+);
+
+-- Sticker Store (Explore -> Sticker Store) — packs of emoji "stickers"
+-- bought once with coins; owned packs' stickers then show up as a Stickers
+-- tab in the chat emoji picker (see #emojiPickerPopover in app.js), same
+-- insert-into-chat-input behavior as a regular emoji.
+CREATE TABLE IF NOT EXISTS sticker_packs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  stickers TEXT NOT NULL, -- JSON array of emoji strings
+  cost INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_sticker_packs (
+  user_id INTEGER NOT NULL,
+  pack_id INTEGER NOT NULL,
+  purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, pack_id)
+);
+
 -- Color Shop catalog (Settings -> Color Shop). Was a hard-coded array in
 -- routes/colors.js; now a real table so Staff can change a color's price
 -- (POST /colors/:id/price) without a code change/redeploy. Kept a TEXT id
@@ -321,6 +355,7 @@ const newUserColumns = [
   ['is_bot', "INTEGER NOT NULL DEFAULT 0"], // 0/1: an ambient chat account (see src/chatbots.js) — never a real login-worthy distinction, just keeps simulated chatter from ever picking a real user's account
   ['status', "TEXT NOT NULL DEFAULT 'online'"], // 'online' | 'away' | 'busy' — the user's own chosen presence state while connected; the *effective* status shown to others is 'offline' whenever they have no live socket at all, regardless of this column (see presence.js effectiveStatus).
   ['username_color_bought_at', 'TEXT'], // when the current username_color was purchased from the Color Shop — a purchased color can't be reset/replaced for 30 days from this timestamp (see routes/colors.js COLOR_LOCK_DAYS). NULL means no active lock (never bought one, or it already expired).
+  ['equipped_badge_id', 'INTEGER'], // Badge Store (Explore -> Badge Store to buy, Badge Panel to equip/unequip) — the one owned badge (badges_catalog.id, or NULL for none) currently showcased on this user's profile card.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
@@ -459,6 +494,28 @@ if (giftCount === 0) {
   insertGift.run('Angel', '👼', 300);
   insertGift.run('Bhai', '🫂', 80);
   insertGift.run('Boss', '🤵', 400);
+}
+
+// Seed Badge Store catalog
+const badgeCount = db.prepare('SELECT COUNT(*) c FROM badges_catalog').get().c;
+if (badgeCount === 0) {
+  const insertBadge = db.prepare('INSERT INTO badges_catalog (name, emoji, cost) VALUES (?, ?, ?)');
+  insertBadge.run('Rising Star', '🌟', 500);
+  insertBadge.run('Night Owl', '🦉', 800);
+  insertBadge.run('Firestarter', '🔥', 1200);
+  insertBadge.run('Trendsetter', '⚡', 2000);
+  insertBadge.run('Champion', '🏆', 5000);
+  insertBadge.run('Legend', '🐉', 10000);
+}
+
+// Seed Sticker Store catalog
+const stickerPackCount = db.prepare('SELECT COUNT(*) c FROM sticker_packs').get().c;
+if (stickerPackCount === 0) {
+  const insertPack = db.prepare('INSERT INTO sticker_packs (name, stickers, cost) VALUES (?, ?, ?)');
+  insertPack.run('Classic Faces', JSON.stringify(['😂','😍','😎','🥳','😭','🤩']), 300);
+  insertPack.run('Party Pack', JSON.stringify(['🎉','🎊','🥂','🎈','🍾','✨']), 500);
+  insertPack.run('Love & Hearts', JSON.stringify(['❤️','💕','💗','💘','😘','🌹']), 500);
+  insertPack.run('Animals', JSON.stringify(['🐶','🐱','🦁','🐼','🦊','🐸']), 400);
 }
 
 // Seed the Color Shop catalog once (id, name, hex, starting cost — the same
