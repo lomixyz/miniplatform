@@ -297,6 +297,10 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
   connectSocket();
   loadGifts();
   refreshBadgeCounts();
+  // Populates the desktop right sidebar's room lists (see #rightSidebar)
+  // right away — it's persistent across screens, unlike the Rooms screen
+  // it mirrors, so it shouldn't wait for the user to open Rooms first.
+  refreshRooms();
 
   const saved = restoreRoom ? readSavedRoom() : null;
   if (!restoreRoom) clearSavedRoom();
@@ -621,6 +625,14 @@ $('#alertsBtn').addEventListener('click', openAlerts);
 $('#emailsBtn').addEventListener('click', openEmails);
 $('#friendsBtn').addEventListener('click', openFriends);
 
+// Desktop-only top bar icons (hidden on mobile — see .desktop-nav-btn in
+// styles.css) — same destinations the drawer/quick-actions already open,
+// just reachable directly from the persistent top bar like iNwe's icon row.
+$('#navExploreBtn').addEventListener('click', openDrawerExplore);
+$('#navFriendsBtn').addEventListener('click', openFriends);
+$('#navAlertsTopBtn').addEventListener('click', openAlerts);
+$('#navFamilyBtn').addEventListener('click', () => openSubScreenFromDrawer('Family', renderMembersGroups));
+
 // ---------- SOCKET ----------
 function connectSocket() {
   socket = io();
@@ -829,6 +841,7 @@ async function refreshBadgeCounts() {
     const { unread: alertsUnread } = await api('/alerts');
     setBadge($('#alertsBadge'), alertsUnread);
     setBadge($('#drawerAlertsBadge'), alertsUnread);
+    setBadge($('#navAlertsTopBadge'), alertsUnread);
   } catch (e) {}
   try {
     const { unread: emailsUnread } = await api('/messages');
@@ -882,7 +895,63 @@ function renderRoomGrids(all, recent) {
   fillRoomGrid('#recentRoomGrid', recentF, 'No recent rooms.');
   fillRoomGrid('#officialRoomGrid', officialF, 'No official rooms.');
   fillRoomGrid('#otherRoomGrid', otherF, 'No other rooms yet.');
+
+  // Desktop-only right sidebar (see #rightSidebar in index.html) — same
+  // underlying room data as the grids above, just a compact always-visible
+  // list instead of a dedicated Rooms screen you have to navigate to.
+  renderSidebarRoomLists(all, recent);
 }
+
+function renderSidebarRoomLists(all, recent) {
+  const favorites = all.filter((r) => r.isFavorite);
+  fillSidebarRoomList('#sidebarFavoriteRooms', favorites, 'No favorite rooms yet — star one from Rooms.');
+  fillSidebarRoomList('#sidebarOfficialRooms', all.filter((r) => r.is_official), 'No official rooms.');
+  fillSidebarRoomList('#sidebarRecentRooms', recent, 'No recent rooms.');
+  $('#sidebarFavoriteCount').textContent = favorites.length;
+  $('#sidebarOfficialCount').textContent = all.filter((r) => r.is_official).length;
+  $('#sidebarRecentCount').textContent = recent.length;
+}
+
+function fillSidebarRoomList(sel, rooms, emptyText) {
+  const box = $(sel);
+  box.innerHTML = '';
+  if (!rooms.length) {
+    box.innerHTML = `<div class="empty-note">${emptyText}</div>`;
+    return;
+  }
+  rooms.forEach((room) => {
+    const row = document.createElement('div');
+    row.className = 'sidebar-room-row';
+    row.innerHTML = `
+      <span class="sidebar-room-dot"></span>
+      <span class="sidebar-room-name">${escapeHtml(room.name)}${room.is_official ? ' ✅' : ''}</span>
+      <span class="sidebar-room-count">${room.memberCount}/${room.capacity}</span>
+    `;
+    row.title = room.name;
+    row.addEventListener('click', () => enterRoom(room.id, room.name));
+    box.appendChild(row);
+  });
+}
+
+// Collapsible sidebar sections (chevron toggle) + a per-section refresh
+// icon that just re-pulls the same room data every section is built from.
+document.querySelectorAll('.sidebar-section-header').forEach((header) => {
+  header.addEventListener('click', (e) => {
+    if (e.target.classList.contains('sidebar-refresh-btn')) return;
+    header.closest('.sidebar-room-section').classList.toggle('collapsed');
+  });
+  const refreshBtn = header.querySelector('.sidebar-refresh-btn');
+  if (refreshBtn) refreshBtn.addEventListener('click', (e) => { e.stopPropagation(); refreshRooms(); });
+});
+
+// "+ Create Room" in the sidebar reuses the exact same form/submit flow as
+// the Rooms screen's ➕ button — just jumps there and opens it, instead of
+// duplicating the create-room logic.
+$('#sidebarCreateRoomBtn').addEventListener('click', () => {
+  showScreen('rooms');
+  $('#roomForm').classList.remove('hidden');
+  $('#newRoomName').focus();
+});
 
 function fillRoomGrid(sel, rooms, emptyText) {
   const grid = $(sel);
@@ -2089,6 +2158,21 @@ function openSubScreenFromDrawer(title, render) {
   pushSubScreen(title, render);
 }
 
+// iNwe-style category tile — icon, title, subtitle, "EXPLORE CATEGORY →"
+// link — used in a 2-column .explore-grid instead of a flat list-row.
+function exploreCard({ icon, iconBg, title, subtitle, onClick, linkLabel }) {
+  const card = document.createElement('div');
+  card.className = 'explore-card';
+  card.innerHTML = `
+    <div class="explore-card-icon" style="background:${iconBg || '#3b82f6'}22; color:${iconBg || '#3b82f6'}">${icon || '•'}</div>
+    <div class="explore-card-title">${escapeHtml(title)}</div>
+    ${subtitle ? `<div class="explore-card-subtitle">${escapeHtml(subtitle)}</div>` : ''}
+    <div class="explore-card-link">${escapeHtml(linkLabel || 'EXPLORE CATEGORY')} →</div>
+  `;
+  if (onClick) card.addEventListener('click', onClick);
+  return card;
+}
+
 function listRow({ icon, iconBg, title, subtitle, onClick, trailing }) {
   const row = document.createElement('div');
   row.className = 'list-row';
@@ -2125,10 +2209,17 @@ function renderExplore(box) {
     { icon: '🧑‍🎨', bg: '#ef4444', title: 'Avatar Maker', subtitle: 'Frame, pet & scene', open: () => pushSubScreen('Avatar Maker', renderAvatarMaker) },
     { icon: '📜', bg: '#10b981', title: 'Command List', subtitle: 'Chat commands you can use', open: () => pushSubScreen('Command List', renderCommandList) },
   ];
+  if (!currentUser.is_merchant) {
+    cards.push({ icon: '🧑‍💼', bg: '#0ea5e9', title: 'Become a Merchant', subtitle: 'Apply for the Merchant role', open: () => pushSubScreen('Become a Merchant', renderMerchantApply) });
+  }
   if (currentUser.is_staff) {
     cards.push({ icon: '🛠️', bg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts (Staff)', open: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) });
+    cards.push({ icon: '📋', bg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (Staff)', open: () => pushSubScreen('Merchant Applications', renderMerchantApplications) });
   }
-  cards.forEach((c) => box.appendChild(listRow({ icon: c.icon, iconBg: c.bg, title: c.title, subtitle: c.subtitle, onClick: c.open })));
+  const grid = document.createElement('div');
+  grid.className = 'explore-grid';
+  cards.forEach((c) => grid.appendChild(exploreCard({ icon: c.icon, iconBg: c.bg, title: c.title, subtitle: c.subtitle, onClick: c.open })));
+  box.appendChild(grid);
 }
 function openDrawerExplore() { openSubScreenFromDrawer('Explore', renderExplore); }
 
@@ -2144,17 +2235,28 @@ const MEMBER_GROUP_META = {
   top_level: { icon: '⭐', bg: '#f97316' },
 };
 
+// The "Family" role directory (Executive Board, Country Representative,
+// Staff, Mentor, Merchant, Elite, Top Level...) — same underlying /members
+// grouping as before, rendered as iNwe-style cards instead of list rows.
 async function renderMembersGroups(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   try {
     const { groups } = await api('/members');
     box.innerHTML = '';
     let lastSection = null;
+    let grid = null;
     groups.forEach((g) => {
-      if (g.section !== lastSection) { box.appendChild(sectionLabel(g.section.toUpperCase())); lastSection = g.section; }
+      if (g.section !== lastSection) {
+        box.appendChild(sectionLabel(g.section.toUpperCase()));
+        grid = document.createElement('div');
+        grid.className = 'explore-grid';
+        box.appendChild(grid);
+        lastSection = g.section;
+      }
       const meta = MEMBER_GROUP_META[g.key] || { icon: '👤', bg: '#64748b' };
-      box.appendChild(listRow({
+      grid.appendChild(exploreCard({
         icon: meta.icon, iconBg: meta.bg, title: g.label, subtitle: `${g.count} member${g.count === 1 ? '' : 's'}`,
+        linkLabel: 'VIEW MEMBERS',
         onClick: () => pushSubScreen(g.label, renderMembersList(g.key, g.label)),
       }));
     });
@@ -3162,6 +3264,101 @@ async function renderGiftStore(box) {
       toast(err.message);
     }
   });
+}
+
+// ---------- BECOME A MERCHANT (Explore -> Become a Merchant) ----------
+async function renderMerchantApply(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let status;
+  try {
+    status = await api('/merchant/status');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+
+  if (status.isMerchant) {
+    box.innerHTML = '<div class="empty-note">💼 You\'re already a Merchant.</div>';
+    return;
+  }
+  if (status.application && status.application.status === 'pending') {
+    box.innerHTML = `
+      <div class="empty-note">⏳ Your application is pending review by Staff.</div>
+      <div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">"${escapeHtml(status.application.message || '')}"</div></div></div>
+    `;
+    return;
+  }
+
+  const note = document.createElement('div');
+  note.className = 'empty-note';
+  note.textContent = status.application && status.application.status === 'rejected'
+    ? 'Your last application was declined — you can apply again below.'
+    : 'Tell Staff why you\'d like to become a Merchant, then submit.';
+  box.appendChild(note);
+
+  const composer = document.createElement('div');
+  composer.className = 'post-composer';
+  composer.innerHTML = `
+    <textarea id="merchantApplyMessage" placeholder="Why should you become a Merchant?" maxlength="500" rows="4" style="width:100%;"></textarea>
+    <button id="merchantApplySubmitBtn" class="primary-btn">Submit Application</button>
+  `;
+  box.appendChild(composer);
+  $('#merchantApplySubmitBtn').addEventListener('click', async () => {
+    const message = $('#merchantApplyMessage').value.trim();
+    try {
+      await api('/merchant/apply', { method: 'POST', body: JSON.stringify({ message }) });
+      toast('Application submitted!');
+      renderMerchantApply(box);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
+// ---------- MERCHANT APPLICATIONS (Explore -> Merchant Applications, Staff only) ----------
+async function renderMerchantApplications(box) {
+  if (!currentUser.is_staff) { box.innerHTML = '<div class="empty-note">Staff only.</div>'; return; }
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+
+  const draw = async () => {
+    let applications;
+    try {
+      ({ applications } = await api('/merchant/pending'));
+    } catch (err) {
+      box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    box.innerHTML = '';
+    if (!applications.length) {
+      box.innerHTML = '<div class="empty-note">No pending applications.</div>';
+      return;
+    }
+    applications.forEach((a) => {
+      const row = document.createElement('div');
+      row.className = 'list-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.innerHTML = `
+        <div class="list-row-title">${escapeHtml(a.username)}</div>
+        <div class="list-row-subtitle">"${escapeHtml(a.message || '(no message)')}"</div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="primary-btn merchant-approve-btn" data-id="${a.id}">Approve</button>
+          <button class="secondary-btn merchant-reject-btn" data-id="${a.id}">Reject</button>
+        </div>
+      `;
+      row.querySelector('.merchant-approve-btn').addEventListener('click', async () => {
+        try { await api(`/merchant/${a.id}/approve`, { method: 'POST' }); toast(`${a.username} is now a Merchant`); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      row.querySelector('.merchant-reject-btn').addEventListener('click', async () => {
+        try { await api(`/merchant/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      box.appendChild(row);
+    });
+  };
+  draw();
 }
 
 // ---------- GIFT STORE ADMIN (Explore -> Gift Store Admin, Staff only) ----------
