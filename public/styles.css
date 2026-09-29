@@ -218,6 +218,30 @@ body::after {
 }
 .nav-btn.active { background: var(--accent); border-radius: 8px; }
 #topbarRight { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+/* Mobile: plain flex children, same order/position as before this group
+   existed. Desktop centers them — see the media query below. */
+#topbarNavGroup { display: contents; }
+
+/* Account dropdown (desktop only — see #hamburgerBtn { display: none } above).
+   Hidden by default; the desktop media query flips it to display:flex. */
+#topbarUserMenuWrap { display: none; position: relative; }
+.topbar-user-btn {
+  display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+  cursor: pointer; padding: 4px 6px; border-radius: 20px; color: var(--text);
+}
+.topbar-user-btn:hover { background: var(--panel-alt); }
+.topbar-user-name { font-weight: 600; font-size: 14px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-dropdown {
+  position: absolute; top: calc(100% + 8px); right: 0; min-width: 200px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 6px; z-index: 60;
+}
+.topbar-dropdown-item {
+  padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; gap: 6px;
+}
+.topbar-dropdown-item:hover { background: var(--panel-alt); }
+.topbar-dropdown-logout { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; color: #ef4444; }
 
 /* Nav drawer */
 #navDrawerOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 60; }
@@ -252,6 +276,21 @@ body::after {
 @media (min-width: 960px) {
   .desktop-only { display: block; }
   .desktop-nav-btn { display: inline-flex; }
+  /* The hamburger drawer duplicates what's already reachable from the
+     desktop top nav icons (Home/Rooms/Explore/Friends/Family/Alerts) and
+     the account dropdown (Profile/Balance/Blog/Emails/Settings/Admin) — no
+     reason to keep a second menu around once everything it offers lives
+     up top. Mobile keeps the hamburger; it has no top nav icons to lean on. */
+  #hamburgerBtn { display: none; }
+  #topbarUserMenuWrap { display: flex; }
+  /* Center the nav icon group in the middle of the topbar, like iNwe —
+     logo far left (hidden here since this build has none there yet), nav
+     icons centered, account dropdown far right. */
+  #topbar { position: relative; }
+  #topbarNavGroup {
+    display: flex; align-items: center; gap: 4px;
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  }
   #appBody {
     display: grid;
     grid-template-columns: 260px minmax(0, 1fr) 280px;
@@ -268,12 +307,104 @@ body::after {
     overflow-y: auto;
   }
   #centerColumn .screen { max-width: none; margin: 0; padding: 0; height: auto; }
+
+  /* Floating chat window (desktop only — mobile keeps the normal full-screen
+     chat flow untouched). #chatScreen stays exactly where it is in the DOM
+     (still inside #centerColumn) — position:fixed here just lifts it out of
+     document flow visually, so Home/Rooms stay visible and usable behind it.
+     Nothing about the underlying chat logic (socket join, message list,
+     room tabs) changes; this is a layout/interaction change only. */
+  #chatScreen.floating {
+    position: fixed;
+    left: auto; top: auto;
+    right: 24px; bottom: 24px;
+    width: 380px; height: 560px;
+    max-height: calc(100vh - 48px);
+    /* .screen has no background of its own (it normally just shows the
+       page background through it) — fine full-screen, but as a floating
+       panel over other content that read as transparent in both themes.
+       --panel is already the correct themed surface color. */
+    background: var(--panel);
+    max-width: calc(100vw - 48px);
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.28);
+    z-index: 500;
+    overflow: hidden;
+  }
+  #chatScreen.floating.dragged { right: auto; bottom: auto; }
+  #chatScreen.floating .chat-drag-handle { cursor: move; user-select: none; border-radius: 16px 16px 0 0; }
+  #chatScreen.floating .floating-chat-controls { display: flex; }
+  #chatScreen.floating.minimized { height: auto; width: 260px; }
+  #chatScreen.floating.minimized #chatView { display: none; }
+
+  /* Secondary floating panels: every other room you have open besides the
+     one in the primary floating window (#chatScreen) above, shown at the
+     same time instead of only after switching a tab into it. Stacked to the
+     left of the primary panel, smallest/most-recently-opened closest to it. */
+  .secondary-panels {
+    position: fixed;
+    right: 416px;
+    bottom: 24px;
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: flex-end;
+    gap: 10px;
+    z-index: 490;
+    pointer-events: none;
+  }
+  .secondary-panel {
+    width: 250px;
+    max-height: 340px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 10px 32px rgba(0,0,0,0.24);
+    overflow: hidden;
+    pointer-events: auto;
+  }
+  .secondary-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .secondary-panel-header span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .secondary-panel-close { cursor: pointer; opacity: 0.65; padding: 0 2px; flex-shrink: 0; }
+  .secondary-panel-close:hover { opacity: 1; }
+  .secondary-panel-messages { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 12px; min-height: 80px; max-height: 240px; }
+  .secondary-panel-messages .msg { margin-bottom: 6px; }
+  .secondary-panel-inputrow { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
+  .secondary-panel-inputrow input {
+    flex: 1; min-width: 0; font-size: 12px; padding: 6px 8px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text);
+  }
+  .secondary-panel-inputrow button { font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+}
+
+@media (max-width: 959px) {
+  /* Mobile keeps the single full-screen room exactly as before — secondary
+     floating panels are a desktop-only concept. */
+  .secondary-panels { display: none; }
 }
 
 #leftSidebar .profile-card { margin-bottom: 12px; }
 #leftSidebar .quick-actions-row { margin-bottom: 0; }
 
-.sidebar-create-room-btn { width: 100%; margin-bottom: 14px; padding: 12px; border-radius: 10px; font-weight: 700; }
+.sidebar-top-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.sidebar-create-room-btn { flex: 1; margin-bottom: 0; padding: 12px; border-radius: 10px; font-weight: 700; }
+.sidebar-top-row .icon-btn { flex: none; }
+#sidebarRoomSearchWrap { margin: -6px 0 14px; }
+#sidebarRoomSearchWrap input { width: 100%; }
 .sidebar-room-section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
 .sidebar-section-header {
   display: flex; align-items: center; gap: 8px; padding: 10px 12px;
@@ -382,6 +513,7 @@ body::after {
 .status-dot.offline { background: var(--text-dim); }
 .status-dot.away { background: #eab308; }
 .status-dot.busy { background: var(--danger); }
+.status-dot.invisible { background: #8b5cf6; }
 
 /* Status picker (tap your own status dot on Home) */
 .status-dot.own { cursor: pointer; }
@@ -400,8 +532,11 @@ body::after {
 /* Room browser */
 .room-search-bar { display: flex; gap: 8px; margin-bottom: 14px; }
 .room-search-bar input { flex: 1; }
-#roomForm { display: flex; gap: 8px; margin-bottom: 14px; }
-#roomForm input { flex: 1; }
+/* Create Room modal (#createRoomModal, reuses .modal-overlay/.modal-panel) */
+#roomForm { display: flex; flex-direction: column; gap: 6px; }
+#roomForm label { font-size: 13px; font-weight: 600; color: var(--text-dim); margin-top: 6px; }
+#roomForm input, #roomForm textarea { width: 100%; resize: vertical; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 .room-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; padding: 10px; }
 .room-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
@@ -416,6 +551,8 @@ body::after {
 
 /* Layout: chat screen */
 #chatScreen { display: flex; flex-direction: column; height: calc(100vh - 57px); padding: 0; max-width: none; }
+.floating-chat-controls { display: none; align-items: center; gap: 4px; }
+.floating-chat-controls .icon-btn { padding: 4px 9px; font-size: 15px; line-height: 1; }
 /* Room tabs now live inline in the topmost bar itself, right next to the
    nav icons — the single topmost row is the only place they appear. */
 #roomTabBar {

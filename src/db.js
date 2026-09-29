@@ -318,6 +318,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 `);
 
+// Migrate older databases created before Staff could gate room creation by
+// level. Reuses the otherwise-unused app_settings singleton row (id=1)
+// rather than a new one-row table — see the "Deprecated" note above.
+const appSettingsColumns = db.prepare('PRAGMA table_info(app_settings)').all().map((c) => c.name);
+if (!appSettingsColumns.includes('min_room_create_level')) {
+  db.exec('ALTER TABLE app_settings ADD COLUMN min_room_create_level INTEGER NOT NULL DEFAULT 0');
+}
+
 // Migrate older databases created before Blog posts could carry a picture.
 const postColumns = db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name);
 if (!postColumns.includes('image')) {
@@ -448,9 +456,24 @@ if (!alertColumns.includes('title')) {
 const roomCount = db.prepare('SELECT COUNT(*) c FROM rooms').get().c;
 if (roomCount === 0) {
   const insertRoom = db.prepare('INSERT INTO rooms (name, is_official, capacity, room_type) VALUES (?, 1, ?, ?)');
-  insertRoom.run('Lobby', 100, 'chat');
-  insertRoom.run('UNO Arena', 50, 'chat'); // kept as a plain chat room name — UNO itself has been removed
-  insertRoom.run('Chill Zone', 70, 'chat');
+  // Same capacity as every country room below (200) — a mismatched 100/50/70
+  // here made the Official Rooms list look randomly sized for no reason.
+  insertRoom.run('Lobby', 200, 'chat');
+  insertRoom.run('UNO Arena', 200, 'chat'); // kept as a plain chat room name — UNO itself has been removed
+  insertRoom.run('Chill Zone', 200, 'chat');
+}
+
+// Normalize capacity on any of these rooms an OLDER database already
+// created with the old mismatched numbers (Lobby 100, UNO Arena 50, Chill
+// Zone 70, game-bot rooms at an inconsistent 300) — runs every boot, cheap
+// and idempotent, so a live/already-deployed database self-heals to the
+// same organized sizing a fresh install gets: 200 for every general chat
+// room (same as every country room), 300 for the three higher-traffic game
+// bot rooms.
+{
+  const setCapacity = db.prepare('UPDATE rooms SET capacity = ? WHERE name = ? AND capacity != ?');
+  for (const name of ['Lobby', 'UNO Arena', 'Chill Zone']) setCapacity.run(200, name, 200);
+  for (const name of ['Legendary Bot Official', 'Official LowCard Room', 'Official Cricket Room']) setCapacity.run(300, name, 300);
 }
 
 // The Legendary Bot dice-betting game's dedicated room (added after the
@@ -776,6 +799,20 @@ db.setAnnouncement = function setAnnouncement(roomId, text, by) {
 };
 db.clearAnnouncement = function clearAnnouncement(roomId) {
   db.prepare('UPDATE rooms SET announcement = NULL, announcement_by = NULL, announcement_at = NULL WHERE id = ?').run(roomId);
+};
+
+// ---- Room-creation level gate (Staff-configurable, Admin Panel) ----
+// Site-wide minimum level a user must be to create a new chat room. 0 (the
+// default) means no restriction — anyone logged in can create one. Staff
+// themselves always bypass this check regardless of the configured value
+// (see POST /api/rooms).
+db.getMinRoomCreateLevel = function getMinRoomCreateLevel() {
+  const row = db.prepare('SELECT min_room_create_level FROM app_settings WHERE id = 1').get();
+  return row ? (row.min_room_create_level || 0) : 0;
+};
+db.setMinRoomCreateLevel = function setMinRoomCreateLevel(level) {
+  db.prepare('INSERT OR IGNORE INTO app_settings (id) VALUES (1)').run();
+  db.prepare('UPDATE app_settings SET min_room_create_level = ? WHERE id = 1').run(level);
 };
 
 // ---- Elite User auto-grant ----

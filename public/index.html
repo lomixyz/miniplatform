@@ -216,11 +216,41 @@
 <div id="appScreen" class="hidden">
   <div id="topbar">
     <button class="icon-btn" id="hamburgerBtn" title="Menu">☰</button>
-    <button class="icon-btn nav-btn active" id="navHomeBtn" title="Home">🏠</button>
-    <button class="icon-btn nav-btn" id="navRoomsBtn" title="Rooms">💬</button>
+    <!-- On desktop this group is centered in the topbar (logo/hamburger far
+         left, account menu far right — see #topbarNavGroup in styles.css),
+         matching iNwe. Plain flex children on mobile — unchanged there. -->
+    <div id="topbarNavGroup">
+      <button class="icon-btn nav-btn active" id="navHomeBtn" title="Home">🏠</button>
+      <button class="icon-btn nav-btn" id="navRoomsBtn" title="Rooms">💬</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navExploreBtn" title="Explore">🧭</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navFriendsBtn" title="Friends">👥</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navFamilyBtn" title="Family">🏛️</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navAlertsTopBtn" title="Notifications">🔔<span class="qa-badge hidden" id="navAlertsTopBadge"></span></button>
+    </div>
     <div id="roomTabBar"></div>
     <div id="topbarRight">
       <span id="coinsDisplay">🪙 0</span>
+      <!-- Desktop-only account dropdown — replaces the hamburger drawer
+           there (see #hamburgerBtn { display:none } in styles.css) by
+           surfacing the drawer items that have no top-nav icon of their
+           own (Profile/Balance/Blog/Emails/Settings/Give Coins/Admin). -->
+      <div id="topbarUserMenuWrap">
+        <button id="topbarUserMenuBtn" class="topbar-user-btn">
+          <div id="topbarUserAvatar" class="avatar-circle small"></div>
+          <span id="topbarUserName" class="topbar-user-name"></span>
+          <span class="drawer-chevron">▾</span>
+        </button>
+        <div id="topbarUserMenu" class="topbar-dropdown hidden">
+          <div class="topbar-dropdown-item" id="menuMyProfile">👤 My Profile</div>
+          <div class="topbar-dropdown-item" id="menuMyBalance">🪙 My Balance</div>
+          <div class="topbar-dropdown-item" id="menuBlog">📰 Blog</div>
+          <div class="topbar-dropdown-item" id="menuEmails">✉️ Emails <span class="drawer-badge hidden" id="menuEmailsBadge"></span></div>
+          <div class="topbar-dropdown-item" id="menuSettings">⚙️ Settings</div>
+          <div class="topbar-dropdown-item hidden" id="menuGiveCoins">🪙 Give Coins</div>
+          <div class="topbar-dropdown-item hidden" id="menuAdmin">🛠️ Admin Panel</div>
+          <div class="topbar-dropdown-item topbar-dropdown-logout" id="menuLogout">🚪 Logout</div>
+        </div>
+      </div>
       <button class="icon-btn" id="logoutBtnTop" title="Log Out">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
@@ -258,8 +288,15 @@
     <div class="drawer-item drawer-logout" id="drawerLogout">🚪 Logout <span class="drawer-chevron">›</span></div>
   </div>
 
-  <!-- ===================== HOME SCREEN ===================== -->
-  <div id="homeView" class="screen">
+  <!-- ===================== DESKTOP APP BODY (3-column shell) =====================
+       leftSidebar/rightSidebar are desktop-only (hidden below the 960px
+       breakpoint — see styles.css); the mobile "screen" flow below is
+       completely untouched, so a phone/PWA install still works exactly as
+       before. The profile card and quick actions used to live inside
+       #homeView; they're relocated here so they stay visible across every
+       screen (Home/Rooms/Chat), matching the persistent-sidebar layout. -->
+  <div id="appBody">
+  <div id="leftSidebar" class="desktop-only">
     <div class="profile-card">
       <div class="profile-card-top">
         <div id="profileAvatar" class="avatar-circle"></div>
@@ -283,10 +320,14 @@
       <button class="quick-action-btn" id="emailsBtn">✉️ Emails <span class="qa-badge hidden" id="emailsBadge"></span></button>
       <button class="quick-action-btn" id="friendsBtn">👥 Friends</button>
     </div>
+  </div>
 
+  <div id="centerColumn">
+  <!-- ===================== HOME SCREEN ===================== -->
+  <div id="homeView" class="screen">
     <div class="section-card">
-      <div class="section-header">Current Chat Rooms</div>
-      <div id="homeRoomList" class="section-body"></div>
+      <div class="section-header">Feed</div>
+      <div id="homeFeedBox" class="section-body"></div>
     </div>
 
     <div class="section-card">
@@ -302,11 +343,6 @@
       <button class="icon-btn" id="roomsRefreshBtn" title="Refresh">🔄</button>
       <button class="icon-btn" id="roomsCreateBtn" title="Create room">➕</button>
     </div>
-    <form id="roomForm" class="hidden">
-      <input id="newRoomName" placeholder="New room name" />
-      <button type="submit">Create</button>
-      <button type="button" class="secondary" id="cancelCreateRoomBtn">Cancel</button>
-    </form>
 
     <div class="section-card">
       <div class="section-header">Recent Rooms <span class="count-chip" id="recentCountChip">0</span></div>
@@ -324,8 +360,15 @@
 
   <!-- ===================== CHAT SCREEN ===================== -->
   <div id="chatScreen" class="screen hidden">
-    <div id="roomHeader">
+    <div id="roomHeader" class="chat-drag-handle">
       <h2 id="currentRoomName">Select a room</h2>
+      <!-- Desktop-only floating window controls (see .floating-chat-controls
+           in styles.css) — on mobile the chat screen is still the normal
+           full-screen flow and these stay hidden. -->
+      <div class="floating-chat-controls">
+        <button type="button" class="icon-btn small" id="chatFloatMinimizeBtn" title="Minimize">–</button>
+        <button type="button" class="icon-btn small" id="chatFloatCloseBtn" title="Close">✕</button>
+      </div>
     </div>
 
     <div id="chatView">
@@ -347,6 +390,52 @@
       <input type="file" id="shareImageFileInput" accept="image/*" class="hidden" />
     </div>
   </div>
+
+  <!-- Desktop-only: rooms you have open besides the one showing in the
+       primary floating window above render here as small always-visible
+       floating panels, so entering several rooms shows all of them at once
+       instead of only the last one you switched to — see renderSecondaryPanels()
+       in app.js. Empty/hidden on mobile (one room, full-screen, as before). -->
+  <div id="secondaryPanels" class="secondary-panels"></div>
+  </div><!-- /#centerColumn -->
+
+  <div id="rightSidebar" class="desktop-only">
+    <div class="sidebar-top-row">
+      <button id="sidebarCreateRoomBtn" class="primary-btn sidebar-create-room-btn">➕ Create Room</button>
+      <button id="sidebarRoomSearchBtn" class="icon-btn" title="Search rooms">🔍</button>
+    </div>
+    <div id="sidebarRoomSearchWrap" class="hidden">
+      <input id="sidebarRoomSearchInput" placeholder="Search rooms..." autocomplete="off" />
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarFavoriteRooms">
+        <span>Favorite rooms</span>
+        <span class="count-chip" id="sidebarFavoriteCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarFavoriteRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarOfficialRooms">
+        <span>Official rooms</span>
+        <span class="count-chip" id="sidebarOfficialCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarOfficialRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarRecentRooms">
+        <span>Recent rooms</span>
+        <span class="count-chip" id="sidebarRecentCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarRecentRooms" class="sidebar-room-list"></div>
+    </div>
+  </div>
+  </div><!-- /#appBody -->
 </div>
 
 <!-- Bottom action sheet (mobile-style), opened from the chat input's ⋮ button -->
@@ -458,6 +547,16 @@
       <tbody id="userTableBody"></tbody>
     </table>
     <div id="adminSearchEmpty" class="empty-note">Type a username above and press search.</div>
+
+    <div class="section-header" style="margin-top:16px;">Room Creation Settings</div>
+    <div class="lock-level-bar">
+      <span style="font-size:13px; color:var(--text-dim);">Minimum level to create a room:</span>
+      <button class="lock-level-btn" id="minCreateLevelMinus" type="button">−</button>
+      <div class="lock-level-value" id="minCreateLevelValue">0</div>
+      <button class="lock-level-btn" id="minCreateLevelPlus" type="button">+</button>
+      <button id="saveMinCreateLevelBtn" class="secondary">Save</button>
+    </div>
+    <div id="minCreateLevelNote" class="empty-note">0 = anyone can create a room. Staff always bypass this.</div>
   </div>
 </div>
 
@@ -475,6 +574,24 @@
       <tbody id="coinsTableBody"></tbody>
     </table>
     <div id="coinsSearchEmpty" class="empty-note">Type a username above and press search.</div>
+  </div>
+</div>
+
+<div id="createRoomModal" class="modal-overlay hidden">
+  <div id="createRoomPanel" class="modal-panel">
+    <button class="close-btn secondary" id="closeCreateRoomBtn">Close</button>
+    <h2>Create a Chat Room</h2>
+    <div id="createRoomLevelNote" class="empty-note hidden"></div>
+    <form id="roomForm">
+      <label for="newRoomName">Room name</label>
+      <input id="newRoomName" placeholder="Room name" autocomplete="off" />
+      <label for="newRoomDescription">Description</label>
+      <textarea id="newRoomDescription" placeholder="What's this room about?" rows="3"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="cancelCreateRoomBtn">Cancel</button>
+        <button type="submit">Create</button>
+      </div>
+    </form>
   </div>
 </div>
 

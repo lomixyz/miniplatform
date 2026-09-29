@@ -1,7 +1,8 @@
 const express = require('express');
 const db = require('../db');
-const { requireLogin } = require('../auth');
+const { requireLogin, requireFlag } = require('../auth');
 const presence = require('../presence');
+const { levelFromXp } = require('../level');
 
 const router = express.Router();
 
@@ -62,17 +63,64 @@ router.get('/recent', requireLogin, (req, res) => {
   res.json({ rooms: rows.map((r) => shapeRoom(r, me)) });
 });
 
+// Explicitly closing a room's floating window (the ✕ — see closeFloatingChat
+// / the secondary panel close button in app.js) is a stronger action than
+// the ⋮ menu's "Leave Room": besides leaving (handled over the socket, see
+// leave_room in socket.js), it also forgets the room entirely instead of
+// leaving it findable in Recent Rooms — so it deletes the room_visits row
+// that GET /recent above reads from. Safe to call even with no visit row.
+router.delete('/:id/visit', requireLogin, (req, res) => {
+  const roomId = Number(req.params.id);
+  db.prepare('DELETE FROM room_visits WHERE user_id = ? AND room_id = ?').run(req.session.user.id, roomId);
+  res.json({ ok: true });
+});
+
 // User-created rooms are always chat rooms — this build has no games.
+// Gated by a Staff-configurable minimum level (0 = open to everyone — see
+// GET/POST /settings/min-create-level below); Staff themselves always
+// bypass the gate so they can create rooms regardless of the current value.
 router.post('/', requireLogin, (req, res) => {
-  const { name } = req.body || {};
+  const user = req.session.user;
+  const { name, description } = req.body || {};
   if (!name || name.trim().length < 2) return res.status(400).json({ error: 'Room name too short' });
+
+  if (!user.is_staff) {
+    const minLevel = db.getMinRoomCreateLevel();
+    if (minLevel > 0) {
+      const row = db.prepare('SELECT xp FROM users WHERE id = ?').get(user.id);
+      const { level } = levelFromXp((row && row.xp) || 0);
+      if (level < minLevel) {
+        return res.status(403).json({ error: `You must be level ${minLevel} or higher to create a room (you're level ${level})` });
+      }
+    }
+  }
+
+  const desc = String(description || '').trim().slice(0, 500);
   try {
-    const info = db.prepare("INSERT INTO rooms (name, created_by, is_official, capacity, room_type) VALUES (?, ?, 0, 50, 'chat')").run(name.trim(), req.session.user.id);
+    const info = db.prepare("INSERT INTO rooms (name, description, created_by, is_official, capacity, room_type) VALUES (?, ?, ?, 0, 50, 'chat')").run(name.trim(), desc, user.id);
+    // The creator's own room shows up in their Favorite Rooms immediately —
+    // they made it, so it should be easy to find again without a separate step.
+    db.prepare('INSERT OR IGNORE INTO room_favorites (user_id, room_id) VALUES (?, ?)').run(user.id, info.lastInsertRowid);
     const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(info.lastInsertRowid);
-    res.json({ room: shapeRoom(row, req.session.user.id) });
+    res.json({ room: shapeRoom(row, user.id) });
   } catch (e) {
     res.status(409).json({ error: 'Room name already exists' });
   }
+});
+
+// Staff-configurable minimum level required to create a room. GET is open to
+// any logged-in user (the create-room modal needs it to explain a
+// rejection); only Staff can change it.
+router.get('/settings/min-create-level', requireLogin, (req, res) => {
+  res.json({ minLevel: db.getMinRoomCreateLevel() });
+});
+router.post('/settings/min-create-level', requireFlag('staff'), (req, res) => {
+  const level = Number(req.body && req.body.level);
+  if (!Number.isFinite(level) || level < 0 || level > 9999) {
+    return res.status(400).json({ error: 'Level must be a whole number of 0 or more' });
+  }
+  db.setMinRoomCreateLevel(Math.round(level));
+  res.json({ minLevel: db.getMinRoomCreateLevel() });
 });
 
 router.post('/:id/favorite', requireLogin, (req, res) => {

@@ -282,15 +282,15 @@ function attachSocket(io, sessionMiddleware) {
     timer.unref?.();
     roomSilence.setSilence(roomId, { until, by: byUsername, timer });
     io.to(`room:${roomId}`).emit('room_silenced', { roomId, until, by: byUsername, seconds });
-    io.to(`room:${roomId}`).emit('system_message', `🔇 ${roomName(roomId)} has been silenced by ${byUsername} for ${seconds}s — only Staff, Global Admin, the room owner, and its moderators can talk until it lifts.`);
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🔇 ${roomName(roomId)} has been silenced by ${byUsername} for ${seconds}s — only Staff, Global Admin, the room owner, and its moderators can talk until it lifts.` });
   }
 
   function unsilenceRoomFor(roomId, byUsername) {
     roomSilence.clearSilence(roomId);
     io.to(`room:${roomId}`).emit('room_unsilenced', { roomId });
-    io.to(`room:${roomId}`).emit('system_message', byUsername
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: byUsername
       ? `🔊 ${roomName(roomId)}'s silence was lifted by ${byUsername}.`
-      : `🔊 ${roomName(roomId)}'s silence has expired — chat is open again.`);
+      : `🔊 ${roomName(roomId)}'s silence has expired — chat is open again.` });
   }
 
   // ---- Rejoin cooldowns (kick = 10 minutes, bump = 5 minutes) ----
@@ -311,6 +311,14 @@ function attachSocket(io, sessionMiddleware) {
     const secondsLeft = db.prepare("SELECT CAST((julianday(?) - julianday(datetime('now'))) * 86400 AS INTEGER) AS s").get(row.blocked_until).s;
     if (secondsLeft <= 0) return { blocked: false };
     return { blocked: true, reason: row.reason, secondsLeft };
+  }
+
+  // Every room this user is a persistent active member of right now — used
+  // to refresh member lists everywhere at once on a status/invisibility
+  // change or disconnect, since with multiple rooms open simultaneously
+  // (see join_room) a single "current room" no longer covers it.
+  function activeRoomIdsForUser(userId) {
+    return db.prepare('SELECT room_id FROM room_memberships WHERE user_id = ? AND active = 1').all(userId).map((r) => r.room_id);
   }
 
   function activeMemberRows(roomId) {
@@ -348,7 +356,7 @@ function attachSocket(io, sessionMiddleware) {
     const info = db.prepare('INSERT INTO messages (room_id, user_id, username, type, content) VALUES (?, ?, ?, ?, ?)')
       .run(roomId, userId, username, type, content);
     io.to(`room:${roomId}`).emit('chat_message', {
-      id: info.lastInsertRowid, username, content, type, created_at: new Date().toISOString(),
+      id: info.lastInsertRowid, roomId, username, content, type, created_at: new Date().toISOString(),
       ...freshRoleFlags(userId),
       is_moderator: isRoomModerator(userId, roomId),
     });
@@ -389,10 +397,19 @@ function attachSocket(io, sessionMiddleware) {
     }));
     presence.setRoomCount(roomId, members.length);
 
-    for (const [, s] of io.sockets.sockets) {
-      if (s.data.roomId === roomId && s.data.user) {
+    // Send to every socket actually subscribed to this room's Socket.IO
+    // channel — NOT `s.data.roomId === roomId`, which only tracks the one
+    // room a connection most recently join_room'd. A socket can now be
+    // subscribed to several rooms at once (multi-room floating panels), so
+    // filtering on data.roomId would silently stop delivering member-list
+    // updates to every room except whichever was joined last.
+    const subscribed = io.sockets.adapter.rooms.get(`room:${roomId}`);
+    if (!subscribed) return;
+    for (const sid of subscribed) {
+      const s = io.sockets.sockets.get(sid);
+      if (s && s.data.user) {
         const visibleToThisSocket = members.filter((m) => !m.invisible || m.id === s.data.user.id);
-        s.emit('room_members', visibleToThisSocket);
+        s.emit('room_members', { roomId, members: visibleToThisSocket });
       }
     }
   }
@@ -448,7 +465,7 @@ function attachSocket(io, sessionMiddleware) {
       }
 
       const name = roomName(room_id);
-      io.to(`room:${room_id}`).emit('system_message', `${name}: ${username} left (inactive for 5 hours)`);
+      io.to(`room:${room_id}`).emit('system_message', { roomId: room_id, text: `${name}: ${username} left (inactive for 5 hours)` });
       broadcastRoomMembers(room_id);
     }
   }
@@ -480,7 +497,7 @@ function attachSocket(io, sessionMiddleware) {
     presence.markOnline(bot.id);
     const level = currentLevel(bot.id);
     const badge = roleBadge(freshRoleFlags(bot.id));
-    io.to(`room:${roomId}`).emit('system_message', `${name}: ${bot.username} [${level}]${badge} has entered`);
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has entered` });
     broadcastRoomMembers(roomId);
   }
 
@@ -509,7 +526,7 @@ function attachSocket(io, sessionMiddleware) {
       const roomId = activeRoomIds[Math.floor(Math.random() * activeRoomIds.length)];
       const name = roomName(roomId);
       if (!leaveMembership(bot.id, roomId)) return;
-      io.to(`room:${roomId}`).emit('system_message', `${name}: ${bot.username} [${level}]${badge} has left`);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has left` });
       broadcastRoomMembers(roomId);
       const stillSomewhere = db.prepare('SELECT 1 FROM room_memberships WHERE user_id = ? AND active = 1').get(bot.id);
       if (!stillSomewhere) presence.markOffline(bot.id);
@@ -1067,15 +1084,20 @@ function attachSocket(io, sessionMiddleware) {
         }
       }
 
-      // Switch which room this socket receives LIVE messages for. This does
-      // NOT touch the user's persistent membership in whatever room they were
-      // previously focused on — a refresh, a reconnect, or switching to view
-      // another room must never look like "leaving" to everyone else. Only an
+      // Join this room's live channel WITHOUT leaving any other room this
+      // socket already joined — a connection can now have several floating
+      // chat windows open at once, each getting its own live messages
+      // simultaneously (Socket.IO natively supports one socket belonging to
+      // several rooms). This does NOT touch the user's persistent membership
+      // in any room either way — a refresh, a reconnect, or opening another
+      // room must never look like "leaving" to everyone else. Only an
       // explicit leave_room, a kick, or 5 hours of inactivity does that.
-      for (const r of socket.rooms) {
-        if (r !== socket.id) socket.leave(r);
-      }
       socket.join(`room:${roomId}`);
+      // "Last room joined/focused" — still used for a handful of single-room
+      // conveniences (e.g. the rejoin-cooldown/announcement fallback on the
+      // now-unused standalone set_announcement/clear_announcement events).
+      // Nothing that matters for correctness with multiple rooms open reads
+      // this anymore; those places take an explicit roomId instead.
       socket.data.roomId = roomId;
 
       const level = currentLevel(user.id);
@@ -1098,7 +1120,13 @@ function attachSocket(io, sessionMiddleware) {
       const cameBackAfterBeingAway = !wasReachableBefore && !announcedEntryThisConnection;
       const genuineEntry = isNew || cameBackAfterBeingAway;
       if (genuineEntry) {
-        io.to(`room:${roomId}`).emit('system_message', `${room.name}: ${user.username} [${level}]${badge} has entered`);
+        // Going Invisible (Staff/Global Admin only — see toggle_invisible)
+        // means entering a room never posts "has entered" for anyone else to
+        // see, on top of being left out of the member list broadcastRoomMembers
+        // already sends. The chat-visibility clock still resets either way.
+        if (!invisibleByUser.get(user.id)) {
+          io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${room.name}: ${user.username} [${level}]${badge} has entered` });
+        }
         // A genuine entry (first time ever, rejoining after leaving/being
         // kicked/bumped/timed out, or coming back after being fully away)
         // resets the chat-visibility clock — same moment the room is told
@@ -1117,7 +1145,7 @@ function attachSocket(io, sessionMiddleware) {
       const activeVoucher = voucher.getActiveVoucher(roomId);
       if (activeVoucher) {
         const remaining = Math.max(0, Math.round((activeVoucher.expiresAt - Date.now()) / 1000));
-        socket.emit('system_message', `A voucher is active in this room! Type /pick <code> within ${remaining}s to try (you'll need the code from chat).`);
+        socket.emit('system_message', { roomId, text: `A voucher is active in this room! Type /pick <code> within ${remaining}s to try (you'll need the code from chat).` });
       }
 
       // Show this room's current announcement (if any) to anyone entering it
@@ -1128,10 +1156,10 @@ function attachSocket(io, sessionMiddleware) {
       // banner stuck on screen — see currentAnnouncement in app.js.
       const announcement = db.getAnnouncement(roomId);
       socket.emit('announcement', announcement
-        ? { text: announcement.text, by: announcement.by, live: false }
-        : { text: null, live: false });
+        ? { roomId, text: announcement.text, by: announcement.by, live: false }
+        : { roomId, text: null, live: false });
       if (announcement) {
-        socket.emit('system_message', `📢 Announcement from ${announcement.by}: ${announcement.text}`);
+        socket.emit('system_message', { roomId, text: `📢 Announcement from ${announcement.by}: ${announcement.text}` });
       }
 
       // Let a client joining (or refreshing into) a room mid-silence disable
@@ -1148,16 +1176,17 @@ function attachSocket(io, sessionMiddleware) {
       roomId = Number(roomId);
       const wasActive = leaveMembership(user.id, roomId);
 
-      if (socket.data.roomId === roomId) {
-        socket.leave(`room:${roomId}`);
-        socket.data.roomId = null;
-      }
+      // Unconditional now — with several rooms possibly joined at once (see
+      // join_room), this socket must stop getting THIS room's live messages
+      // regardless of which one happens to be "last focused".
+      socket.leave(`room:${roomId}`);
+      if (socket.data.roomId === roomId) socket.data.roomId = null;
 
       if (wasActive) {
         const level = currentLevel(user.id);
         const badge = roleBadge(freshRoleFlags(user.id));
         const name = roomName(roomId);
-        io.to(`room:${roomId}`).emit('system_message', `${name}: ${user.username} [${level}]${badge} has left`);
+        io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${user.username} [${level}]${badge} has left` });
         broadcastRoomMembers(roomId);
       }
     });
@@ -1294,11 +1323,11 @@ function attachSocket(io, sessionMiddleware) {
       // only, site-wide. Checked as two separate patterns (clear first) so
       // "/announcement clear" never gets swallowed as literal announcement text.
       if (ANNOUNCEMENT_COMMAND.test(clean)) {
-        return tryClearAnnouncement();
+        return tryClearAnnouncement(roomId);
       }
       const announceMatch = clean.match(ANNOUNCEMENT_SET_COMMAND);
       if (announceMatch) {
-        return trySetAnnouncement(announceMatch[1]);
+        return trySetAnnouncement(announceMatch[1], roomId);
       }
 
       // "/broadcast <text>" — Staff/Global Admin only, one-time flash push
@@ -1630,7 +1659,7 @@ function attachSocket(io, sessionMiddleware) {
       }
       invisibleByUser.set(user.id, !!wantInvisible);
       socket.emit('invisible_state', { invisible: !!wantInvisible });
-      if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
+      for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
     });
 
     // ---- Presence status (online / away / busy) — anyone can set their own.
@@ -1643,7 +1672,7 @@ function attachSocket(io, sessionMiddleware) {
       if (!VALID_STATUSES.has(wantStatus)) return;
       db.prepare('UPDATE users SET status = ? WHERE id = ?').run(wantStatus, user.id);
       socket.emit('status_state', { status: wantStatus });
-      if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
+      for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
       // Live-refresh anywhere else this user's status shows (Friends list,
       // Home) for anyone with them open right now.
       refreshUserPresence(user.id);
@@ -1730,7 +1759,7 @@ function attachSocket(io, sessionMiddleware) {
       const kickerLevel = currentLevel(user.id);
       const targetLevel = currentLevel(targetUserId);
       const durationText = isBan ? 'until unbanned' : `can't rejoin for ${minutes} minutes`;
-      io.to(`room:${roomId}`).emit('system_message', `${targetUsername} [${targetLevel}] was ${verb} by ${user.username} [${kickerLevel}] — ${durationText}`);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${targetUsername} [${targetLevel}] was ${verb} by ${user.username} [${kickerLevel}] — ${durationText}` });
       broadcastRoomMembers(roomId);
       return true;
     }
@@ -1772,7 +1801,7 @@ function attachSocket(io, sessionMiddleware) {
       // Banned list.
       const targetLevel = currentLevel(targetUserId);
       const actorLevel = currentLevel(user.id);
-      io.to(`room:${roomId}`).emit('system_message', `${targetUsername} [${targetLevel}] was unbanned by ${user.username} [${actorLevel}]`);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${targetUsername} [${targetLevel}] was unbanned by ${user.username} [${actorLevel}]` });
       return true;
     }
 
@@ -1787,13 +1816,17 @@ function attachSocket(io, sessionMiddleware) {
     // 'announcement' emit in join_room. Persisted on the room itself so a
     // restart doesn't silently drop it, and so it never leaks into other
     // rooms the way a single site-wide setting would.
-    function trySetAnnouncement(rawText) {
+    // roomId is passed in explicitly (the room the /announcement command was
+    // typed in — see its chat_message call site below) rather than read from
+    // socket.data.roomId, since a connection can now have more than one room
+    // open live at once (see join_room) and socket.data.roomId only ever
+    // reflects the last one joined.
+    function trySetAnnouncement(rawText, roomId) {
       const flags = freshRoleFlags(user.id);
       if (!flags.is_staff && !flags.is_global_admin) {
         socket.emit('error_message', 'Only Staff or a Global Administrator can post an announcement');
         return;
       }
-      const roomId = socket.data.roomId;
       if (!roomId) {
         socket.emit('error_message', 'Join a room before posting an announcement');
         return;
@@ -1804,17 +1837,16 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
       db.setAnnouncement(roomId, text, user.username);
-      io.to(`room:${roomId}`).emit('announcement', { text, by: user.username, live: true });
-      io.to(`room:${roomId}`).emit('system_message', `📢 Announcement from ${user.username}: ${text}`);
+      io.to(`room:${roomId}`).emit('announcement', { roomId, text, by: user.username, live: true });
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `📢 Announcement from ${user.username}: ${text}` });
     }
 
-    function tryClearAnnouncement() {
+    function tryClearAnnouncement(roomId) {
       const flags = freshRoleFlags(user.id);
       if (!flags.is_staff && !flags.is_global_admin) {
         socket.emit('error_message', 'Only Staff or a Global Administrator can clear the announcement');
         return;
       }
-      const roomId = socket.data.roomId;
       if (!roomId) {
         socket.emit('error_message', 'Join a room before clearing its announcement');
         return;
@@ -1824,12 +1856,12 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
       db.clearAnnouncement(roomId);
-      io.to(`room:${roomId}`).emit('announcement', { text: null, live: true });
-      io.to(`room:${roomId}`).emit('system_message', `📢 ${user.username} cleared this room's announcement`);
+      io.to(`room:${roomId}`).emit('announcement', { roomId, text: null, live: true });
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `📢 ${user.username} cleared this room's announcement` });
     }
 
-    on('set_announcement', ({ text }) => trySetAnnouncement(text));
-    on('clear_announcement', () => tryClearAnnouncement());
+    on('set_announcement', ({ text, roomId }) => trySetAnnouncement(text, roomId || socket.data.roomId));
+    on('clear_announcement', ({ roomId } = {}) => tryClearAnnouncement(roomId || socket.data.roomId));
 
     // ---- Broadcast (Staff/Global Admin only) — a one-time flash push ----
     // Unlike /announcement, this is never written to app_settings and never
@@ -1911,7 +1943,7 @@ function attachSocket(io, sessionMiddleware) {
       }
 
       db.prepare('INSERT OR IGNORE INTO room_moderators (room_id, user_id, added_by) VALUES (?, ?, ?)').run(roomId, target.id, user.id);
-      io.to(`room:${roomId}`).emit('system_message', `🔰 ${target.username} was made a moderator of ${room.name} by ${user.username}`);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🔰 ${target.username} was made a moderator of ${room.name} by ${user.username}` });
       io.to(`room:${roomId}`).emit('room_moderators_updated', { roomId, moderators: getRoomModerators(roomId).map((m) => m.username) });
       broadcastRoomMembers(roomId);
     }
@@ -1936,7 +1968,7 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
 
-      io.to(`room:${roomId}`).emit('system_message', `${user.username} removed ${target.username} as a moderator of ${room.name}`);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${user.username} removed ${target.username} as a moderator of ${room.name}` });
       io.to(`room:${roomId}`).emit('room_moderators_updated', { roomId, moderators: getRoomModerators(roomId).map((m) => m.username) });
       broadcastRoomMembers(roomId);
     }
@@ -2003,11 +2035,13 @@ function attachSocket(io, sessionMiddleware) {
         presence.markOffline(user.id);
         invisibleByUser.delete(user.id);
         // Push a live Participants/room-banner refresh to whoever's still in
-        // this room — without this, everyone else keeps seeing this user's
-        // last-known (online) status until something unrelated happens to
-        // trigger a re-broadcast (someone else joining/leaving). That's what
-        // made a logged-out/disconnected user appear stuck "in the room".
-        if (socket.data.roomId) broadcastRoomMembers(socket.data.roomId);
+        // any of this user's rooms — without this, everyone else keeps
+        // seeing this user's last-known (online) status until something
+        // unrelated happens to trigger a re-broadcast (someone else
+        // joining/leaving). That's what made a logged-out/disconnected user
+        // appear stuck "in the room". Every persistently active room, not
+        // just the last-focused one, since several can be open at once now.
+        for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
       }
     });
   });

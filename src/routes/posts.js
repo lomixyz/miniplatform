@@ -27,9 +27,18 @@ function withReactions(posts, userId) {
 // in either feed. Blog posts can also carry a picture and take reactions
 // (favorite/like/dislike); Announcements don't use either, but the columns
 // are harmless to leave empty for them.
+// type=all (used by the Home screen's Feed card) merges both into one
+// chronological feed — a real social feed shows everything, not just one
+// channel; type=blog / type=announcement (used by the dedicated Explore ->
+// Blog / Announcements screens) still filter to just the one.
 router.get('/', requireLogin, (req, res) => {
-  const type = req.query.type === 'blog' ? 'blog' : 'announcement';
-  const posts = db.prepare('SELECT * FROM posts WHERE type = ? ORDER BY id DESC LIMIT 50').all(type);
+  let posts;
+  if (req.query.type === 'all') {
+    posts = db.prepare("SELECT * FROM posts WHERE type IN ('announcement','blog') ORDER BY id DESC LIMIT 50").all();
+  } else {
+    const type = req.query.type === 'blog' ? 'blog' : 'announcement';
+    posts = db.prepare('SELECT * FROM posts WHERE type = ? ORDER BY id DESC LIMIT 50').all(type);
+  }
   res.json({ posts: withReactions(posts, req.session.user.id) });
 });
 
@@ -38,9 +47,14 @@ router.post('/', requireLogin, (req, res) => {
   if (type === 'announcement' && !req.session.user.is_staff) {
     return res.status(403).json({ error: 'Only Staff can post an Announcement' });
   }
-  const title = String((req.body && req.body.title) || '').trim().slice(0, 140);
   const content = String((req.body && req.body.content) || '').trim().slice(0, 4000);
-  if (!title || !content) return res.status(400).json({ error: 'Title and content are required' });
+  if (!content) return res.status(400).json({ error: 'Content is required' });
+  // The simplified "What's on your mind?" composer (Home Feed) sends content
+  // only, no separate title — auto-derive one from the content so the
+  // existing `title NOT NULL` schema and every other screen that shows a
+  // post's title (Announcements/Blog under Explore) keep working unchanged.
+  let title = String((req.body && req.body.title) || '').trim().slice(0, 140);
+  if (!title) title = content.length > 60 ? `${content.slice(0, 57)}...` : content;
 
   let image = req.body && req.body.image ? String(req.body.image) : null;
   if (image) {

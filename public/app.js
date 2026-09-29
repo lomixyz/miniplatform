@@ -44,6 +44,16 @@ let openRoomTabs = []; // [{id, name}] quick-switch pills for rooms visited this
 // into that room starts blank again, exactly as intended.
 const roomMessageCache = new Map(); // roomId -> #messages innerHTML snapshot
 
+// Desktop-only "show every open room at once" panels (see renderSecondaryPanels
+// below): every tab in openRoomTabs OTHER than currentRoomId gets a small
+// always-visible floating panel alongside the primary #chatScreen window,
+// instead of only being reachable by clicking its tab. roomId -> its <div>.
+const secondaryPanelEls = new Map();
+// roomId -> Set of message ids already rendered into that room's secondary
+// panel — mirrors seenMsgIds, but kept separately per room since a secondary
+// panel's content is independent of whichever room is currently primary.
+const secondaryMsgSeen = new Map();
+
 // The "managed by / welcome / currently in this room" banner is useful the
 // moment you walk into a room, but once people are actively chatting it just
 // pushes the conversation down and stays there forever if left alone. So it
@@ -394,9 +404,9 @@ function applyUsernameStyle(el, u) {
 // Maps a 4-state presence value ('online' | 'away' | 'busy' | 'offline') to
 // the .status-dot modifier class — '' (plain green) for 'online'.
 function statusDotClass(status) {
-  return status === 'offline' || status === 'away' || status === 'busy' ? status : '';
+  return status === 'offline' || status === 'away' || status === 'busy' || status === 'invisible' ? status : '';
 }
-const STATUS_LABELS = { online: 'Online', away: 'Away', busy: 'Busy' };
+const STATUS_LABELS = { online: 'Online', away: 'Away', busy: 'Busy', invisible: 'Going Invisible' };
 
 // ---------- LEVEL SCREEN (tap the ⚡ level badge on Home) ----------
 const LEVEL_TIERS = [
@@ -521,6 +531,13 @@ function updateUserBar() {
   $('#coinsDisplay').textContent = `🪙 ${currentUser.coins}`;
   $('#drawerAdmin').classList.toggle('hidden', !currentUser.is_staff);
   $('#drawerGiveCoins').classList.toggle('hidden', !(currentUser.is_staff || currentUser.is_mentor || currentUser.is_merchant));
+  $('#menuAdmin').classList.toggle('hidden', !currentUser.is_staff);
+  $('#menuGiveCoins').classList.toggle('hidden', !(currentUser.is_staff || currentUser.is_mentor || currentUser.is_merchant));
+
+  // Desktop account dropdown trigger (top right) — mirrors the drawer's own
+  // profile card, just compact enough to sit in the topbar.
+  paintAvatar($('#topbarUserAvatar'), currentUser.username);
+  $('#topbarUserName').textContent = currentUser.username;
 
   paintAvatar($('#profileAvatar'), currentUser.username);
   $('#profileUsername').textContent = currentUser.username;
@@ -533,8 +550,9 @@ function updateUserBar() {
   // (never 'offline' — you can't be offline while looking at this), and
   // tappable to change it.
   const ownDot = $('#profileStatusDot');
-  ownDot.className = 'status-dot own ' + statusDotClass(currentUser.status);
-  ownDot.title = `${STATUS_LABELS[currentUser.status] || 'Online'} — tap to change`;
+  const ownDisplayStatus = isInvisible ? 'invisible' : currentUser.status;
+  ownDot.className = 'status-dot own ' + statusDotClass(ownDisplayStatus);
+  ownDot.title = `${STATUS_LABELS[ownDisplayStatus] || 'Online'} — tap to change`;
 
   const into = currentUser.xpIntoLevel || 0;
   const need = currentUser.xpForNextLevel || 1;
@@ -552,9 +570,15 @@ function updateUserBar() {
 }
 
 // Small floating menu anchored under the Home profile card's status dot —
-// Online / Away / Busy (never "Offline": that's automatic, see
-// presence.effectiveStatus). Picking one calls the server via 'set_status';
-// the 'status_state' listener above applies the confirmed value.
+// Online / Away / Busy / Offline (Offline is never a pickable option here:
+// that's automatic, see presence.effectiveStatus) / Going Invisible
+// (Staff/Global Admin only — same underlying 'toggle_invisible' mechanism
+// previously buried in the room ⋮ menu, now surfaced here as one of the
+// status choices, matching how every other status is picked). Picking
+// Online/Away/Busy calls 'set_status' and also drops invisibility if it was
+// on; picking Going Invisible calls 'toggle_invisible' and leaves the
+// underlying online/away/busy value untouched — it's an overlay, not a
+// replacement.
 function openStatusPicker(anchorEl) {
   document.querySelectorAll('.status-picker-menu').forEach((m) => m.remove());
   const menu = document.createElement('div');
@@ -563,12 +587,20 @@ function openStatusPicker(anchorEl) {
   menu.style.position = 'fixed';
   menu.style.top = `${rect.bottom + 6}px`;
   menu.style.left = `${rect.left}px`;
-  ['online', 'away', 'busy'].forEach((status) => {
+  const statuses = ['online', 'away', 'busy'];
+  if (currentUser.is_staff || currentUser.is_global_admin) statuses.push('invisible');
+  statuses.forEach((status) => {
     const opt = document.createElement('div');
-    opt.className = 'status-picker-option' + (currentUser.status === status ? ' selected' : '');
+    const selected = status === 'invisible' ? isInvisible : (currentUser.status === status && !isInvisible);
+    opt.className = 'status-picker-option' + (selected ? ' selected' : '');
     opt.innerHTML = `<span class="status-dot ${statusDotClass(status)}"></span> ${STATUS_LABELS[status]}`;
     opt.addEventListener('click', () => {
-      socket.emit('set_status', status);
+      if (status === 'invisible') {
+        socket.emit('toggle_invisible', true);
+      } else {
+        if (isInvisible) socket.emit('toggle_invisible', false);
+        socket.emit('set_status', status);
+      }
       menu.remove();
     });
     menu.appendChild(opt);
@@ -589,12 +621,27 @@ $('#profileStatusDot').addEventListener('click', (e) => {
 });
 
 // ---------- NAVIGATION ----------
+function isDesktopLayout() {
+  return window.matchMedia('(min-width: 960px)').matches;
+}
+
 function showScreen(name) {
-  $('#homeView').classList.toggle('hidden', name !== 'home');
-  $('#roomsView').classList.toggle('hidden', name !== 'rooms');
-  $('#chatScreen').classList.toggle('hidden', name !== 'chat');
-  $('#navHomeBtn').classList.toggle('active', name === 'home');
-  $('#navRoomsBtn').classList.toggle('active', name === 'rooms');
+  // On desktop, opening the chat window (name === 'chat') must NOT disturb
+  // whichever of Home/Rooms is currently showing underneath — it floats on
+  // top of it instead of replacing it. Every other case (mobile always, or
+  // switching to Home/Rooms on desktop) keeps the original exclusive toggle.
+  const floatingOverlay = isDesktopLayout() && name === 'chat';
+  if (!floatingOverlay) {
+    $('#homeView').classList.toggle('hidden', name !== 'home');
+    $('#roomsView').classList.toggle('hidden', name !== 'rooms');
+    $('#navHomeBtn').classList.toggle('active', name === 'home');
+    $('#navRoomsBtn').classList.toggle('active', name === 'rooms');
+  }
+  if (isDesktopLayout()) {
+    if (name === 'chat') openFloatingChat();
+  } else {
+    $('#chatScreen').classList.toggle('hidden', name !== 'chat');
+  }
   closeDrawer();
   if (name === 'home') refreshHome();
   if (name === 'rooms') refreshRooms();
@@ -602,6 +649,88 @@ function showScreen(name) {
 
 $('#navHomeBtn').addEventListener('click', () => showScreen('home'));
 $('#navRoomsBtn').addEventListener('click', () => showScreen('rooms'));
+
+// Keep the chat screen's visibility model consistent if the browser window
+// is resized across the desktop breakpoint while a room is open — otherwise
+// a floating chat window (desktop) could end up stacked on top of Home
+// instead of replacing it (mobile's single-screen model), or vice versa.
+window.addEventListener('resize', () => {
+  renderSecondaryPanels(); // desktop<->mobile crossing shows/hides the "all open rooms" panels
+  if (currentRoomId == null) return;
+  if (!$('#chatScreen').classList.contains('hidden')) showScreen('chat');
+});
+
+// The ✕ on a room's floating window (primary or secondary) is a real, final
+// exit: leave the room over the socket, forget it locally, AND delete it
+// from Recent Rooms server-side (unlike the ⋮ menu's "Leave Room", which
+// deliberately keeps visit history so a room you left is still easy to find
+// and rejoin — see GET /rooms/recent) so it stops showing up there too.
+function leaveRoomAndForget(roomId) {
+  if (roomId == null) return;
+  socket.emit('leave_room', { roomId });
+  roomMessageCache.delete(roomId);
+  secondaryMsgSeen.delete(roomId);
+  openRoomTabs = openRoomTabs.filter((r) => r.id !== roomId);
+  api(`/rooms/${roomId}/visit`, { method: 'DELETE' }).then(() => refreshRooms()).catch(() => {});
+  if (roomId === currentRoomId) {
+    currentRoomId = null;
+    clearSavedRoom();
+  }
+  renderRoomTabs();
+}
+
+// ---------- FLOATING CHAT WINDOW (desktop only) ----------
+// Same #chatScreen element/logic as the mobile full-screen chat — this is a
+// layout/interaction layer on top, not a second chat implementation.
+let chatDragOffset = null;
+function openFloatingChat() {
+  const el = $('#chatScreen');
+  el.classList.remove('hidden');
+  if (isDesktopLayout()) {
+    el.classList.add('floating');
+    el.classList.remove('minimized');
+  }
+}
+// The ✕ closes AND leaves+forgets the room (see leaveRoomAndForget) —
+// unlike minimizing, which just tucks the panel away without touching
+// membership at all.
+function closeFloatingChat() {
+  leaveRoomAndForget(currentRoomId);
+  $('#chatScreen').classList.add('hidden');
+}
+function toggleMinimizeFloatingChat() {
+  $('#chatScreen').classList.toggle('minimized');
+}
+$('#chatFloatCloseBtn').addEventListener('click', closeFloatingChat);
+$('#chatFloatMinimizeBtn').addEventListener('click', toggleMinimizeFloatingChat);
+
+// Dragging: mousedown on the header (but not its buttons) starts tracking;
+// once the panel has been moved at least once, it switches from
+// right/bottom-anchored to an explicit left/top position (.dragged) so it
+// stays wherever it was dropped instead of snapping back to the corner.
+(function setupChatDrag() {
+  const handle = $('#roomHeader');
+  const panel = $('#chatScreen');
+  handle.addEventListener('mousedown', (e) => {
+    if (!isDesktopLayout() || !panel.classList.contains('floating')) return;
+    if (e.target.closest('.floating-chat-controls')) return;
+    const rect = panel.getBoundingClientRect();
+    chatDragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!chatDragOffset) return;
+    const rect = panel.getBoundingClientRect();
+    let left = e.clientX - chatDragOffset.x;
+    let top = e.clientY - chatDragOffset.y;
+    left = Math.max(4, Math.min(window.innerWidth - rect.width - 4, left));
+    top = Math.max(4, Math.min(window.innerHeight - rect.height - 4, top));
+    panel.classList.add('dragged');
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  });
+  document.addEventListener('mouseup', () => { chatDragOffset = null; });
+})();
 
 function openDrawer() {
   $('#navDrawerOverlay').classList.remove('hidden');
@@ -621,6 +750,26 @@ $('#drawerFriends').addEventListener('click', () => { closeDrawer(); openFriends
 $('#drawerAdmin').addEventListener('click', () => { closeDrawer(); openAdminPanel(); });
 $('#drawerGiveCoins').addEventListener('click', () => { closeDrawer(); openGiveCoins(); });
 
+// Desktop account dropdown (top right, replaces the hamburger drawer there —
+// see #hamburgerBtn { display:none } in styles.css). Reuses the exact same
+// screen-opening functions the drawer's own items call.
+function closeTopbarUserMenu() { $('#topbarUserMenu').classList.add('hidden'); }
+$('#topbarUserMenuBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('#topbarUserMenu').classList.toggle('hidden');
+});
+document.addEventListener('click', (e) => {
+  if (!$('#topbarUserMenuWrap').contains(e.target)) closeTopbarUserMenu();
+});
+$('#menuMyProfile').addEventListener('click', () => { closeTopbarUserMenu(); openDrawerMyProfile(); });
+$('#menuMyBalance').addEventListener('click', () => { closeTopbarUserMenu(); openDrawerMyBalance(); });
+$('#menuBlog').addEventListener('click', () => { closeTopbarUserMenu(); openDrawerBlog(); });
+$('#menuEmails').addEventListener('click', () => { closeTopbarUserMenu(); openEmails(); });
+$('#menuSettings').addEventListener('click', () => { closeTopbarUserMenu(); openDrawerSettings(); });
+$('#menuGiveCoins').addEventListener('click', () => { closeTopbarUserMenu(); openGiveCoins(); });
+$('#menuAdmin').addEventListener('click', () => { closeTopbarUserMenu(); openAdminPanel(); });
+$('#menuLogout').addEventListener('click', () => { closeTopbarUserMenu(); doLogout(); });
+
 $('#alertsBtn').addEventListener('click', openAlerts);
 $('#emailsBtn').addEventListener('click', openEmails);
 $('#friendsBtn').addEventListener('click', openFriends);
@@ -637,8 +786,23 @@ $('#navFamilyBtn').addEventListener('click', () => openSubScreenFromDrawer('Fami
 function connectSocket() {
   socket = io();
 
-  socket.on('chat_message', (msg) => appendMessage(msg));
-  socket.on('system_message', (text) => appendMessage({ type: 'system', content: text, username: '' }));
+  // Both events now carry roomId (see socket.js) so an event for a room
+  // that isn't currently on screen anywhere gets routed correctly instead of
+  // bleeding into whatever room happens to be displayed: the socket stays
+  // subscribed to every room ever entered this session (no more auto-leave
+  // on switch — see join_room), so without this a message from a
+  // previously-visited room could otherwise land in the wrong panel, on
+  // mobile too (which never has secondary panels, so it's simply dropped
+  // there unless it's the one room currently shown).
+  socket.on('chat_message', (msg) => {
+    if (msg.roomId == null || msg.roomId === currentRoomId) { appendMessage(msg); return; }
+    if (secondaryPanelEls.has(msg.roomId)) appendToSecondaryPanel(msg.roomId, msg);
+  });
+  socket.on('system_message', ({ roomId, text } = {}) => {
+    const payload = { type: 'system', content: text, username: '' };
+    if (roomId == null || roomId === currentRoomId) { appendMessage(payload); return; }
+    if (secondaryPanelEls.has(roomId)) appendToSecondaryPanel(roomId, payload);
+  });
   // Personal notices (coins/gifts given directly to you) are never room events —
   // show as a toast only, never as a message inside whatever room happens to be open.
   socket.on('personal_notice', (text) => toast(text));
@@ -649,7 +813,12 @@ function connectSocket() {
   // (non-live) copy is also sent to a socket on join_room as a replay of
   // whatever's currently active, which only needs to update the pinned
   // Announcement banner quietly (no flash — they didn't just miss anything).
-  socket.on('announcement', ({ text, by, live }) => {
+  socket.on('announcement', ({ roomId, text, by, live }) => {
+    // Scoped to one room (see trySetAnnouncement in socket.js) — the pinned
+    // banner only makes sense for whichever room is currently the primary
+    // (full-featured) panel; an event for a room only open as a lightweight
+    // secondary panel is skipped rather than overwriting that banner.
+    if (roomId != null && roomId !== currentRoomId) return;
     currentAnnouncement = text ? { text, by } : null;
     renderAnnouncementBanner();
     if (live) {
@@ -685,13 +854,24 @@ function connectSocket() {
   });
   socket.on('gift_shower', (data) => playGiftShower(data));
   socket.on('whois_result', (data) => showWhoisPopup(data));
-  socket.on('room_members', (members) => { lastRoomMembers = members; renderRoomMembers(members); renderRoomInfoBanner(); });
+  // Now carries roomId (see broadcastRoomMembers in socket.js, needed once a
+  // socket can be subscribed to several rooms' channels at once) — the
+  // Participants panel and room-info banner only exist on the primary panel,
+  // so an update for a room that's only open as a lightweight secondary
+  // panel is simply not applicable here and is skipped.
+  socket.on('room_members', ({ roomId, members } = {}) => {
+    if (roomId != null && roomId !== currentRoomId) return;
+    lastRoomMembers = members || [];
+    renderRoomMembers(lastRoomMembers);
+    renderRoomInfoBanner();
+  });
   socket.on('kicked', ({ roomId, by, reason }) => {
     if (reason === 'timeout') toast('⏳ You were removed from the room after 5 hours of inactivity');
     else if (reason === 'bump') toast(`↪️ You were bumped from the room by ${by} — you can rejoin in 5 minutes`);
     else toast(`⛔ You were kicked from the room by ${by} — you can rejoin in 10 minutes`);
     openRoomTabs = openRoomTabs.filter((r) => r.id !== roomId);
     roomMessageCache.delete(roomId); // removed from the room — the next entry starts blank again
+    secondaryMsgSeen.delete(roomId);
     renderRoomTabs();
     if (roomId === currentRoomId) {
       currentRoomId = null;
@@ -702,7 +882,8 @@ function connectSocket() {
 
   socket.on('invisible_state', ({ invisible }) => {
     isInvisible = invisible;
-    toast(invisible ? '👻 You are now invisible in this room' : '👁️ You are visible again');
+    toast(invisible ? '👻 You are now Going Invisible — entering rooms silently, hidden from participant lists' : '👁️ You are visible again');
+    updateUserBar();
   });
 
   socket.on('status_state', ({ status }) => {
@@ -781,23 +962,21 @@ function connectSocket() {
 
 // ---------- HOME SCREEN ----------
 async function refreshHome() {
+  // Home's Feed card: a simplified composer + every post (Announcements AND
+  // Blog together) in one merged, newest-first feed — see renderHomeFeed.
+  renderHomeFeed($('#homeFeedBox'));
+
   try {
+    // "Current Chat Rooms" no longer has its own visible list on Home —
+    // rooms you're in show up as floating chat windows instead (see the
+    // floating chat system below). This call stays only to keep
+    // allRoomsCache warm — it's the shared lookup the chat screen's
+    // owner/moderator banner and Room Info/Settings use.
     const { rooms } = await api('/rooms/recent?activeOnly=1');
-    // Merge into allRoomsCache too — it's the shared lookup the chat screen's
-    // owner/moderator banner and Room Info use, and a user can jump straight
-    // into a room from this Home list without ever opening Room Browser
-    // (which is otherwise the only place that populates it).
     rooms.forEach((room) => {
       const idx = allRoomsCache.findIndex((r) => r.id === room.id);
       if (idx === -1) allRoomsCache.push(room); else allRoomsCache[idx] = room;
     });
-    const box = $('#homeRoomList');
-    box.innerHTML = '';
-    if (!rooms.length) {
-      box.innerHTML = '<div class="empty-note">No rooms visited yet — head to Rooms to join one.</div>';
-    } else {
-      rooms.forEach((room) => box.appendChild(buildRoomRow(room)));
-    }
   } catch (e) {}
 
   try {
@@ -847,6 +1026,7 @@ async function refreshBadgeCounts() {
     const { unread: emailsUnread } = await api('/messages');
     setBadge($('#emailsBadge'), emailsUnread);
     setBadge($('#drawerEmailsBadge'), emailsUnread);
+    setBadge($('#menuEmailsBadge'), emailsUnread);
   } catch (e) {}
 }
 function setBadge(el, count) {
@@ -902,14 +1082,31 @@ function renderRoomGrids(all, recent) {
   renderSidebarRoomLists(all, recent);
 }
 
+// Cached so the sidebar's own room search (🔍 next to + Create Room) can
+// re-filter and redraw instantly on every keystroke without a network
+// round trip — it re-slices this same data instead of re-calling refreshRooms().
+let lastAllRoomsForSidebar = [];
+let lastRecentRoomsForSidebar = [];
+let sidebarRoomSearchQuery = '';
+
 function renderSidebarRoomLists(all, recent) {
+  lastAllRoomsForSidebar = all;
+  lastRecentRoomsForSidebar = recent;
+  const q = sidebarRoomSearchQuery;
+  const matches = (r) => !q || r.name.toLowerCase().includes(q);
+
   const favorites = all.filter((r) => r.isFavorite);
-  fillSidebarRoomList('#sidebarFavoriteRooms', favorites, 'No favorite rooms yet — star one from Rooms.');
-  fillSidebarRoomList('#sidebarOfficialRooms', all.filter((r) => r.is_official), 'No official rooms.');
-  fillSidebarRoomList('#sidebarRecentRooms', recent, 'No recent rooms.');
-  $('#sidebarFavoriteCount').textContent = favorites.length;
-  $('#sidebarOfficialCount').textContent = all.filter((r) => r.is_official).length;
-  $('#sidebarRecentCount').textContent = recent.length;
+  const official = all.filter((r) => r.is_official);
+  const favoritesF = favorites.filter(matches);
+  const officialF = official.filter(matches);
+  const recentF = recent.filter(matches);
+
+  fillSidebarRoomList('#sidebarFavoriteRooms', favoritesF, q ? 'No favorite rooms match your search.' : 'No favorite rooms yet — star one from Rooms.');
+  fillSidebarRoomList('#sidebarOfficialRooms', officialF, q ? 'No official rooms match your search.' : 'No official rooms.');
+  fillSidebarRoomList('#sidebarRecentRooms', recentF, q ? 'No recent rooms match your search.' : 'No recent rooms.');
+  $('#sidebarFavoriteCount').textContent = favoritesF.length;
+  $('#sidebarOfficialCount').textContent = officialF.length;
+  $('#sidebarRecentCount').textContent = recentF.length;
 }
 
 function fillSidebarRoomList(sel, rooms, emptyText) {
@@ -933,6 +1130,24 @@ function fillSidebarRoomList(sel, rooms, emptyText) {
   });
 }
 
+// Sidebar room search (🔍 next to + Create Room) — filters the same
+// Favorite/Official/Recent lists shown below it, live, as you type.
+$('#sidebarRoomSearchBtn').addEventListener('click', () => {
+  const wrap = $('#sidebarRoomSearchWrap');
+  wrap.classList.toggle('hidden');
+  if (!wrap.classList.contains('hidden')) {
+    $('#sidebarRoomSearchInput').focus();
+  } else {
+    $('#sidebarRoomSearchInput').value = '';
+    sidebarRoomSearchQuery = '';
+    renderSidebarRoomLists(lastAllRoomsForSidebar, lastRecentRoomsForSidebar);
+  }
+});
+$('#sidebarRoomSearchInput').addEventListener('input', (e) => {
+  sidebarRoomSearchQuery = e.target.value.trim().toLowerCase();
+  renderSidebarRoomLists(lastAllRoomsForSidebar, lastRecentRoomsForSidebar);
+});
+
 // Collapsible sidebar sections (chevron toggle) + a per-section refresh
 // icon that just re-pulls the same room data every section is built from.
 document.querySelectorAll('.sidebar-section-header').forEach((header) => {
@@ -944,14 +1159,9 @@ document.querySelectorAll('.sidebar-section-header').forEach((header) => {
   if (refreshBtn) refreshBtn.addEventListener('click', (e) => { e.stopPropagation(); refreshRooms(); });
 });
 
-// "+ Create Room" in the sidebar reuses the exact same form/submit flow as
-// the Rooms screen's ➕ button — just jumps there and opens it, instead of
-// duplicating the create-room logic.
-$('#sidebarCreateRoomBtn').addEventListener('click', () => {
-  showScreen('rooms');
-  $('#roomForm').classList.remove('hidden');
-  $('#newRoomName').focus();
-});
+// "+ Create Room" in the sidebar opens the exact same modal as the Rooms
+// screen's ➕ button, instead of duplicating the create-room logic.
+$('#sidebarCreateRoomBtn').addEventListener('click', openCreateRoomModal);
 
 function fillRoomGrid(sel, rooms, emptyText) {
   const grid = $(sel);
@@ -987,17 +1197,46 @@ function fillRoomGrid(sel, rooms, emptyText) {
 
 $('#roomSearchInput').addEventListener('input', () => refreshRooms());
 $('#roomsRefreshBtn').addEventListener('click', refreshRooms);
-$('#roomsCreateBtn').addEventListener('click', () => $('#roomForm').classList.toggle('hidden'));
-$('#cancelCreateRoomBtn').addEventListener('click', () => $('#roomForm').classList.add('hidden'));
+$('#roomsCreateBtn').addEventListener('click', openCreateRoomModal);
+
+// ---------- CREATE ROOM MODAL ----------
+// Popup dialog (Room name + Description) replacing the old inline toggle
+// form. Room creation itself may be gated by a Staff-configurable minimum
+// level (see GET /rooms/settings/min-create-level) — Staff bypass the gate
+// server-side, so the note is only shown to non-staff users.
+async function openCreateRoomModal() {
+  $('#newRoomName').value = '';
+  $('#newRoomDescription').value = '';
+  $('#createRoomLevelNote').classList.add('hidden');
+  $('#createRoomModal').classList.remove('hidden');
+  $('#newRoomName').focus();
+
+  if (!currentUser.is_staff) {
+    try {
+      const { minLevel } = await api('/rooms/settings/min-create-level');
+      if (minLevel > 0) {
+        const note = $('#createRoomLevelNote');
+        note.textContent = currentUser.level >= minLevel
+          ? `Creating a room requires level ${minLevel} or higher — you qualify (level ${currentUser.level}).`
+          : `Creating a room requires level ${minLevel} or higher — you're currently level ${currentUser.level}.`;
+        note.classList.remove('hidden');
+      }
+    } catch (err) { /* non-fatal — the create attempt itself still enforces the gate */ }
+  }
+}
+function closeCreateRoomModal() { $('#createRoomModal').classList.add('hidden'); }
+$('#closeCreateRoomBtn').addEventListener('click', closeCreateRoomModal);
+$('#cancelCreateRoomBtn').addEventListener('click', closeCreateRoomModal);
+$('#createRoomModal').addEventListener('click', (e) => { if (e.target.id === 'createRoomModal') closeCreateRoomModal(); });
 
 $('#roomForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = $('#newRoomName').value.trim();
+  const description = $('#newRoomDescription').value.trim();
   if (!name) return;
   try {
-    await api('/rooms', { method: 'POST', body: JSON.stringify({ name }) });
-    $('#newRoomName').value = '';
-    $('#roomForm').classList.add('hidden');
+    await api('/rooms', { method: 'POST', body: JSON.stringify({ name, description }) });
+    closeCreateRoomModal();
     refreshRooms();
   } catch (err) {
     toast(err.message);
@@ -1156,18 +1395,16 @@ function renderRoomTabs() {
     pill.addEventListener('click', () => enterRoom(r.id, r.name));
     bar.appendChild(pill);
   });
+  // Keep the "show every open room at once" floating panels (desktop only)
+  // in sync with the tab list any time it changes — see renderSecondaryPanels.
+  renderSecondaryPanels();
 }
 
-function appendMessage(msg) {
-  // Same persisted message can arrive twice around a room entry (once live,
-  // once via the join_room history backlog) — skip the repeat rather than
-  // showing it twice. Only messages with a real DB id are tracked; system
-  // notices ("has entered/left") have none and always render.
-  if (msg.id != null) {
-    const key = String(msg.id);
-    if (seenMsgIds.has(key)) return;
-    seenMsgIds.add(key);
-  }
+// Builds the DOM node for one chat message/system-notice — shared by the
+// primary #messages pane (appendMessage) and every secondary floating panel
+// (appendToSecondaryPanel) so both render identically without duplicating
+// all the per-type branches below.
+function buildMessageEl(msg) {
   const div = document.createElement('div');
   if (msg.id != null) div.dataset.msgId = String(msg.id);
   div.className = 'msg ' + (msg.type || 'text');
@@ -1198,6 +1435,20 @@ function appendMessage(msg) {
     const nameStyle = usernameStyleAttr(msg);
     div.innerHTML = `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
   }
+  return div;
+}
+
+function appendMessage(msg) {
+  // Same persisted message can arrive twice around a room entry (once live,
+  // once via the join_room history backlog) — skip the repeat rather than
+  // showing it twice. Only messages with a real DB id are tracked; system
+  // notices ("has entered/left") have none and always render.
+  if (msg.id != null) {
+    const key = String(msg.id);
+    if (seenMsgIds.has(key)) return;
+    seenMsgIds.add(key);
+  }
+  const div = buildMessageEl(msg);
   const box = $('#messages');
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
@@ -1213,6 +1464,129 @@ function appendMessage(msg) {
       renderRoomInfoBanner();
     }
   }
+}
+
+// ---------- SECONDARY FLOATING PANELS (desktop, "show all open rooms") ----------
+// Every room in openRoomTabs besides currentRoomId (which already gets the
+// full-featured primary #chatScreen window) gets one of these: a small
+// always-visible floating panel with its own message list and a basic send
+// box, so entering several rooms shows all of them live at once instead of
+// only the last one switched into. Clicking a panel's header promotes that
+// room to primary (full feature set — emoji, gifts, settings, etc.); the ✕
+// leaves the room outright. Mobile never creates these (isDesktopLayout()
+// guard in renderSecondaryPanels) — it keeps the original single full-screen
+// room exactly as before.
+function appendToSecondaryPanel(roomId, msg) {
+  const el = secondaryPanelEls.get(roomId);
+  if (!el) return;
+  if (msg.id != null) {
+    let seen = secondaryMsgSeen.get(roomId);
+    if (!seen) { seen = new Set(); secondaryMsgSeen.set(roomId, seen); }
+    const key = String(msg.id);
+    if (seen.has(key)) return;
+    seen.add(key);
+  }
+  const box = el.querySelector('.secondary-panel-messages');
+  box.appendChild(buildMessageEl(msg));
+  box.scrollTop = box.scrollHeight;
+  // Keep it light — this is a glance-at panel, not the full chat history.
+  while (box.children.length > 50) box.removeChild(box.firstChild);
+}
+
+function buildSecondaryPanel(id, name) {
+  const el = document.createElement('div');
+  el.className = 'secondary-panel';
+  el.dataset.roomId = String(id);
+
+  const header = document.createElement('div');
+  header.className = 'secondary-panel-header';
+  const title = document.createElement('span');
+  title.textContent = `💬 ${name}`;
+  const closeBtn = document.createElement('span');
+  closeBtn.className = 'secondary-panel-close';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Leave room';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    leaveRoomAndForget(id);
+  });
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  header.addEventListener('click', () => enterRoom(id, name));
+
+  const msgs = document.createElement('div');
+  msgs.className = 'secondary-panel-messages';
+
+  const inputRow = document.createElement('div');
+  inputRow.className = 'secondary-panel-inputrow';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 1000;
+  input.placeholder = 'Message...';
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'btn';
+  sendBtn.textContent = 'Send';
+  function doSend() {
+    const text = input.value.trim();
+    if (!text) return;
+    socket.emit('chat_message', { roomId: id, text });
+    input.value = '';
+  }
+  sendBtn.addEventListener('click', doSend);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
+  input.addEventListener('click', (e) => e.stopPropagation());
+  inputRow.appendChild(input);
+  inputRow.appendChild(sendBtn);
+
+  el.appendChild(header);
+  el.appendChild(msgs);
+  el.appendChild(inputRow);
+  return el;
+}
+
+// Fills a freshly-created secondary panel with whatever's already known for
+// that room: an existing #messages snapshot if it was the primary room at
+// some point this session, otherwise a fresh join_room round trip for its
+// history (harmless to call again — the server only treats it as a genuine
+// re-entry, with its "has entered" notice, the first time per session).
+function fillSecondaryPanelHistory(id) {
+  const el = secondaryPanelEls.get(id);
+  if (!el) return;
+  const box = el.querySelector('.secondary-panel-messages');
+  if (roomMessageCache.has(id)) {
+    box.innerHTML = roomMessageCache.get(id);
+    box.scrollTop = box.scrollHeight;
+    return;
+  }
+  socket.emit('join_room', id, (ack) => {
+    if (!secondaryPanelEls.has(id)) return; // panel closed/promoted before this came back
+    if (ack && ack.ok) (ack.history || []).forEach((m) => appendToSecondaryPanel(id, m));
+  });
+}
+
+function renderSecondaryPanels() {
+  const container = $('#secondaryPanels');
+  if (!container) return;
+  if (!isDesktopLayout()) {
+    container.innerHTML = '';
+    secondaryPanelEls.clear();
+    return;
+  }
+  const wanted = openRoomTabs.filter((r) => r.id !== currentRoomId);
+  for (const [rid, el] of Array.from(secondaryPanelEls.entries())) {
+    if (!wanted.find((r) => r.id === rid)) {
+      el.remove();
+      secondaryPanelEls.delete(rid);
+      secondaryMsgSeen.delete(rid);
+    }
+  }
+  wanted.forEach((r) => {
+    if (secondaryPanelEls.has(r.id)) return; // already showing — keep its live content, don't rebuild
+    const el = buildSecondaryPanel(r.id, r.name);
+    secondaryPanelEls.set(r.id, el);
+    container.appendChild(el);
+    fillSecondaryPanelHistory(r.id);
+  });
 }
 
 // Tap a username in chat (text/image/voice messages only — bot names aren't
@@ -1519,9 +1893,24 @@ function renderSendGiftPicker(box) {
 
 // ---------- ACTION SHEET (⋮ button in chat) ----------
 let isInvisible = false;
+
+// Whoever created the room (or Staff/Global Admin, regardless of who
+// created it) can actually change its settings — everyone else only gets a
+// read-only view of the same screen. The ⋮ menu item and the sub-screen
+// title reflect that: "Room Settings" (editable) vs "Room Info" (view-only).
+function canManageRoom(room) {
+  if (!room) return false;
+  return currentUser.is_staff || currentUser.is_global_admin || room.owner_username === currentUser.username;
+}
+function roomSettingsOrInfoTitle() {
+  const room = allRoomsCache.find((r) => r.id === currentRoomId);
+  return canManageRoom(room) ? 'Room Settings' : 'Room Info';
+}
+
 $('#actionSheetBtn').addEventListener('click', () => {
-  $('#sheetInvisible').classList.toggle('hidden', !(currentUser.is_staff || currentUser.is_global_admin));
-  $('#sheetInvisible').textContent = isInvisible ? '👁️ Go Visible' : '👻 Go Invisible';
+  $('#sheetInvisible').classList.add('hidden'); // Go Invisible now lives in the user status picker — see openStatusPicker
+  const title = roomSettingsOrInfoTitle();
+  $('#sheetRoomInfo').textContent = title === 'Room Settings' ? '⚙️ Room Settings' : 'ℹ️ Room Info';
   $('#actionSheetOverlay').classList.remove('hidden');
 });
 $('#actionSheetOverlay').addEventListener('click', (e) => {
@@ -1536,11 +1925,7 @@ $('#sheetRoomInfo').addEventListener('click', () => {
   if (!currentRoomId) return toast('Join a room first');
   subScreenStack = [];
   roomSettingsActiveTab = 'settings';
-  pushSubScreen('Room Settings', renderRoomSettings);
-});
-$('#sheetInvisible').addEventListener('click', () => {
-  $('#actionSheetOverlay').classList.add('hidden');
-  socket.emit('toggle_invisible', !isInvisible);
+  pushSubScreen(roomSettingsOrInfoTitle(), renderRoomSettings);
 });
 $('#sheetBalance').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
@@ -1560,6 +1945,7 @@ $('#sheetLeaveRoom').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
   if (currentRoomId) socket.emit('leave_room', { roomId: currentRoomId });
   roomMessageCache.delete(currentRoomId); // a real leave — the next entry starts blank again
+  secondaryMsgSeen.delete(currentRoomId);
   openRoomTabs = openRoomTabs.filter((r) => r.id !== currentRoomId);
   currentRoomId = null;
   clearSavedRoom();
@@ -1925,7 +2311,35 @@ function openAdminPanel() {
   $('#adminModal').classList.remove('hidden');
   $('#adminUserSearchInput').focus();
   if (lastAdminSearch) runAdminSearch();
+  loadMinCreateLevel();
 }
+
+// Staff-configurable minimum level required to create a chat room (see
+// GET/POST /rooms/settings/min-create-level and the note shown in the
+// Create Room modal to non-staff users below that level).
+async function loadMinCreateLevel() {
+  try {
+    const { minLevel } = await api('/rooms/settings/min-create-level');
+    $('#minCreateLevelValue').textContent = minLevel;
+  } catch (err) { /* leave the last-known value showing */ }
+}
+$('#minCreateLevelMinus').addEventListener('click', () => {
+  const el = $('#minCreateLevelValue');
+  el.textContent = Math.max(0, (parseInt(el.textContent, 10) || 0) - 1);
+});
+$('#minCreateLevelPlus').addEventListener('click', () => {
+  const el = $('#minCreateLevelValue');
+  el.textContent = Math.min(9999, (parseInt(el.textContent, 10) || 0) + 1);
+});
+$('#saveMinCreateLevelBtn').addEventListener('click', async () => {
+  const level = parseInt($('#minCreateLevelValue').textContent, 10) || 0;
+  try {
+    await api('/rooms/settings/min-create-level', { method: 'POST', body: JSON.stringify({ level }) });
+    toast(`Room creation now requires level ${level}+`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 async function runAdminSearch() {
   const q = $('#adminUserSearchInput').value.trim();
@@ -2671,7 +3085,7 @@ function renderRoomInfoBanner() {
     return;
   }
 
-  const ownerName = room.owner_username || 'MiniPlatform';
+  const ownerName = room.owner_username || 'miniplatform';
   // "Currently in this room" should mean actually here right now — the
   // Participants panel is the place that still lists offline/logged-out
   // members (with an offline dot) since room membership itself is
@@ -2897,7 +3311,7 @@ function renderRoomSettingsTab(content, room, canManageSettings, canManageSilenc
 }
 
 function renderRoomModeratorsTab(content, room, canManageMod, moderators) {
-  content.appendChild(infoRow('👑', '#f59e0b', 'Owner', room.owner_username || 'MiniPlatform (official room, no owner)'));
+  content.appendChild(infoRow('👑', '#f59e0b', 'Owner', room.owner_username || 'miniplatform'));
   content.appendChild(infoRow('🔰', '#eab308', moderators.length === 1 ? 'Moderator' : 'Moderators', moderators.length ? moderators.join(', ') : 'No moderators set'));
 
   if (canManageMod) {
@@ -3245,6 +3659,137 @@ function renderPostsScreen(type) {
   };
 }
 function openDrawerBlog() { openSubScreenFromDrawer('Blog', renderPostsScreen('blog')); }
+
+// ---------- HOME FEED ----------
+// The Home screen's Feed card (matches iNwe's home layout): a simplified
+// "What's on your mind?" composer (content + optional picture — no separate
+// title field, unlike the Explore -> Blog screen) that always posts as
+// 'blog', above a single merged feed of EVERY post — announcements AND
+// blog posts together, newest first (GET /posts?type=all). Announcements
+// stay read-only here (no reactions, Staff-only to remove) since they're
+// still the official Staff channel; only their content is shown alongside
+// blog posts so nothing posted anywhere is missing from Home.
+function renderHomeFeed(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  const draw = async () => {
+    try {
+      const { posts } = await api('/posts?type=all');
+      box.innerHTML = '';
+
+      const composer = document.createElement('div');
+      composer.className = 'post-composer';
+      composer.innerHTML = `
+        <textarea id="homePostContentInput" placeholder="What's on your mind, ${escapeHtml(currentUser.username)}?" rows="3" maxlength="4000"></textarea>
+        <input type="file" id="homePostImageInput" accept="image/*" class="hidden" />
+        <button type="button" id="homePostAttachBtn" class="post-attach-btn">🖼️ Add picture</button>
+        <div id="homePostImagePreviewWrap" class="post-image-picker hidden">
+          <div class="post-image-preview-wrap">
+            <img id="homePostImagePreview" class="post-image-preview" />
+            <button type="button" id="homePostImageRemoveBtn" class="post-image-remove-btn" title="Remove picture">✕</button>
+          </div>
+        </div>
+        <button id="homePostSubmitBtn" class="primary-btn">Post</button>
+      `;
+      let pendingImage = null;
+      const fileInput = composer.querySelector('#homePostImageInput');
+      const previewWrap = composer.querySelector('#homePostImagePreviewWrap');
+      const previewImg = composer.querySelector('#homePostImagePreview');
+      composer.querySelector('#homePostAttachBtn').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        try {
+          pendingImage = await fileToCompressedDataUrl(file);
+          previewImg.src = pendingImage;
+          previewWrap.classList.remove('hidden');
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          fileInput.value = '';
+        }
+      });
+      composer.querySelector('#homePostImageRemoveBtn').addEventListener('click', () => {
+        pendingImage = null;
+        previewWrap.classList.add('hidden');
+        previewImg.src = '';
+      });
+      composer.querySelector('#homePostSubmitBtn').addEventListener('click', async () => {
+        const content = composer.querySelector('#homePostContentInput').value.trim();
+        if (!content) return toast("Write something first");
+        try {
+          const body = { type: 'blog', content };
+          if (pendingImage) body.image = pendingImage;
+          await api('/posts', { method: 'POST', body: JSON.stringify(body) });
+          toast('Posted!');
+          draw();
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+      box.appendChild(composer);
+
+      if (!posts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-note';
+        empty.textContent = 'Nothing here yet — be the first to post!';
+        box.appendChild(empty);
+        return;
+      }
+
+      posts.forEach((p) => {
+        const isBlog = p.type === 'blog';
+        const { relative, exact } = formatAlertTime(p.created_at);
+        const row = document.createElement('div');
+        row.className = 'notif-row';
+        const reactionsHtml = isBlog ? `
+          <div class="post-reactions">
+            <button class="post-react-btn react-favorite ${p.my_reactions.includes('favorite') ? 'active' : ''}" data-id="${p.id}" data-kind="favorite">⭐ ${p.favorite_count}</button>
+            <button class="post-react-btn react-like ${p.my_reactions.includes('like') ? 'active' : ''}" data-id="${p.id}" data-kind="like">👍 ${p.like_count}</button>
+            <button class="post-react-btn react-dislike ${p.my_reactions.includes('dislike') ? 'active' : ''}" data-id="${p.id}" data-kind="dislike">👎 ${p.dislike_count}</button>
+          </div>
+        ` : '';
+        row.innerHTML = `
+          <div class="notif-icon" style="background:${isBlog ? '#8b5cf6' : '#3b82f6'}">${isBlog ? '📰' : '📣'}</div>
+          <div class="notif-body">
+            ${!isBlog ? '<div class="post-byline">📣 Announcement</div>' : ''}
+            <div class="post-byline">by ${escapeHtml(p.created_by)}</div>
+            <div class="post-desc">${escapeHtml(p.content)}</div>
+            ${p.image ? `<img class="post-body-img" src="${p.image}" alt="" />` : ''}
+            ${reactionsHtml}
+          </div>
+          <div class="notif-time">
+            <div class="notif-relative">${escapeHtml(relative)}</div>
+            <div class="notif-exact">${escapeHtml(exact)}</div>
+            ${(currentUser.is_staff || (isBlog && p.created_by === currentUser.username)) ? '<button class="post-delete-btn" title="Delete">🗑️</button>' : ''}
+          </div>
+        `;
+        const delBtn = row.querySelector('.post-delete-btn');
+        if (delBtn) delBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await api(`/posts/${p.id}`, { method: 'DELETE' });
+          draw();
+        });
+        if (isBlog) {
+          row.querySelectorAll('.post-react-btn').forEach((btn) => {
+            btn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              try {
+                await api(`/posts/${p.id}/react`, { method: 'POST', body: JSON.stringify({ kind: btn.dataset.kind }) });
+                draw();
+              } catch (err) {
+                toast(err.message);
+              }
+            });
+          });
+        }
+        box.appendChild(row);
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    }
+  };
+  draw();
+}
 
 // ---------- GIFT STORE ----------
 let giftStoreCatalog = null;
