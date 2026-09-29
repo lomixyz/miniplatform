@@ -87,6 +87,12 @@ for (const [cmd, selfTpl] of BENGALI_COMMANDS) {
 // Commands with real custom logic rather than a canned text template — kept
 // out of ROLEPLAY_MAP and handled explicitly in the "Special" block below.
 const SPECIAL_COMMANDS = new Set(['8ball', 'coffee', 'cupid', 'findmymatch', 'flame', 'whackit']);
+// Presence/status announcements ("/brb", "/afk", ...) don't read like a
+// message the user actually typed and sent — they're a status change about
+// the user, not something said BY them — so instead of posting as a normal
+// "username: text" chat bubble like the other roleplay/emote commands, these
+// render as a centered system announcement (see handleRoleplayCommand below).
+const STATUS_ANNOUNCE_COMMANDS = new Set(['afk', 'back', 'brb', 'gtg', 'bbl', 'sleep', 'yawn']);
 const EIGHT_BALL_ANSWERS = [
   'Yes, definitely!', 'It is certain.', 'Without a doubt.', 'You may rely on it.',
   'Most likely.', 'Signs point to yes.', 'Ask again later.', 'Cannot predict now.',
@@ -1425,6 +1431,9 @@ function attachSocket(io, sessionMiddleware) {
 
       if (!entry.selfTpl) return socket.emit('error_message', `Usage: /${cmd} <username>`);
       const text = entry.selfTpl.replace('{user}', me);
+      if (STATUS_ANNOUNCE_COMMANDS.has(cmd)) {
+        return io.to(`room:${roomId}`).emit('system_message', { roomId, text });
+      }
       return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
     }
 
