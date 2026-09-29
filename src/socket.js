@@ -87,12 +87,6 @@ for (const [cmd, selfTpl] of BENGALI_COMMANDS) {
 // Commands with real custom logic rather than a canned text template — kept
 // out of ROLEPLAY_MAP and handled explicitly in the "Special" block below.
 const SPECIAL_COMMANDS = new Set(['8ball', 'coffee', 'cupid', 'findmymatch', 'flame', 'whackit']);
-// Presence/status announcements ("/brb", "/afk", ...) don't read like a
-// message the user actually typed and sent — they're a status change about
-// the user, not something said BY them — so instead of posting as a normal
-// "username: text" chat bubble like the other roleplay/emote commands, these
-// render as a centered system announcement (see handleRoleplayCommand below).
-const STATUS_ANNOUNCE_COMMANDS = new Set(['afk', 'back', 'brb', 'gtg', 'bbl', 'sleep', 'yawn']);
 const EIGHT_BALL_ANSWERS = [
   'Yes, definitely!', 'It is certain.', 'Without a doubt.', 'You may rely on it.',
   'Most likely.', 'Signs point to yes.', 'Ask again later.', 'Cannot predict now.',
@@ -1410,7 +1404,17 @@ function attachSocket(io, sessionMiddleware) {
 
     // Roleplay/emote commands — posts a canned third-person action line to
     // the room, optionally naming a target. "/act <text>" is the one
-    // freeform command (selfTpl has a literal {arg} placeholder).
+    // freeform command (selfTpl has a literal {arg} placeholder). Every one
+    // of these (and the "Special" tier below — 8ball, coffee, cupid, etc.)
+    // renders as a centered system announcement, same as "/brb", rather than
+    // a normal "username: text" chat bubble — none of it reads like
+    // something the user actually typed and sent. The only commands that
+    // still post as real chat/moderation-log lines are the ones with actual
+    // side effects (gift, kick, ban, unban, bump, silence, unsilence), which
+    // don't go through this function at all.
+    function announceRoleplay(roomId, text) {
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text });
+    }
     function handleRoleplayCommand(roomId, cmd, arg) {
       const entry = ROLEPLAY_MAP.get(cmd);
       const me = nameWithLevel(user.id, user.username);
@@ -1418,7 +1422,7 @@ function attachSocket(io, sessionMiddleware) {
       if (entry.isFreeform) {
         if (!arg) return socket.emit('error_message', `Usage: /${cmd} <action text>`);
         const text = entry.selfTpl.replace('{user}', me).replace('{arg}', arg.slice(0, 200));
-        return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+        return announceRoleplay(roomId, text);
       }
 
       if (arg && entry.targetTpl) {
@@ -1426,21 +1430,20 @@ function attachSocket(io, sessionMiddleware) {
         if (!target) return socket.emit('error_message', `No user named "${arg}"`);
         const them = target.id === user.id ? me : nameWithLevel(target.id, target.username);
         const text = entry.targetTpl.replace('{user}', me).replace('{target}', them);
-        return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+        return announceRoleplay(roomId, text);
       }
 
       if (!entry.selfTpl) return socket.emit('error_message', `Usage: /${cmd} <username>`);
       const text = entry.selfTpl.replace('{user}', me);
-      if (STATUS_ANNOUNCE_COMMANDS.has(cmd)) {
-        return io.to(`room:${roomId}`).emit('system_message', { roomId, text });
-      }
-      return postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: text });
+      return announceRoleplay(roomId, text);
     }
 
     // "Special" tier commands with real behavior, not just a canned line.
     function handleSpecialCommand(roomId, cmd, arg) {
       const me = nameWithLevel(user.id, user.username);
-      const post = (content) => postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content });
+      // Same system-announcement treatment as the roleplay/emote commands
+      // above (see announceRoleplay) — not a real chat message from the user.
+      const post = (content) => announceRoleplay(roomId, content);
 
       if (cmd === '8ball') {
         if (!arg) return socket.emit('error_message', 'Usage: /8ball <question>');
