@@ -2000,21 +2000,65 @@ function attachSocket(io, sessionMiddleware) {
       broadcastRoomMembers(roomId);
     });
 
-    // ---- Room Settings: description + level lock (owner/Staff/Global Admin) ----
+    // ---- Room Settings: description + level lock (Staff/Global Admin ONLY —
+    // being the room's owner is no longer sufficient on its own; matches the
+    // same Staff/Global-Admin-only rule already used for Ghost Mode/Going
+    // Invisible) ----
     on('update_room_settings', ({ roomId, description, lockLevel }) => {
       roomId = Number(roomId);
       const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
       if (!room) return socket.emit('error_message', 'Room not found');
       const flags = freshRoleFlags(user.id);
-      const isOwner = room.created_by === user.id;
-      if (!flags.is_staff && !flags.is_global_admin && !isOwner) {
-        return socket.emit('error_message', "Only Staff, a Global Administrator, or this room's owner can change Room Settings");
+      if (!flags.is_staff && !flags.is_global_admin) {
+        return socket.emit('error_message', 'Only Staff or a Global Administrator can change Room Settings');
       }
       const desc = String(description || '').slice(0, 500);
       const level = Math.max(0, Math.min(100, parseInt(lockLevel, 10) || 0));
       db.prepare('UPDATE rooms SET description = ?, lock_level = ? WHERE id = ?').run(desc, level, roomId);
       io.to(`room:${roomId}`).emit('room_settings_updated', { roomId, description: desc, lockLevel: level });
       socket.emit('room_settings_saved', { roomId });
+    });
+
+    // ---- Permanently delete a room — Staff ONLY (narrower than Room
+    // Settings editing, which is Staff+Global Admin — a Global Admin cannot
+    // delete a room), regardless of who created it. Official rooms (no
+    // owner, built-in) can't be deleted. Cascades every table that
+    // references the room, then tells everyone currently in it (and the
+    // deleting client) so clients can bounce out. ----
+    on('delete_room', ({ roomId }) => {
+      roomId = Number(roomId);
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff) {
+        return socket.emit('error_message', 'Only Staff can delete a room');
+      }
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+      if (room.is_official) return socket.emit('error_message', 'Official rooms cannot be deleted');
+
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🗑️ This room was permanently deleted by ${user.username}.` });
+      io.to(`room:${roomId}`).emit('room_deleted', { roomId });
+
+      db.prepare('DELETE FROM room_moderators WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM messages WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_visits WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_favorites WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_memberships WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_blocks WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+
+      // Every connected socket currently subscribed to this room's channel
+      // (not just the members table) needs to actually leave it now that
+      // it's gone, so a stray broadcast doesn't target a dead room.
+      const subscribed = io.sockets.adapter.rooms.get(`room:${roomId}`);
+      if (subscribed) {
+        for (const sid of subscribed) {
+          const s = io.sockets.sockets.get(sid);
+          if (s) s.leave(`room:${roomId}`);
+        }
+      }
+
+      io.emit('room_list_changed');
+      socket.emit('room_delete_confirmed', { roomId });
     });
 
     // ---- Legendary Bot (dice-betting game, confined to its own room) ----

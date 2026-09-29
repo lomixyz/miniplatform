@@ -880,6 +880,34 @@ function connectSocket() {
     }
   });
 
+  // A room was permanently deleted by Staff/Global Admin (see delete_room in
+  // socket.js) — bounce anyone who had it open out of it, exactly like a
+  // kick, and drop it from every local list so it can't be re-entered.
+  socket.on('room_deleted', ({ roomId }) => {
+    openRoomTabs = openRoomTabs.filter((r) => r.id !== roomId);
+    roomMessageCache.delete(roomId);
+    secondaryMsgSeen.delete(roomId);
+    allRoomsCache = allRoomsCache.filter((r) => r.id !== roomId);
+    renderRoomTabs();
+    if (roomId === currentRoomId) {
+      currentRoomId = null;
+      clearSavedRoom();
+      showScreen('rooms');
+      toast('🗑️ This room was permanently deleted');
+    }
+  });
+  // Confirms the delete to whoever triggered it (they may not have been in
+  // the room's channel themselves, e.g. deleting from the Rooms browser).
+  socket.on('room_delete_confirmed', ({ roomId }) => {
+    subScreenStack = [];
+    $('#subScreenOverlay').classList.add('hidden');
+    toast('🗑️ Room deleted');
+    refreshRooms();
+  });
+  // Any Staff/Global-Admin room deletion touches the global room list —
+  // simplest to just re-pull it for everyone rather than diffing.
+  socket.on('room_list_changed', () => refreshRooms());
+
   socket.on('invisible_state', ({ invisible }) => {
     isInvisible = invisible;
     toast(invisible ? '👻 You are now Going Invisible — entering rooms silently, hidden from participant lists' : '👁️ You are visible again');
@@ -1924,13 +1952,14 @@ function renderSendGiftPicker(box) {
 // ---------- ACTION SHEET (⋮ button in chat) ----------
 let isInvisible = false;
 
-// Whoever created the room (or Staff/Global Admin, regardless of who
-// created it) can actually change its settings — everyone else only gets a
-// read-only view of the same screen. The ⋮ menu item and the sub-screen
-// title reflect that: "Room Settings" (editable) vs "Room Info" (view-only).
+// Only Staff/Global Admin can actually change a room's settings or delete
+// it — being the room's owner is NOT enough on its own anymore. Everyone
+// else only gets a read-only view of the same screen. The ⋮ menu item and
+// the sub-screen title reflect that: "Room Settings" (editable) vs
+// "Room Info" (view-only).
 function canManageRoom(room) {
   if (!room) return false;
-  return currentUser.is_staff || currentUser.is_global_admin || room.owner_username === currentUser.username;
+  return currentUser.is_staff || currentUser.is_global_admin;
 }
 function roomSettingsOrInfoTitle() {
   const room = allRoomsCache.find((r) => r.id === currentRoomId);
@@ -3233,11 +3262,12 @@ function renderRoomSettings(box) {
 
   const moderators = room.moderator_usernames || [];
   const isModerator = moderators.includes(currentUser.username);
-  const isOwner = room.owner_username === currentUser.username;
   const isPrivileged = currentUser.is_staff || currentUser.is_global_admin;
-  const canManageSettings = isPrivileged || isOwner; // description/lock level/ban/unban
+  // Staff/Global Admin ONLY — being the room's owner no longer grants any
+  // editing rights here (description/lock level/ban/unban/moderators/delete).
+  const canManageSettings = isPrivileged;
   const canManageSilence = isPrivileged || isModerator;
-  const canManageMod = isPrivileged || isOwner;
+  const canManageMod = isPrivileged;
 
   const tabs = document.createElement('div');
   tabs.className = 'room-settings-tabs';
@@ -3386,6 +3416,27 @@ function renderRoomSettingsTab(content, room, canManageSettings, canManageSilenc
       setTimeout(refreshRoomSettingsIfOpen, 300);
     });
     content.appendChild(btn);
+  }
+
+  // Permanently delete the room — Staff ONLY (narrower than Room Settings
+  // editing/canManageSettings, which is Staff+Global Admin — Global Admin
+  // does NOT get this button), and never offered for the built-in official rooms.
+  if (currentUser.is_staff && !room.is_official) {
+    const deleteCard = document.createElement('div');
+    deleteCard.className = 'settings-card';
+    deleteCard.innerHTML = `
+      <div class="settings-card-title">🗑️ Delete Room</div>
+      <div class="settings-card-note">Permanently deletes this room for everyone — its messages, members, moderators and bans. This cannot be undone.</div>
+    `;
+    content.appendChild(deleteCard);
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'danger save-settings-btn';
+    deleteBtn.textContent = '🗑️ Delete Room Permanently';
+    deleteBtn.addEventListener('click', () => {
+      if (!confirm(`Permanently delete "${room.name}"? This cannot be undone.`)) return;
+      socket.emit('delete_room', { roomId: currentRoomId });
+    });
+    content.appendChild(deleteBtn);
   }
 }
 
