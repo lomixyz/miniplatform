@@ -98,9 +98,9 @@ router.post('/', requireLogin, (req, res) => {
   const desc = String(description || '').trim().slice(0, 500);
   try {
     const info = db.prepare("INSERT INTO rooms (name, description, created_by, is_official, capacity, room_type) VALUES (?, ?, ?, 0, 50, 'chat')").run(name.trim(), desc, user.id);
-    // The creator's own room shows up in their Favorite Rooms immediately —
-    // they made it, so it should be easy to find again without a separate step.
-    db.prepare('INSERT OR IGNORE INTO room_favorites (user_id, room_id) VALUES (?, ?)').run(user.id, info.lastInsertRowid);
+    // A newly created room lands in "Other Rooms" like any other non-official
+    // room — it is NOT auto-favorited for its creator. Any user (including
+    // the creator) can star it from the room grid to move it into Favorites.
     const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(info.lastInsertRowid);
     res.json({ room: shapeRoom(row, user.id) });
   } catch (e) {
