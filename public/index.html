@@ -533,6 +533,21 @@
   </div>
 </div>
 
+<!-- Room Info popup (read-only — everyone who isn't the room's owner or
+     Staff/Global Admin; see the ⋮ menu's Room Info/Room Settings split and
+     openRoomInfoModal() in app.js). A compact modal instead of the full
+     editable Settings/Moderators/Banned page, since there's nothing here
+     for this viewer to change. -->
+<div id="roomInfoModal" class="modal-overlay hidden">
+  <div class="room-info-modal-panel">
+    <div class="room-info-modal-header">
+      <span id="roomInfoModalTitle"></span>
+      <button class="icon-btn" id="roomInfoModalCloseBtn">✕</button>
+    </div>
+    <div id="roomInfoModalBody" class="room-info-modal-body"></div>
+  </div>
+</div>
+
 <div id="adminModal" class="modal-overlay hidden">
   <div id="adminPanel" class="modal-panel">
     <button class="close-btn secondary" id="closeAdminBtn">Close</button>

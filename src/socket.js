@@ -1982,7 +1982,17 @@ function attachSocket(io, sessionMiddleware) {
     // (hidden from everyone else's Participants list, still visible to
     // yourself). Unlike Staff/Global Admin's global invisible toggle above,
     // any member can use this, and it's scoped to one room at a time.
+    // Ghost Mode (join a room invisibly, hidden from its participant list) —
+    // same Staff/Global Admin-only rule as toggle_invisible above: being the
+    // room's owner is not enough on its own, since going invisible is a
+    // privileged capability, not a room-ownership one. Re-checked fresh here
+    // (not from the session) since roles can change while a socket stays
+    // connected — see freshRoleFlags.
     on('set_room_ghost_mode', ({ roomId, ghost }) => {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        return socket.emit('error_message', 'Only Staff or a Global Administrator can use Ghost Mode');
+      }
       roomId = Number(roomId);
       db.prepare('UPDATE room_memberships SET ghost_mode = ? WHERE user_id = ? AND room_id = ?')
         .run(ghost ? 1 : 0, user.id, roomId);

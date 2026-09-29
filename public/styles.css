@@ -234,7 +234,7 @@ body::after {
 .topbar-dropdown {
   position: absolute; top: calc(100% + 8px); right: 0; min-width: 200px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 6px; z-index: 60;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 6px; z-index: 960;
 }
 .topbar-dropdown-item {
   padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -244,11 +244,11 @@ body::after {
 .topbar-dropdown-logout { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; color: #ef4444; }
 
 /* Nav drawer */
-#navDrawerOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 60; }
+#navDrawerOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 960; }
 #navDrawer {
   position: fixed; top: 0; left: 0; bottom: 0; width: 240px;
   background: var(--panel); border-right: 1px solid var(--border);
-  z-index: 61; padding: 16px 0; overflow-y: auto;
+  z-index: 961; padding: 16px 0; overflow-y: auto;
 }
 .drawer-item {
   padding: 12px 20px; font-size: 14px; cursor: pointer;
@@ -340,28 +340,35 @@ body::after {
 
   /* Secondary floating panels: every other room you have open besides the
      one in the primary floating window (#chatScreen) above, shown at the
-     same time instead of only after switching a tab into it. Stacked to the
-     left of the primary panel, smallest/most-recently-opened closest to it. */
+     same time instead of only after switching a tab into it — same size as
+     the primary panel (380x560), not a shrunken preview, so an open room
+     reads the same whether it's the primary or a secondary panel. Stacked
+     to the left of the primary panel, wrapping to a new row above it if
+     there isn't enough width for all of them side by side. */
   .secondary-panels {
     position: fixed;
     right: 416px;
     bottom: 24px;
+    left: 24px;
     display: flex;
     flex-direction: row-reverse;
+    flex-wrap: wrap-reverse;
     align-items: flex-end;
+    justify-content: flex-start;
     gap: 10px;
     z-index: 490;
     pointer-events: none;
   }
   .secondary-panel {
-    width: 250px;
-    max-height: 340px;
+    width: 380px;
+    height: 560px;
+    max-height: calc(100vh - 48px);
     display: flex;
     flex-direction: column;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 10px 32px rgba(0,0,0,0.24);
+    border-radius: 16px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.28);
     overflow: hidden;
     pointer-events: auto;
   }
@@ -369,26 +376,27 @@ body::after {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
-    padding: 8px 10px;
+    gap: 8px;
+    padding: 12px 14px;
     background: var(--panel-alt);
     border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     cursor: pointer;
+    border-radius: 16px 16px 0 0;
   }
   .secondary-panel-header span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .secondary-panel-close { cursor: pointer; opacity: 0.65; padding: 0 2px; flex-shrink: 0; }
+  .secondary-panel-close { cursor: pointer; opacity: 0.65; padding: 0 4px; flex-shrink: 0; font-size: 16px; }
   .secondary-panel-close:hover { opacity: 1; }
-  .secondary-panel-messages { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 12px; min-height: 80px; max-height: 240px; }
-  .secondary-panel-messages .msg { margin-bottom: 6px; }
-  .secondary-panel-inputrow { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
+  .secondary-panel-messages { flex: 1; overflow-y: auto; padding: 10px 14px; font-size: 13px; }
+  .secondary-panel-messages .msg { margin-bottom: 8px; }
+  .secondary-panel-inputrow { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border); }
   .secondary-panel-inputrow input {
-    flex: 1; min-width: 0; font-size: 12px; padding: 6px 8px;
-    border-radius: 6px; border: 1px solid var(--border);
+    flex: 1; min-width: 0; font-size: 13px; padding: 9px 12px;
+    border-radius: 8px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text);
   }
-  .secondary-panel-inputrow button { font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+  .secondary-panel-inputrow button { font-size: 13px; padding: 9px 14px; white-space: nowrap; }
 }
 
 @media (max-width: 959px) {
@@ -518,7 +526,7 @@ body::after {
 /* Status picker (tap your own status dot on Home) */
 .status-dot.own { cursor: pointer; }
 .status-picker-menu {
-  position: absolute; z-index: 40; background: var(--panel); border: 1px solid var(--border);
+  position: absolute; z-index: 940; background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); padding: 6px; min-width: 150px;
 }
 .status-picker-option {
@@ -679,7 +687,7 @@ body::after {
 .color-swatch { width: 36px; height: 36px; border-radius: 50%; cursor: pointer; border: 2px solid white; }
 
 /* Bottom action sheet */
-#actionSheetOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 70; display: flex; align-items: flex-end; justify-content: center; }
+#actionSheetOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 970; display: flex; align-items: flex-end; justify-content: center; }
 #actionSheet {
   width: 100%; max-width: 480px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 16px 16px 0 0; padding: 10px 0 16px;
@@ -691,7 +699,7 @@ body::after {
 
 /* Slide-over panels (participants, emails, friends) */
 #participantsOverlay, #emailsOverlay, #friendsOverlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 75;
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 975;
   display: flex; justify-content: flex-end;
 }
 #participantsPanel, .side-panel {
@@ -702,7 +710,7 @@ body::after {
 /* Alerts / Notifications — a full-screen list (not a slide-over), per the
    reference design: dark header bar with a centered title, then rows of
    colored icon + bold title + gray description + right-aligned timestamps. */
-#alertsOverlay { position: fixed; inset: 0; z-index: 75; }
+#alertsOverlay { position: fixed; inset: 0; z-index: 975; }
 .notif-screen { width: 100%; height: 100%; background: var(--bg); display: flex; flex-direction: column; }
 .notif-header {
   position: relative; padding: 18px 16px; background: var(--panel);
@@ -788,13 +796,33 @@ body::after {
    each one needing its own copy-pasted (and easy to forget) CSS rule. */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: flex; align-items: center; justify-content: center; z-index: 50;
+  display: flex; align-items: center; justify-content: center; z-index: 950;
 }
 .modal-panel {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 20px; width: 600px; max-height: 80vh; overflow-y: auto;
 }
 .modal-panel h2 { margin-top: 0; }
+
+/* Room Info popup (read-only) — matches iNwe's card: a colored header bar
+   with the room name + close, then a plain list of info rows. */
+.room-info-modal-panel {
+  background: var(--panel); border-radius: 14px; width: 420px; max-width: calc(100vw - 32px);
+  max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;
+}
+.room-info-modal-header {
+  background: var(--accent); color: #fff; padding: 18px 20px;
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.room-info-modal-header span { font-size: 19px; font-weight: 800; }
+.room-info-modal-header .icon-btn { color: #fff; background: rgba(255,255,255,0.18); }
+.room-info-modal-header .icon-btn:hover { background: rgba(255,255,255,0.3); }
+.room-info-modal-body { padding: 14px 4px; overflow-y: auto; }
+.room-info-modal-body .list-row { padding: 12px 20px; }
+.room-info-modal-section-label {
+  padding: 14px 20px 6px; font-size: 12px; font-weight: 800; letter-spacing: 0.4px;
+  text-transform: uppercase; color: var(--text-dim); border-top: 1px solid var(--border); margin-top: 8px;
+}
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
 
@@ -819,7 +847,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   position: fixed; bottom: 20px; right: 20px;
   background: var(--panel); border: 1px solid var(--border);
   padding: 10px 16px; border-radius: 8px; font-size: 13px;
-  z-index: 100;
+  z-index: 995;
 }
 
 /* Persistent pinned Announcement banner (Staff/Global Admin "/announcement"
@@ -845,7 +873,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
    job) — this one overlays whatever screen the user is on without pushing
    any content down or sitting stacked among the room banners. */
 #broadcastBanner {
-  position: fixed; top: 14px; left: 50%; z-index: 300;
+  position: fixed; top: 14px; left: 50%; z-index: 990;
   width: calc(100% - 32px); max-width: 480px;
   transform: translateX(-50%);
   background: linear-gradient(90deg, #1e3a8a, #6d28d9, #2563eb);
@@ -925,7 +953,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 /* Generic sub-screen shell (Explore hub and everything under it) reuses the
    .notif-screen family for its outer chrome; the pieces below are specific
    to list-style content inside it. */
-#subScreenOverlay { position: fixed; inset: 0; z-index: 75; }
+#subScreenOverlay { position: fixed; inset: 0; z-index: 975; }
 /* Explore / Family — a 2-column card grid (iNwe-style category tiles)
    instead of a flat list-row per item. Built by exploreCard() in app.js;
    used by renderExplore() and renderMembersGroups(). */
@@ -1040,6 +1068,63 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; width: fit-content;
 }
 .post-body-img { max-width: 100%; border-radius: 10px; margin-top: 8px; display: block; }
+
+/* Home Feed composer — matches iNwe's layout: avatar + single-line pill
+   input, a divider, then Photo/Video and Poll action buttons; the Post
+   button only appears once there's actually something to post. */
+.home-composer {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px;
+}
+.home-composer-top { display: flex; align-items: center; gap: 10px; }
+.home-composer-avatar { width: 40px; height: 40px; flex-shrink: 0; }
+.home-composer-input {
+  flex: 1; min-width: 0; border: none; border-radius: 999px; padding: 10px 16px;
+  background: var(--panel-alt); color: var(--text); font-size: 14px; font-family: inherit;
+}
+.home-composer-input:focus { outline: 2px solid var(--accent-light); outline-offset: -1px; }
+.home-composer-divider { height: 1px; background: var(--border); }
+.home-composer-actions { display: flex; align-items: center; justify-content: space-around; gap: 8px; }
+.home-composer-action-btn {
+  display: flex; align-items: center; gap: 8px; background: none; border: none;
+  color: var(--text-dim); font-weight: 600; font-size: 13px; cursor: pointer; padding: 6px 10px; border-radius: 8px;
+}
+.home-composer-action-btn:hover { background: var(--panel-alt); }
+.home-composer-action-icon {
+  width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 14px; flex-shrink: 0;
+}
+.home-composer-action-icon.photo { background: rgba(34, 197, 94, 0.18); }
+.home-composer-action-icon.poll { background: rgba(234, 179, 8, 0.2); }
+
+/* Poll composer (inside .home-composer, toggled by the Poll action button) */
+.poll-builder { display: flex; flex-direction: column; gap: 8px; }
+.poll-option-input-row { display: flex; align-items: center; gap: 8px; }
+.poll-option-input {
+  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+  background: var(--panel-alt); color: var(--text); font-size: 13px; font-family: inherit;
+}
+.poll-option-remove-btn {
+  background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 4px 6px; flex-shrink: 0;
+}
+.poll-option-remove-btn:hover { color: var(--danger, #ef4444); }
+
+/* Poll results (a post's poll, once posted) — click an option to vote; the
+   fill bar and % only show once you (or anyone) have voted. */
+.poll-widget { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.poll-option {
+  position: relative; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; width: 100%; text-align: left; padding: 9px 14px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-alt); color: var(--text);
+  font-size: 13px; cursor: pointer; overflow: hidden;
+}
+.poll-option.voted { border-color: var(--accent); font-weight: 700; }
+.poll-option-fill {
+  position: absolute; top: 0; left: 0; bottom: 0; background: rgba(8, 145, 178, 0.18); transition: width 0.3s ease; z-index: 0;
+}
+.poll-option-label, .poll-option-pct { position: relative; z-index: 1; }
+.poll-option-pct { font-weight: 700; flex-shrink: 0; }
+.poll-total { font-size: 12px; color: var(--text-dim); }
 .post-reactions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .post-react-btn {
   display: flex; align-items: center; gap: 5px; background: var(--panel-alt);
@@ -1062,7 +1147,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 .gift-store-grid .gift-chip.selected { border-color: var(--accent-light); background: var(--panel); }
 
 /* Gift shower animation */
-#giftShowerLayer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 80; }
+#giftShowerLayer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 980; }
 .shower-emoji { position: absolute; top: -60px; font-size: 32px; animation: shower-fall linear forwards; }
 @keyframes shower-fall {
   0% { transform: translateY(0) rotate(0deg); opacity: 1; }
@@ -1072,7 +1157,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   position: fixed; top: 16%; left: 50%; transform: translate(-50%, -50%) scale(0.8);
   font-size: 22px; font-weight: 800; color: #facc15;
   text-shadow: 0 2px 12px rgba(0,0,0,0.6);
-  z-index: 81; pointer-events: none; opacity: 0;
+  z-index: 981; pointer-events: none; opacity: 0;
   animation: shower-banner 2.2s ease-out forwards;
 }
 @keyframes shower-banner {

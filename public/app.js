@@ -1907,6 +1907,40 @@ function roomSettingsOrInfoTitle() {
   return canManageRoom(room) ? 'Room Settings' : 'Room Info';
 }
 
+// Read-only "Room Info" popup for anyone who isn't the room's owner or
+// Staff/Global Admin (see canManageRoom above) — a compact modal instead of
+// the full editable Settings/Moderators/Banned page, since none of it is
+// theirs to change. Silence status reads from currentRoomSilencedUntil,
+// which is only ever tracked for whichever room is currently open — safe
+// here since Room Info is always opened for that same room.
+function openRoomInfoModal(room) {
+  if (!room) return;
+  $('#roomInfoModalTitle').textContent = room.name;
+  const body = $('#roomInfoModalBody');
+  body.innerHTML = '';
+  body.appendChild(infoRow('👑', '#f59e0b', 'Owner', room.owner_username || 'miniplatform'));
+  body.appendChild(infoRow('👥', '#0891B2', 'Capacity', String(room.capacity || 0)));
+  if (room.description) body.appendChild(infoRow('📄', '#8b5cf6', 'Description', room.description));
+  const lockLabel = room.lock_level ? `Level ${room.lock_level} or higher required` : 'Open to all — no level restriction';
+  body.appendChild(infoRow('🔒', '#f97316', 'Lock Level', lockLabel));
+  const silenceLabel = currentRoomSilencedUntil && currentRoomSilencedUntil > Date.now()
+    ? `Silenced until ${new Date(currentRoomSilencedUntil).toLocaleTimeString()}`
+    : 'Not currently silenced';
+  body.appendChild(infoRow('🔇', '#64748b', 'Room Silence', silenceLabel));
+
+  const modLabel = document.createElement('div');
+  modLabel.className = 'room-info-modal-section-label';
+  modLabel.textContent = 'Moderator';
+  body.appendChild(modLabel);
+  const moderators = room.moderator_usernames || [];
+  body.appendChild(infoRow('🔰', '#eab308', moderators.length === 1 ? 'Moderator' : 'Moderators', moderators.length ? moderators.join(', ') : 'No moderators'));
+
+  $('#roomInfoModal').classList.remove('hidden');
+}
+function closeRoomInfoModal() { $('#roomInfoModal').classList.add('hidden'); }
+$('#roomInfoModalCloseBtn').addEventListener('click', closeRoomInfoModal);
+$('#roomInfoModal').addEventListener('click', (e) => { if (e.target === $('#roomInfoModal')) closeRoomInfoModal(); });
+
 $('#actionSheetBtn').addEventListener('click', () => {
   $('#sheetInvisible').classList.add('hidden'); // Go Invisible now lives in the user status picker — see openStatusPicker
   const title = roomSettingsOrInfoTitle();
@@ -1923,9 +1957,18 @@ $('#sheetParticipants').addEventListener('click', () => {
 $('#sheetRoomInfo').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
   if (!currentRoomId) return toast('Join a room first');
-  subScreenStack = [];
-  roomSettingsActiveTab = 'settings';
-  pushSubScreen(roomSettingsOrInfoTitle(), renderRoomSettings);
+  const room = allRoomsCache.find((r) => r.id === currentRoomId);
+  if (canManageRoom(room)) {
+    // Owner or Staff/Global Admin — the full editable Settings/Moderators/Banned page.
+    subScreenStack = [];
+    roomSettingsActiveTab = 'settings';
+    pushSubScreen('Room Settings', renderRoomSettings);
+  } else {
+    // Everyone else — a compact read-only popup (matches iNwe's Room Info
+    // card) instead of the editable tabbed page, since there's nothing here
+    // for them to change.
+    openRoomInfoModal(room);
+  }
 });
 $('#sheetBalance').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
@@ -3196,26 +3239,32 @@ function renderRoomSettingsTab(content, room, canManageSettings, canManageSilenc
   actionBtn.textContent = 'Save';
   actionBtn.classList.toggle('hidden', !canManageSettings);
 
-  // Ghost Mode — instant, no Save needed; any member can use it.
-  const ghostCard = document.createElement('div');
-  ghostCard.className = 'settings-card';
-  ghostCard.innerHTML = `
-    <div class="settings-card-row">
-      <div>
-        <div class="settings-card-title">👻 Ghost Mode</div>
-        <div class="settings-card-heading">Join your room invisibly</div>
-        <div class="settings-card-note">When ON you enter this room without showing in the user list. Takes effect the next time you join.</div>
+  // Ghost Mode (join invisibly, hidden from the participant list) — same
+  // Staff/Global Admin-only rule as the "Going Invisible" status option (see
+  // openStatusPicker): being the room's owner alone is NOT enough, since
+  // going invisible is a privileged capability, not a room-ownership one.
+  const canGoGhost = currentUser.is_staff || currentUser.is_global_admin;
+  if (canGoGhost) {
+    const ghostCard = document.createElement('div');
+    ghostCard.className = 'settings-card';
+    ghostCard.innerHTML = `
+      <div class="settings-card-row">
+        <div>
+          <div class="settings-card-title">👻 Ghost Mode</div>
+          <div class="settings-card-heading">Join your room invisibly</div>
+          <div class="settings-card-note">When ON you enter this room without showing in the user list. Takes effect the next time you join.</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="ghostModeToggle" ${room.my_ghost_mode ? 'checked' : ''}>
+          <span class="toggle-track"></span>
+        </label>
       </div>
-      <label class="toggle-switch">
-        <input type="checkbox" id="ghostModeToggle" ${room.my_ghost_mode ? 'checked' : ''}>
-        <span class="toggle-track"></span>
-      </label>
-    </div>
-  `;
-  content.appendChild(ghostCard);
-  ghostCard.querySelector('#ghostModeToggle').addEventListener('change', (e) => {
-    socket.emit('set_room_ghost_mode', { roomId: currentRoomId, ghost: e.target.checked });
-  });
+    `;
+    content.appendChild(ghostCard);
+    ghostCard.querySelector('#ghostModeToggle').addEventListener('change', (e) => {
+      socket.emit('set_room_ghost_mode', { roomId: currentRoomId, ghost: e.target.checked });
+    });
+  }
 
   // Room Description — staged edit, saved with Lock Level below.
   const descCard = document.createElement('div');
@@ -3630,6 +3679,7 @@ function renderPostsScreen(type) {
               ${(currentUser.is_staff || (isBlog && p.created_by === currentUser.username)) ? '<button class="post-delete-btn" title="Delete">🗑️</button>' : ''}
             </div>
           `;
+          if (p.poll) row.querySelector('.notif-body').insertBefore(buildPollWidget(p, draw), row.querySelector('.post-reactions'));
           const delBtn = row.querySelector('.post-delete-btn');
           if (delBtn) delBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -3661,14 +3711,186 @@ function renderPostsScreen(type) {
 function openDrawerBlog() { openSubScreenFromDrawer('Blog', renderPostsScreen('blog')); }
 
 // ---------- HOME FEED ----------
-// The Home screen's Feed card (matches iNwe's home layout): a simplified
-// "What's on your mind?" composer (content + optional picture — no separate
-// title field, unlike the Explore -> Blog screen) that always posts as
-// 'blog', above a single merged feed of EVERY post — announcements AND
-// blog posts together, newest first (GET /posts?type=all). Announcements
-// stay read-only here (no reactions, Staff-only to remove) since they're
-// still the official Staff channel; only their content is shown alongside
-// blog posts so nothing posted anywhere is missing from Home.
+// iNwe's own composer (see reference screenshot): own avatar + a single-line
+// pill input for the question/status, a divider, then a "Photo/Video" and a
+// "Poll" action button — no separate Post button until there's actually
+// something to post. Builds a Blog post (optionally carrying an image or,
+// via the Poll button, a set of poll options — see withReactions/POST
+// /posts in posts.js).
+function buildHomeComposer(draw) {
+  const composer = document.createElement('div');
+  composer.className = 'home-composer';
+  composer.innerHTML = `
+    <div class="home-composer-top">
+      <div class="avatar-circle home-composer-avatar"></div>
+      <input type="text" id="homePostContentInput" class="home-composer-input" placeholder="What's on your mind, ${escapeHtml(currentUser.username)}?" maxlength="4000" autocomplete="off" />
+    </div>
+    <input type="file" id="homePostImageInput" accept="image/*" class="hidden" />
+    <div id="homePostImagePreviewWrap" class="post-image-picker hidden">
+      <div class="post-image-preview-wrap">
+        <img id="homePostImagePreview" class="post-image-preview" />
+        <button type="button" id="homePostImageRemoveBtn" class="post-image-remove-btn" title="Remove picture">✕</button>
+      </div>
+    </div>
+    <div id="homePollBuilder" class="poll-builder hidden">
+      <div id="homePollOptionsList"></div>
+      <button type="button" id="homePollAddOptionBtn" class="post-attach-btn">+ Add option</button>
+    </div>
+    <div class="home-composer-divider"></div>
+    <div class="home-composer-actions">
+      <button type="button" id="homePostAttachBtn" class="home-composer-action-btn">
+        <span class="home-composer-action-icon photo">🖼️</span> Photo/Video
+      </button>
+      <button type="button" id="homePollToggleBtn" class="home-composer-action-btn">
+        <span class="home-composer-action-icon poll">📊</span> Poll
+      </button>
+    </div>
+    <button id="homePostSubmitBtn" class="primary-btn hidden">Post</button>
+  `;
+  paintAvatar(composer.querySelector('.home-composer-avatar'), currentUser.username);
+
+  let pendingImage = null;
+  let pollActive = false;
+  const contentInput = composer.querySelector('#homePostContentInput');
+  const fileInput = composer.querySelector('#homePostImageInput');
+  const previewWrap = composer.querySelector('#homePostImagePreviewWrap');
+  const previewImg = composer.querySelector('#homePostImagePreview');
+  const pollBuilder = composer.querySelector('#homePollBuilder');
+  const pollOptionsList = composer.querySelector('#homePollOptionsList');
+  const pollAddOptionBtn = composer.querySelector('#homePollAddOptionBtn');
+  const submitBtn = composer.querySelector('#homePostSubmitBtn');
+
+  function refreshSubmitVisibility() {
+    const hasPollOptions = pollActive && pollOptionsList.querySelectorAll('input').length > 0;
+    const shouldShow = !!contentInput.value.trim() || !!pendingImage || hasPollOptions;
+    submitBtn.classList.toggle('hidden', !shouldShow);
+  }
+  contentInput.addEventListener('input', refreshSubmitVisibility);
+
+  function addPollOptionRow(value) {
+    if (pollOptionsList.children.length >= 6) return;
+    const row = document.createElement('div');
+    row.className = 'poll-option-input-row';
+    row.innerHTML = `
+      <input type="text" class="poll-option-input" placeholder="Option ${pollOptionsList.children.length + 1}" maxlength="80" />
+      <button type="button" class="poll-option-remove-btn" title="Remove option">✕</button>
+    `;
+    row.querySelector('.poll-option-input').value = value || '';
+    row.querySelector('.poll-option-remove-btn').addEventListener('click', () => {
+      if (pollOptionsList.children.length <= 2) return; // a poll always needs at least 2 options
+      row.remove();
+      refreshSubmitVisibility();
+    });
+    pollOptionsList.appendChild(row);
+  }
+
+  composer.querySelector('#homePostAttachBtn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      pendingImage = await fileToCompressedDataUrl(file);
+      previewImg.src = pendingImage;
+      previewWrap.classList.remove('hidden');
+      refreshSubmitVisibility();
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      fileInput.value = '';
+    }
+  });
+  composer.querySelector('#homePostImageRemoveBtn').addEventListener('click', () => {
+    pendingImage = null;
+    previewWrap.classList.add('hidden');
+    previewImg.src = '';
+    refreshSubmitVisibility();
+  });
+
+  composer.querySelector('#homePollToggleBtn').addEventListener('click', () => {
+    pollActive = !pollActive;
+    pollBuilder.classList.toggle('hidden', !pollActive);
+    if (pollActive && !pollOptionsList.children.length) {
+      addPollOptionRow('');
+      addPollOptionRow('');
+      contentInput.placeholder = 'Ask a question...';
+    } else if (!pollActive) {
+      pollOptionsList.innerHTML = '';
+      contentInput.placeholder = `What's on your mind, ${currentUser.username}?`;
+    }
+    refreshSubmitVisibility();
+  });
+  pollAddOptionBtn.addEventListener('click', () => { addPollOptionRow(''); refreshSubmitVisibility(); });
+
+  submitBtn.addEventListener('click', async () => {
+    const content = contentInput.value.trim();
+    if (!content) return toast(pollActive ? 'Write a poll question first' : 'Write something first');
+    const body = { type: 'blog', content };
+    if (pendingImage) body.image = pendingImage;
+    if (pollActive) {
+      const options = Array.from(pollOptionsList.querySelectorAll('.poll-option-input'))
+        .map((el) => el.value.trim())
+        .filter(Boolean);
+      if (options.length < 2) return toast('A poll needs at least 2 options');
+      body.pollOptions = options;
+    }
+    try {
+      await api('/posts', { method: 'POST', body: JSON.stringify(body) });
+      toast('Posted!');
+      draw();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  return composer;
+}
+
+// Renders one poll's options as clickable bars (vote share fills in once you
+// or anyone else has voted) — shared by the Home Feed and the Explore ->
+// Blog screen, since a poll is stored as an ordinary Blog post (see
+// withReactions in posts.js). Clicking an option votes/changes your vote;
+// `onAfterVote` re-draws the caller's list so the live tally shows up.
+function buildPollWidget(post, onAfterVote) {
+  const { poll } = post;
+  const wrap = document.createElement('div');
+  wrap.className = 'poll-widget';
+  const total = poll.totalVotes;
+  poll.options.forEach((opt, i) => {
+    const pct = total > 0 ? Math.round(((poll.votes[i] || 0) / total) * 100) : 0;
+    const showResults = poll.myVote != null;
+    const optBtn = document.createElement('button');
+    optBtn.type = 'button';
+    optBtn.className = 'poll-option' + (poll.myVote === i ? ' voted' : '');
+    optBtn.innerHTML = `
+      <div class="poll-option-fill" style="width:${showResults ? pct : 0}%"></div>
+      <span class="poll-option-label">${escapeHtml(opt)}</span>
+      ${showResults ? `<span class="poll-option-pct">${pct}%</span>` : ''}
+    `;
+    optBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await api(`/posts/${post.id}/vote`, { method: 'POST', body: JSON.stringify({ optionIndex: i }) });
+        if (onAfterVote) onAfterVote();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    wrap.appendChild(optBtn);
+  });
+  const totalEl = document.createElement('div');
+  totalEl.className = 'poll-total';
+  totalEl.textContent = `${total} vote${total === 1 ? '' : 's'}`;
+  wrap.appendChild(totalEl);
+  return wrap;
+}
+
+// The Home screen's Feed card (matches iNwe's home layout): the composer
+// above (buildHomeComposer) posts as 'blog', above a single merged feed of
+// EVERY post — announcements AND blog posts together, newest first (GET
+// /posts?type=all). Announcements stay read-only here (no reactions,
+// Staff-only to remove) since they're still the official Staff channel;
+// only their content is shown alongside blog posts so nothing posted
+// anywhere is missing from Home.
 function renderHomeFeed(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   const draw = async () => {
@@ -3676,57 +3898,7 @@ function renderHomeFeed(box) {
       const { posts } = await api('/posts?type=all');
       box.innerHTML = '';
 
-      const composer = document.createElement('div');
-      composer.className = 'post-composer';
-      composer.innerHTML = `
-        <textarea id="homePostContentInput" placeholder="What's on your mind, ${escapeHtml(currentUser.username)}?" rows="3" maxlength="4000"></textarea>
-        <input type="file" id="homePostImageInput" accept="image/*" class="hidden" />
-        <button type="button" id="homePostAttachBtn" class="post-attach-btn">🖼️ Add picture</button>
-        <div id="homePostImagePreviewWrap" class="post-image-picker hidden">
-          <div class="post-image-preview-wrap">
-            <img id="homePostImagePreview" class="post-image-preview" />
-            <button type="button" id="homePostImageRemoveBtn" class="post-image-remove-btn" title="Remove picture">✕</button>
-          </div>
-        </div>
-        <button id="homePostSubmitBtn" class="primary-btn">Post</button>
-      `;
-      let pendingImage = null;
-      const fileInput = composer.querySelector('#homePostImageInput');
-      const previewWrap = composer.querySelector('#homePostImagePreviewWrap');
-      const previewImg = composer.querySelector('#homePostImagePreview');
-      composer.querySelector('#homePostAttachBtn').addEventListener('click', () => fileInput.click());
-      fileInput.addEventListener('change', async () => {
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        try {
-          pendingImage = await fileToCompressedDataUrl(file);
-          previewImg.src = pendingImage;
-          previewWrap.classList.remove('hidden');
-        } catch (err) {
-          toast(err.message);
-        } finally {
-          fileInput.value = '';
-        }
-      });
-      composer.querySelector('#homePostImageRemoveBtn').addEventListener('click', () => {
-        pendingImage = null;
-        previewWrap.classList.add('hidden');
-        previewImg.src = '';
-      });
-      composer.querySelector('#homePostSubmitBtn').addEventListener('click', async () => {
-        const content = composer.querySelector('#homePostContentInput').value.trim();
-        if (!content) return toast("Write something first");
-        try {
-          const body = { type: 'blog', content };
-          if (pendingImage) body.image = pendingImage;
-          await api('/posts', { method: 'POST', body: JSON.stringify(body) });
-          toast('Posted!');
-          draw();
-        } catch (err) {
-          toast(err.message);
-        }
-      });
-      box.appendChild(composer);
+      box.appendChild(buildHomeComposer(draw));
 
       if (!posts.length) {
         const empty = document.createElement('div');
@@ -3763,6 +3935,7 @@ function renderHomeFeed(box) {
             ${(currentUser.is_staff || (isBlog && p.created_by === currentUser.username)) ? '<button class="post-delete-btn" title="Delete">🗑️</button>' : ''}
           </div>
         `;
+        if (p.poll) row.querySelector('.notif-body').insertBefore(buildPollWidget(p, draw), row.querySelector('.post-reactions'));
         const delBtn = row.querySelector('.post-delete-btn');
         if (delBtn) delBtn.addEventListener('click', async (e) => {
           e.stopPropagation();

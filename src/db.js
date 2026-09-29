@@ -331,6 +331,25 @@ const postColumns = db.prepare('PRAGMA table_info(posts)').all().map((c) => c.na
 if (!postColumns.includes('image')) {
   db.exec('ALTER TABLE posts ADD COLUMN image TEXT');
 }
+// A Blog post can optionally be a Poll instead of plain text — the question
+// is just the post's own `content`, and poll_options holds a JSON array of
+// its choices (e.g. ["Coffee","Tea"]); NULL on every ordinary post. See the
+// Home Feed composer's Poll button in app.js and post_poll_votes below.
+if (!postColumns.includes('poll_options')) {
+  db.exec('ALTER TABLE posts ADD COLUMN poll_options TEXT');
+}
+
+// One vote per user per poll post — voting again just changes option_index
+// (see POST /posts/:id/vote), rather than adding a second vote.
+db.exec(`
+CREATE TABLE IF NOT EXISTS post_poll_votes (
+  post_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  option_index INTEGER NOT NULL,
+  voted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (post_id, user_id)
+);
+`);
 
 // Migrate older databases created before mentor/merchant roles existed —
 // CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
@@ -386,6 +405,15 @@ if (!membershipColumns.includes('last_entered_at')) {
 if (!membershipColumns.includes('ghost_mode')) {
   db.exec('ALTER TABLE room_memberships ADD COLUMN ghost_mode INTEGER NOT NULL DEFAULT 0');
 }
+// Ghost Mode is now Staff/Global Admin-only (same rule as the "Going
+// Invisible" status — see toggle_invisible/set_room_ghost_mode in
+// socket.js), so any ordinary user who had it on from before that
+// restriction existed needs it cleared — runs every boot, cheap and
+// idempotent, so an already-deployed database self-heals too.
+db.exec(`
+  UPDATE room_memberships SET ghost_mode = 0
+  WHERE ghost_mode = 1 AND user_id IN (SELECT id FROM users WHERE is_staff = 0 AND is_global_admin = 0)
+`);
 
 // Migrate older databases created before chat rooms and game rooms were kept
 // separate. Every pre-existing room defaults to 'chat' via the column
