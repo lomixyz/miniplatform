@@ -1120,12 +1120,17 @@ function attachSocket(io, sessionMiddleware) {
         socket.emit('system_message', `A voucher is active in this room! Type /pick <code> within ${remaining}s to try (you'll need the code from chat).`);
       }
 
-      // Show the current site-wide announcement (if any) to anyone entering
-      // this room — same mig66/mig33-style behavior as the live broadcast
-      // when Staff first posts it (see trySetAnnouncement above).
-      const announcement = db.getAnnouncement();
+      // Show this room's current announcement (if any) to anyone entering it
+      // — same mig66/mig33-style behavior as the live broadcast when Staff
+      // first posts it (see trySetAnnouncement above). Scoped to this one
+      // room. Always emit (even when null) so switching from a room WITH an
+      // active announcement into one without doesn't leave the old room's
+      // banner stuck on screen — see currentAnnouncement in app.js.
+      const announcement = db.getAnnouncement(roomId);
+      socket.emit('announcement', announcement
+        ? { text: announcement.text, by: announcement.by, live: false }
+        : { text: null, live: false });
       if (announcement) {
-        socket.emit('announcement', { text: announcement.text, by: announcement.by, live: false });
         socket.emit('system_message', `📢 Announcement from ${announcement.by}: ${announcement.text}`);
       }
 
@@ -1773,17 +1778,24 @@ function attachSocket(io, sessionMiddleware) {
 
     on('unban_user', ({ roomId, targetUserId }) => performUnban(roomId, targetUserId));
 
-    // ---- Global announcement (Staff/Global Admin only) ----
-    // A mig66/mig33-style banner: set once, shown immediately to every
-    // connected socket (as a system message + a dedicated 'announcement'
-    // event the client can render as a banner/toast), and shown again to
-    // anyone who enters ANY room afterwards while it's still active — see
-    // the 'announcement' emit in join_room. Persisted in app_settings so a
-    // restart doesn't silently drop it.
+    // ---- Per-room announcement (Staff/Global Admin only) ----
+    // A mig66/mig33-style banner, scoped to whichever room the poster is
+    // currently in: set once, shown immediately to everyone else in THAT
+    // room (as a system message + a dedicated 'announcement' event the
+    // client renders as a banner/toast), and shown again to anyone who
+    // enters that same room afterwards while it's still active — see the
+    // 'announcement' emit in join_room. Persisted on the room itself so a
+    // restart doesn't silently drop it, and so it never leaks into other
+    // rooms the way a single site-wide setting would.
     function trySetAnnouncement(rawText) {
       const flags = freshRoleFlags(user.id);
       if (!flags.is_staff && !flags.is_global_admin) {
         socket.emit('error_message', 'Only Staff or a Global Administrator can post an announcement');
+        return;
+      }
+      const roomId = socket.data.roomId;
+      if (!roomId) {
+        socket.emit('error_message', 'Join a room before posting an announcement');
         return;
       }
       const text = String(rawText || '').trim().slice(0, 500);
@@ -1791,9 +1803,9 @@ function attachSocket(io, sessionMiddleware) {
         socket.emit('error_message', 'Usage: /announcement <text> — or /announcement clear to remove it');
         return;
       }
-      db.setAnnouncement(text, user.username);
-      io.emit('announcement', { text, by: user.username, live: true });
-      io.emit('system_message', `📢 Announcement from ${user.username}: ${text}`);
+      db.setAnnouncement(roomId, text, user.username);
+      io.to(`room:${roomId}`).emit('announcement', { text, by: user.username, live: true });
+      io.to(`room:${roomId}`).emit('system_message', `📢 Announcement from ${user.username}: ${text}`);
     }
 
     function tryClearAnnouncement() {
@@ -1802,13 +1814,18 @@ function attachSocket(io, sessionMiddleware) {
         socket.emit('error_message', 'Only Staff or a Global Administrator can clear the announcement');
         return;
       }
-      if (!db.getAnnouncement()) {
-        socket.emit('error_message', 'There is no active announcement to clear');
+      const roomId = socket.data.roomId;
+      if (!roomId) {
+        socket.emit('error_message', 'Join a room before clearing its announcement');
         return;
       }
-      db.clearAnnouncement();
-      io.emit('announcement', { text: null, live: true });
-      io.emit('system_message', `📢 ${user.username} cleared the site announcement`);
+      if (!db.getAnnouncement(roomId)) {
+        socket.emit('error_message', 'There is no active announcement to clear in this room');
+        return;
+      }
+      db.clearAnnouncement(roomId);
+      io.to(`room:${roomId}`).emit('announcement', { text: null, live: true });
+      io.to(`room:${roomId}`).emit('system_message', `📢 ${user.username} cleared this room's announcement`);
     }
 
     on('set_announcement', ({ text }) => trySetAnnouncement(text));

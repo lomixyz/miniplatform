@@ -256,12 +256,11 @@ CREATE TABLE IF NOT EXISTS profile_visits (
 );
 CREATE INDEX IF NOT EXISTS idx_profile_visits_visited ON profile_visits(visited_id, visited_at DESC);
 
--- A single, global site-wide announcement (mig66/mig33-style), set by Staff
--- or a Global Admin via the "/announcement <text>" chat command (or
--- "/announcement clear" to remove it). Shown to every user the moment it's
--- posted, and again to anyone entering ANY room while it's still active —
--- see the ANNOUNCEMENT_COMMAND handling and join_room in socket.js. Only
--- ever one row (id = 1), upserted in place rather than accumulating history.
+-- Deprecated: originally a single, global site-wide "/announcement" row.
+-- The announcement is now per-room (see the announcement/announcement_by/
+-- announcement_at columns added to rooms below) since one room's
+-- announcement showing up in every other room made no sense. Left in place,
+-- unread, rather than dropped (SQLite table drops aren't free either).
 CREATE TABLE IF NOT EXISTS app_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   announcement TEXT,
@@ -357,6 +356,22 @@ if (!roomColumns.includes('description')) {
 }
 if (!roomColumns.includes('lock_level')) {
   db.exec('ALTER TABLE rooms ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0');
+}
+// The mig66/mig33-style "/announcement" is per-room, not site-wide — a
+// message posted in one room has no business showing up in another. Each
+// room carries its own pinned announcement text/author/timestamp; NULL
+// means no active announcement for that room. (Supersedes the earlier
+// single-row app_settings-based global announcement below — that old value
+// is deliberately NOT migrated into every room, since that would just
+// reproduce the same "shows up everywhere" behavior this replaces.)
+if (!roomColumns.includes('announcement')) {
+  db.exec('ALTER TABLE rooms ADD COLUMN announcement TEXT');
+}
+if (!roomColumns.includes('announcement_by')) {
+  db.exec('ALTER TABLE rooms ADD COLUMN announcement_by TEXT');
+}
+if (!roomColumns.includes('announcement_at')) {
+  db.exec('ALTER TABLE rooms ADD COLUMN announcement_at TEXT');
 }
 // One-time backfill: rooms used to hold a single moderator_id column;
 // moderators now live in room_moderators (a room can have several). Any
@@ -673,22 +688,22 @@ for (const username of PROTECTED_ACCOUNTS) {
   }
 }
 
-// ---- Global announcement (mig66/mig33-style "/announcement" command) ----
-// A single row (id = 1), upserted in place. getAnnouncement() returns null
-// when there's nothing active so callers can just `if (announcement)`.
-db.getAnnouncement = function getAnnouncement() {
-  const row = db.prepare('SELECT announcement, announcement_by, announcement_at FROM app_settings WHERE id = 1').get();
+// ---- Per-room announcement (mig66/mig33-style "/announcement" command) ----
+// Scoped to the room it was posted in — see the `announcement*` columns on
+// `rooms` above. getAnnouncement() returns null when there's nothing active
+// for that room so callers can just `if (announcement)`.
+db.getAnnouncement = function getAnnouncement(roomId) {
+  const row = db.prepare('SELECT announcement, announcement_by, announcement_at FROM rooms WHERE id = ?').get(roomId);
   if (!row || !row.announcement) return null;
   return { text: row.announcement, by: row.announcement_by, at: row.announcement_at };
 };
-db.setAnnouncement = function setAnnouncement(text, by) {
+db.setAnnouncement = function setAnnouncement(roomId, text, by) {
   db.prepare(`
-    INSERT INTO app_settings (id, announcement, announcement_by, announcement_at) VALUES (1, ?, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET announcement = excluded.announcement, announcement_by = excluded.announcement_by, announcement_at = excluded.announcement_at
-  `).run(text, by);
+    UPDATE rooms SET announcement = ?, announcement_by = ?, announcement_at = datetime('now') WHERE id = ?
+  `).run(text, by, roomId);
 };
-db.clearAnnouncement = function clearAnnouncement() {
-  db.prepare("UPDATE app_settings SET announcement = NULL, announcement_by = NULL, announcement_at = NULL WHERE id = 1").run();
+db.clearAnnouncement = function clearAnnouncement(roomId) {
+  db.prepare('UPDATE rooms SET announcement = NULL, announcement_by = NULL, announcement_at = NULL WHERE id = ?').run(roomId);
 };
 
 // ---- Elite User auto-grant ----
