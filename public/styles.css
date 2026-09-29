@@ -431,6 +431,8 @@ body::after {
 .sidebar-room-row .sidebar-room-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--success); flex: none; }
 .sidebar-room-row .sidebar-room-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-room-row .sidebar-room-count { font-size: 11px; color: var(--text-dim); flex: none; }
+.sidebar-star-btn { background: transparent; font-size: 14px; padding: 2px 4px; flex: none; color: var(--text-dim); line-height: 1; }
+.sidebar-star-btn.favorited { color: #facc15; }
 
 /* Home: profile card */
 .profile-card {

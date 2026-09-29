@@ -1089,23 +1089,41 @@ let lastAllRoomsForSidebar = [];
 let lastRecentRoomsForSidebar = [];
 let sidebarRoomSearchQuery = '';
 
+// A room's HOT threshold — once it has more than this many people in it, it
+// surfaces in the "🔥 Hot rooms" section instead of "Other rooms".
+const HOT_ROOM_MEMBER_THRESHOLD = 20;
+
 function renderSidebarRoomLists(all, recent) {
   lastAllRoomsForSidebar = all;
   lastRecentRoomsForSidebar = recent;
   const q = sidebarRoomSearchQuery;
   const matches = (r) => !q || r.name.toLowerCase().includes(q);
 
+  // Categorization is exclusive so a room never appears twice in the
+  // sidebar: Favorite (any room the user starred) takes priority over
+  // everything else, then Official, then Hot (busy, >20 people), and
+  // everything left over lands in Other rooms — exactly where a freshly
+  // created room shows up until someone favorites it.
   const favorites = all.filter((r) => r.isFavorite);
-  const official = all.filter((r) => r.is_official);
+  const official = all.filter((r) => !r.isFavorite && r.is_official);
+  const hot = all.filter((r) => !r.isFavorite && !r.is_official && r.memberCount > HOT_ROOM_MEMBER_THRESHOLD);
+  const other = all.filter((r) => !r.isFavorite && !r.is_official && r.memberCount <= HOT_ROOM_MEMBER_THRESHOLD);
+
   const favoritesF = favorites.filter(matches);
   const officialF = official.filter(matches);
+  const hotF = hot.filter(matches);
+  const otherF = other.filter(matches);
   const recentF = recent.filter(matches);
 
-  fillSidebarRoomList('#sidebarFavoriteRooms', favoritesF, q ? 'No favorite rooms match your search.' : 'No favorite rooms yet — star one from Rooms.');
+  fillSidebarRoomList('#sidebarFavoriteRooms', favoritesF, q ? 'No favorite rooms match your search.' : 'No favorite rooms yet — star any room to add it here.');
   fillSidebarRoomList('#sidebarOfficialRooms', officialF, q ? 'No official rooms match your search.' : 'No official rooms.');
+  fillSidebarRoomList('#sidebarHotRooms', hotF, q ? 'No hot rooms match your search.' : 'No hot rooms right now — rooms with 20+ people show up here.');
+  fillSidebarRoomList('#sidebarOtherRooms', otherF, q ? 'No other rooms match your search.' : 'No other rooms yet.');
   fillSidebarRoomList('#sidebarRecentRooms', recentF, q ? 'No recent rooms match your search.' : 'No recent rooms.');
   $('#sidebarFavoriteCount').textContent = favoritesF.length;
   $('#sidebarOfficialCount').textContent = officialF.length;
+  $('#sidebarHotCount').textContent = hotF.length;
+  $('#sidebarOtherCount').textContent = otherF.length;
   $('#sidebarRecentCount').textContent = recentF.length;
 }
 
@@ -1121,11 +1139,23 @@ function fillSidebarRoomList(sel, rooms, emptyText) {
     row.className = 'sidebar-room-row';
     row.innerHTML = `
       <span class="sidebar-room-dot"></span>
-      <span class="sidebar-room-name">${escapeHtml(room.name)}${room.is_official ? ' ✅' : ''}</span>
+      <span class="sidebar-room-name">${escapeHtml(room.name)}${room.is_official ? ' ✅' : ''}${room.memberCount > HOT_ROOM_MEMBER_THRESHOLD ? ' 🔥' : ''}</span>
       <span class="sidebar-room-count">${room.memberCount}/${room.capacity}</span>
+      <button class="sidebar-star-btn ${room.isFavorite ? 'favorited' : ''}" data-id="${room.id}" title="${room.isFavorite ? 'Remove from favorites' : 'Add to favorites'}">${room.isFavorite ? '★' : '☆'}</button>
     `;
     row.title = room.name;
-    row.addEventListener('click', () => enterRoom(room.id, room.name));
+    row.addEventListener('click', (e) => {
+      if (e.target.classList.contains('sidebar-star-btn')) return;
+      enterRoom(room.id, room.name);
+    });
+    row.querySelector('.sidebar-star-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const next = !room.isFavorite;
+      try {
+        await api(`/rooms/${room.id}/favorite`, { method: 'POST', body: JSON.stringify({ favorite: next }) });
+        refreshRooms();
+      } catch (err) { toast(err.message); }
+    });
     box.appendChild(row);
   });
 }
