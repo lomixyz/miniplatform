@@ -1037,9 +1037,18 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   border: 4px solid var(--accent); display: flex; align-items: center; justify-content: center;
   background: var(--panel-alt);
 }
-.avatar-maker-preview .avatar-circle { width: 92px; height: 92px; font-size: 34px; }
-.avatar-maker-scene { position: absolute; bottom: -6px; font-size: 26px; }
-.avatar-maker-pet { position: absolute; top: -6px; right: -2px; font-size: 26px; }
+.avatar-maker-preview .avatar-circle {
+  width: 92px; height: 92px; font-size: 34px;
+  position: relative; overflow: hidden;
+}
+/* The chosen Scene fills the circle as a backdrop, behind the pet/letter. */
+.avatar-circle-scene-bg {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 68px; line-height: 1; opacity: 0.9;
+}
+/* The chosen Pet (or, if none is set, the username initial) sits centered
+   on top of the Scene backdrop. */
+.avatar-circle-center { position: relative; z-index: 1; }
 .swatch-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .swatch-btn {
   width: 34px; height: 34px; border-radius: 50%; padding: 0; border: 2px solid transparent;

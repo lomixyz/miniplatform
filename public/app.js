@@ -159,6 +159,25 @@ function paintAvatar(el, name) {
   el.style.background = colorFor(name || '?');
 }
 
+// Big "frame + scene + pet" avatar preview — shared by Avatar Maker, My
+// Profile, and any other user's public profile (same markup everywhere).
+// The chosen Scene renders as a full backdrop filling the circle instead of
+// a small floating badge; the chosen Pet takes over the circle's center
+// instead of a small floating badge, replacing the username-initial letter
+// (the letter is only shown when no pet is set).
+function avatarPreviewHtml(u) {
+  const initial = escapeHtml((u.username || '?').charAt(0).toUpperCase());
+  const centerContent = u.avatar_pet ? u.avatar_pet : initial;
+  return `
+    <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
+      <div class="avatar-circle" style="background:${colorFor(u.username)}">
+        ${u.avatar_scene ? `<div class="avatar-circle-scene-bg">${u.avatar_scene}</div>` : ''}
+        <span class="avatar-circle-center">${centerContent}</span>
+      </div>
+    </div>
+  `;
+}
+
 // ---------- AUTH ----------
 // Four views sharing #authScreen: Login, Create Account, Forgot Code, and
 // Activate Account (an informational screen — this build has no email
@@ -3516,11 +3535,7 @@ async function renderAvatarMaker(box) {
     const { frameColors, pets, scenes } = await api('/avatar/options');
     const draw = () => {
       box.innerHTML = `
-        <div class="avatar-maker-preview" style="border-color:${currentUser.avatar_frame_color || '#3b82f6'}">
-          <div class="avatar-maker-scene">${currentUser.avatar_scene || ''}</div>
-          <div class="avatar-circle" style="background:${colorFor(currentUser.username)}">${escapeHtml(currentUser.username.charAt(0).toUpperCase())}</div>
-          <div class="avatar-maker-pet">${currentUser.avatar_pet || ''}</div>
-        </div>
+        ${avatarPreviewHtml(currentUser)}
         <div class="list-section-label">FRAME COLOR</div>
         <div class="swatch-row" id="frameRow"></div>
         <div class="list-section-label">PET</div>
@@ -4437,11 +4452,7 @@ async function renderGiftStoreAdmin(box) {
 async function renderMyProfile(box) {
   const u = currentUser;
   box.innerHTML = `
-    <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
-      <div class="avatar-maker-scene">${u.avatar_scene || ''}</div>
-      <div class="avatar-circle" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
-      <div class="avatar-maker-pet">${u.avatar_pet || ''}</div>
-    </div>
+    ${avatarPreviewHtml(u)}
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">${usernameHtml(u)}${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div><div class="list-row-subtitle">Level ${u.level} · ${u.xp} XP</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🪙 ${u.coins} coins</div></div></div>
     <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
@@ -4543,11 +4554,7 @@ async function renderUserProfile(box, username) {
   }
   const nameStyle = usernameStyleAttr(u);
   box.innerHTML = `
-    <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
-      <div class="avatar-maker-scene">${u.avatar_scene || ''}</div>
-      <div class="avatar-circle" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
-      <div class="avatar-maker-pet">${u.avatar_pet || ''}</div>
-    </div>
+    ${avatarPreviewHtml(u)}
     <div class="list-row"><div class="list-row-body">
       <div class="list-row-title"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
       <div class="list-row-subtitle">Level ${u.level} · ${STATUS_LABELS[u.status] || 'Offline'}</div>
