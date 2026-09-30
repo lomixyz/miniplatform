@@ -2108,8 +2108,8 @@ $('#sheetLeaveRoom').addEventListener('click', () => {
 // Docks the small participants card right next to the room's own floating
 // chat window (#chatScreen.floating — desktop only, wherever it's currently
 // sitting, default bottom-right or dragged elsewhere) instead of a fixed
-// screen corner. Prefers the chat window's left side (so it never covers
-// the chat itself); if there isn't room on the left it docks above instead;
+// screen corner. Prefers the chat window's RIGHT side (so it never covers
+// the chat itself); if there isn't room on the right it docks above instead;
 // if neither fits (or there's no floating chat window at all — mobile, or
 // a non-desktop layout) it falls back to the static CSS default position.
 function positionParticipantsPanel() {
@@ -2128,14 +2128,14 @@ function positionParticipantsPanel() {
   const panelWidth = 260; // matches the CSS max-width
   const estPanelHeight = Math.min(520, window.innerHeight - 100);
 
-  if (rect.left - GAP - panelWidth >= 8) {
-    // Room to the chat window's left — dock there, top-aligned with it.
-    panel.style.left = `${rect.left - GAP - panelWidth}px`;
+  if (window.innerWidth - rect.right - GAP - panelWidth >= 8) {
+    // Room to the chat window's right — dock there, top-aligned with it.
+    panel.style.left = `${rect.right + GAP}px`;
     panel.style.top = `${Math.min(rect.top, window.innerHeight - estPanelHeight - 8)}px`;
   } else if (rect.top - GAP - estPanelHeight >= 8) {
-    // No room on the left (chat window pushed to the screen edge) — dock
-    // above it instead, right-aligned with its right edge.
-    panel.style.right = `${window.innerWidth - rect.right}px`;
+    // No room on the right (chat window pushed to the screen edge) — dock
+    // above it instead, left-aligned with it but never pushed off-screen.
+    panel.style.left = `${Math.min(rect.left, window.innerWidth - panelWidth - 8)}px`;
     panel.style.top = `${rect.top - GAP - estPanelHeight}px`;
   }
   // Otherwise leave everything cleared — the static CSS top/right fallback applies.
