@@ -2031,6 +2031,30 @@ function attachSocket(io, sessionMiddleware) {
       socket.emit('room_settings_saved', { roomId });
     });
 
+    // ---- Room capacity — Staff ONLY (narrower than Room Settings editing
+    // above, which is Staff+Global Admin — a Global Admin cannot change a
+    // room's capacity, same restriction as Delete Room below). Every
+    // user-created room starts at a fixed default of 25 (see POST /rooms);
+    // this is the only way to raise or lower it afterward. Official rooms
+    // keep their own seeded capacities (200/300) but Staff can still retune
+    // them here if needed. ----
+    on('update_room_capacity', ({ roomId, capacity }) => {
+      roomId = Number(roomId);
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff) {
+        return socket.emit('error_message', 'Only Staff can change a room\'s capacity');
+      }
+      const room = db.prepare('SELECT id FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+      const cap = Math.round(Number(capacity));
+      if (!Number.isFinite(cap) || cap < 1 || cap > 1000) {
+        return socket.emit('error_message', 'Capacity must be a whole number between 1 and 1000');
+      }
+      db.prepare('UPDATE rooms SET capacity = ? WHERE id = ?').run(cap, roomId);
+      io.to(`room:${roomId}`).emit('room_capacity_updated', { roomId, capacity: cap });
+      socket.emit('room_settings_saved', { roomId });
+    });
+
     // ---- Permanently delete a room — Staff ONLY (narrower than Room
     // Settings editing, which is Staff+Global Admin — a Global Admin cannot
     // delete a room), regardless of who created it. Official rooms (no

@@ -97,7 +97,10 @@ router.post('/', requireLogin, (req, res) => {
 
   const desc = String(description || '').trim().slice(0, 500);
   try {
-    const info = db.prepare("INSERT INTO rooms (name, description, created_by, is_official, capacity, room_type) VALUES (?, ?, ?, 0, 50, 'chat')").run(name.trim(), desc, user.id);
+    // Every user-created room starts at a fixed default capacity of 25 —
+    // only Staff can raise/lower it afterward, via Room Settings (see
+    // 'update_room_capacity' in socket.js).
+    const info = db.prepare("INSERT INTO rooms (name, description, created_by, is_official, capacity, room_type) VALUES (?, ?, ?, 0, 25, 'chat')").run(name.trim(), desc, user.id);
     // A newly created room lands in "Other Rooms" like any other non-official
     // room — it is NOT auto-favorited for its creator. Any user (including
     // the creator) can star it from the room grid to move it into Favorites.
@@ -134,6 +137,7 @@ router.post('/:id/favorite', requireLogin, (req, res) => {
   }
   res.json({ ok: true, favorite: !!favorite });
 });
+
 
 router.get('/:id/messages', requireLogin, (req, res) => {
   const roomId = Number(req.params.id);

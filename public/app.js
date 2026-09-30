@@ -978,6 +978,16 @@ function connectSocket() {
 
   socket.on('room_settings_saved', () => toast('✅ Room Settings saved'));
 
+  // Room capacity changed (Staff only — see update_room_capacity in
+  // socket.js) — refresh the cached room everywhere its member count
+  // (X/capacity) is shown, and the Settings screen if it's open.
+  socket.on('room_capacity_updated', ({ roomId, capacity }) => {
+    const room = allRoomsCache.find((r) => r.id === roomId);
+    if (room) room.capacity = capacity;
+    if (roomId === currentRoomId) refreshRoomSettingsIfOpen();
+    refreshRooms();
+  });
+
   socket.on('room_ghost_mode_state', ({ roomId, ghost }) => {
     const room = allRoomsCache.find((r) => r.id === roomId);
     if (room) room.my_ghost_mode = ghost;
@@ -2292,6 +2302,8 @@ $('#emailsOverlay').addEventListener('click', (e) => { if (e.target === $('#emai
 // ---------- FRIENDS PANEL ----------
 async function openFriends() {
   $('#friendsOverlay').classList.remove('hidden');
+  $('#addFriendInput').value = '';
+  $('#addFriendSearchResults').innerHTML = '';
   await renderFriendsPanel();
 }
 async function renderFriendsPanel() {
@@ -2368,18 +2380,67 @@ async function renderFriendsPanel() {
     }
   } catch (e) {}
 }
-$('#addFriendBtn').addEventListener('click', async () => {
-  const name = $('#addFriendInput').value.trim();
-  if (!name) return;
+async function sendFriendRequestTo(username) {
   try {
-    await api('/friends/request', { method: 'POST', body: JSON.stringify({ username: name }) });
-    $('#addFriendInput').value = '';
+    await api('/friends/request', { method: 'POST', body: JSON.stringify({ username }) });
     toast('Friend request sent');
     renderFriendsPanel();
   } catch (err) {
     toast(err.message);
   }
+}
+$('#addFriendBtn').addEventListener('click', async () => {
+  const name = $('#addFriendInput').value.trim();
+  if (!name) return;
+  await sendFriendRequestTo(name);
+  $('#addFriendInput').value = '';
+  $('#addFriendSearchResults').innerHTML = '';
 });
+
+// Live search-as-you-type — shows each matching user's avatar, username,
+// level and country (only those — no coins/bio/other profile fields belong
+// here), with its own Add button, instead of requiring the exact username
+// typed blind before the top Add button does anything.
+let addFriendSearchTimer = null;
+$('#addFriendInput').addEventListener('input', () => {
+  clearTimeout(addFriendSearchTimer);
+  const q = $('#addFriendInput').value.trim();
+  const resultsBox = $('#addFriendSearchResults');
+  if (!q) { resultsBox.innerHTML = ''; return; }
+  addFriendSearchTimer = setTimeout(async () => {
+    try {
+      const { users } = await api(`/users/search?q=${encodeURIComponent(q)}`);
+      resultsBox.innerHTML = '';
+      const others = users.filter((u) => u.username !== currentUser.username);
+      if (!others.length) {
+        resultsBox.innerHTML = '<div class="empty-note">No matching users.</div>';
+        return;
+      }
+      others.forEach((u) => {
+        const row = document.createElement('div');
+        row.className = 'friend-row';
+        row.innerHTML = `
+          <div class="avatar-circle small" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
+          <div class="list-row-body">
+            <div class="list-row-title">${usernameHtml(u)}</div>
+            <div class="list-row-subtitle">Level ${u.level}${u.country ? ` · ${countryFlag(u.country)} ${escapeHtml(u.country)}` : ''}</div>
+          </div>
+        `;
+        const addBtn = document.createElement('button');
+        addBtn.textContent = 'Add';
+        addBtn.style.marginLeft = 'auto';
+        addBtn.addEventListener('click', async () => {
+          await sendFriendRequestTo(u.username);
+          $('#addFriendInput').value = '';
+          resultsBox.innerHTML = '';
+        });
+        row.appendChild(addBtn);
+        resultsBox.appendChild(row);
+      });
+    } catch (err) {}
+  }, 250);
+});
+
 $('#closeFriendsBtn').addEventListener('click', () => $('#friendsOverlay').classList.add('hidden'));
 $('#friendsOverlay').addEventListener('click', (e) => { if (e.target === $('#friendsOverlay')) $('#friendsOverlay').classList.add('hidden'); });
 
@@ -3357,6 +3418,35 @@ function renderRoomSettingsTab(content, room, canManageSettings, canManageSilenc
   const descInput = descCard.querySelector('#roomDescInput');
   const descCount = descCard.querySelector('#roomDescCount');
   descInput.addEventListener('input', () => { descCount.textContent = descInput.value.length; });
+
+  // Room Capacity — Staff ONLY (narrower than canManageSettings, which also
+  // includes Global Admin — see update_room_capacity in socket.js). Its own
+  // Save button since it's a separate permission/socket event from
+  // description+lock level below. Everyone who can see Room Settings at all
+  // (Staff/Global Admin) can at least see the current capacity; only Staff
+  // gets an editable input.
+  const canEditCapacity = !!currentUser.is_staff;
+  const capCard = document.createElement('div');
+  capCard.className = 'settings-card';
+  capCard.innerHTML = `
+    <div class="settings-card-title">👥 Room Capacity</div>
+    ${canEditCapacity
+      ? `<input type="number" class="room-desc-textarea" id="roomCapacityInput" min="1" max="1000" value="${room.capacity || 25}" style="height:auto;" />`
+      : `<div class="settings-card-note">${room.capacity || 25} — only Staff can change this.</div>`}
+  `;
+  content.appendChild(capCard);
+  if (canEditCapacity) {
+    const capInput = capCard.querySelector('#roomCapacityInput');
+    const capBtn = document.createElement('button');
+    capBtn.className = 'save-settings-btn';
+    capBtn.textContent = '💾 Save Capacity';
+    capBtn.addEventListener('click', () => {
+      const cap = parseInt(capInput.value, 10);
+      if (!Number.isFinite(cap) || cap < 1 || cap > 1000) return toast('Capacity must be between 1 and 1000');
+      socket.emit('update_room_capacity', { roomId: currentRoomId, capacity: cap });
+    });
+    content.appendChild(capBtn);
+  }
 
   // Lock Level — staged edit, 0-100, 0 = open to everyone.
   const lockCard = document.createElement('div');
