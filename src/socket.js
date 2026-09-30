@@ -558,6 +558,19 @@ function attachSocket(io, sessionMiddleware) {
   }
   startBotRoomActivity();
 
+  // Sync every room's live member count to what's actually in the DB right
+  // now (bots included) as soon as the server comes up, instead of leaving
+  // every room's count at 0 until the slow one-at-a-time ambient drift tick
+  // above (see simulateOneBotRoomMove, every ~8-25s) happens to touch it —
+  // which, with ~100 rooms, could otherwise take many minutes to catch up
+  // after a fresh boot. Safe to call with nobody actually connected yet:
+  // broadcastRoomMembers always sets presence.setRoomCount first and only
+  // then tries to emit to subscribed sockets, so an empty room just sees no
+  // emit and a correct count.
+  for (const { id: roomId } of db.prepare('SELECT id FROM rooms').all()) {
+    try { broadcastRoomMembers(roomId); } catch (e) { /* never let one bad room stop the rest */ }
+  }
+
   // Ambient bot gift showers: on top of chatting and drifting between rooms,
   // the bot pool now occasionally showers a room it's actually in with a
   // gift too — the same visible gift-shower message + animation a real

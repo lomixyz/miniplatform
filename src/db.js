@@ -703,9 +703,17 @@ if (existingBotCount < BOT_TARGET_COUNT) {
 // on bots, so this is safe to run on every boot without endlessly piling on
 // more and more memberships.
 {
-  const BOTS_PER_ROOM_TARGET = 12;
+  // Scaled to each room's own capacity so rooms genuinely look "full of
+  // people" instead of a flat, often-tiny headcount: ~80% of capacity, with
+  // a sensible floor/ceiling so a small 25-capacity user room still feels
+  // lively and nothing goes absurdly overboard. A bot can belong to many
+  // rooms at once (room_memberships is per room per user), so the shared
+  // ~1000-bot pool comfortably covers every room being topped up this way.
+  const BOT_ROOM_FILL_RATIO = 0.8;
+  const BOTS_PER_ROOM_MIN = 15;
+  const BOTS_PER_ROOM_MAX = 220;
   const allBotIds = db.prepare('SELECT id FROM users WHERE is_bot = 1').all().map((r) => r.id);
-  const allRoomIds = db.prepare('SELECT id FROM rooms').all().map((r) => r.id);
+  const allRooms = db.prepare('SELECT id, capacity FROM rooms').all();
   const insertMembership = db.prepare(`
     INSERT INTO room_memberships (user_id, room_id, active) VALUES (?, ?, 1)
     ON CONFLICT(user_id, room_id) DO UPDATE SET active = 1
@@ -714,16 +722,21 @@ if (existingBotCount < BOT_TARGET_COUNT) {
     SELECT COUNT(*) c FROM room_memberships rm JOIN users u ON u.id = rm.user_id
     WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
   `);
-  if (allBotIds.length && allRoomIds.length) {
-    for (const roomId of allRoomIds) {
-      const current = countActiveBotsInRoom.get(roomId).c;
-      if (current >= BOTS_PER_ROOM_TARGET) continue;
-      const need = BOTS_PER_ROOM_TARGET - current;
+  if (allBotIds.length && allRooms.length) {
+    for (const room of allRooms) {
+      const cap = room.capacity || BOTS_PER_ROOM_MIN;
+      const target = Math.max(
+        BOTS_PER_ROOM_MIN,
+        Math.min(BOTS_PER_ROOM_MAX, Math.round(cap * BOT_ROOM_FILL_RATIO))
+      );
+      const current = countActiveBotsInRoom.get(room.id).c;
+      if (current >= target) continue;
+      const need = target - current;
       // Pick `need` random bots (Fisher-Yates-ish partial shuffle) to drop into this room.
       const pool = allBotIds.slice();
       for (let i = 0; i < need && pool.length; i++) {
         const idx = Math.floor(Math.random() * pool.length);
-        insertMembership.run(pool[idx], roomId);
+        insertMembership.run(pool[idx], room.id);
         pool.splice(idx, 1);
       }
     }
