@@ -1868,29 +1868,71 @@ $('#voiceNoteBtn').addEventListener('click', async () => {
   }
 });
 
-// ---------- EMOJI PICKER (+ Stickers tab — Sticker Store purchases) ----------
+// ---------- EMOJI PICKER (Recent + default Emoji + Emoji Store packs + Stickers) ----------
 const EMOJI_PICKER_SET = ['😀','😂','😍','😎','🥳','😢','😡','👍','👎','🙏','🔥','💯','❤️','🎉','😅','🤔','👏','🙌','😴','🤩','😱','🥰','😭','🫡','✨','💪','🎁','🌹','☕','🚀'];
-let emojiPickerTab = 'emoji'; // 'emoji' | 'stickers'
+const RECENT_EMOJI_KEY = 'recentEmoji';
+const RECENT_EMOJI_MAX = 24;
+let emojiPickerTab = 'emoji'; // 'recent' | 'emoji' | 'stickers' | `pack:${id}`
 let ownedStickerPacksCache = null; // lazy-loaded, refreshed each time the Sticker Store buys something
+let emojiPacksCache = null; // lazy-loaded Emoji Store packs (Staff-curated, free) — see routes/emojiPacks.js
+
+function loadRecentEmoji() {
+  try { return JSON.parse(localStorage.getItem(RECENT_EMOJI_KEY)) || []; } catch (e) { return []; }
+}
+function pushRecentEmoji(text) {
+  // Only single emoji are worth remembering as "recent" — a whole gift/
+  // sticker glyph still works fine here since it's just a short string.
+  try {
+    const list = loadRecentEmoji().filter((e) => e !== text);
+    list.unshift(text);
+    localStorage.setItem(RECENT_EMOJI_KEY, JSON.stringify(list.slice(0, RECENT_EMOJI_MAX)));
+  } catch (e) {}
+}
 
 function insertIntoChatInput(text) {
   const input = $('#chatInput');
   input.value += text;
   input.focus();
+  pushRecentEmoji(text);
 }
 
 function renderEmojiPickerPopover() {
   const pop = $('#emojiPickerPopover');
   pop.innerHTML = '';
 
+  // The tab list itself needs to know about every Emoji Store pack up
+  // front (unlike Stickers, which is always a single static tab) — so
+  // fetch it once before building tabs, not only when its own tab is clicked.
+  if (emojiPacksCache === null) {
+    emojiPacksCache = []; // placeholder so this only fires once while the request is in flight
+    api('/emoji-packs').then((data) => { emojiPacksCache = data.packs; renderEmojiPickerPopover(); }).catch(() => { emojiPacksCache = []; });
+  }
+
   const tabs = document.createElement('div');
   tabs.className = 'emoji-picker-tabs';
-  ['emoji', 'stickers'].forEach((tab) => {
+  const recent = loadRecentEmoji();
+  const tabList = [];
+  if (recent.length) tabList.push({ key: 'recent', icon: '🕐', title: 'Recent' });
+  tabList.push({ key: 'emoji', icon: '😊', title: 'Emoji' });
+  (emojiPacksCache || []).forEach((p) => tabList.push({ key: `pack:${p.id}`, icon: p.icon, title: p.name }));
+  tabList.push({ key: 'stickers', icon: '🌟', title: 'Stickers' });
+
+  // If the previously-active tab no longer exists (e.g. Staff just deleted
+  // that pack), fall back to the default Emoji tab instead of showing blank.
+  if (!tabList.some((t) => t.key === emojiPickerTab)) emojiPickerTab = 'emoji';
+
+  tabList.forEach((t) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'emoji-picker-tab' + (emojiPickerTab === tab ? ' active' : '');
-    btn.textContent = tab === 'emoji' ? '😊 Emoji' : '🌟 Stickers';
-    btn.addEventListener('click', () => { emojiPickerTab = tab; renderEmojiPickerPopover(); });
+    btn.className = 'emoji-picker-tab' + (emojiPickerTab === t.key ? ' active' : '');
+    btn.textContent = t.icon;
+    btn.title = t.title;
+    // Stop this click from bubbling to the document-level "click outside
+    // closes the popover" listener below — renderEmojiPickerPopover()
+    // replaces the tab buttons' own DOM, so by the time the click bubbles
+    // up, e.target is a now-detached element that reads as "outside" the
+    // (rebuilt) popover and would otherwise close it on every tab switch.
+    btn.addEventListener('click', (e) => { e.stopPropagation(); emojiPickerTab = t.key; renderEmojiPickerPopover(); });
     tabs.appendChild(btn);
   });
   pop.appendChild(tabs);
@@ -1899,16 +1941,33 @@ function renderEmojiPickerPopover() {
   grid.className = 'emoji-picker-grid';
   pop.appendChild(grid);
 
-  if (emojiPickerTab === 'emoji') {
-    EMOJI_PICKER_SET.forEach((emoji) => {
+  function fillGrid(items, emptyMsg, titleFor) {
+    if (!items || !items.length) {
+      grid.innerHTML = `<div class="empty-note">${emptyMsg}</div>`;
+      return;
+    }
+    items.forEach((emoji) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'emoji-picker-item';
+      if (titleFor) btn.title = titleFor;
       btn.textContent = emoji;
       btn.addEventListener('click', () => insertIntoChatInput(emoji));
       grid.appendChild(btn);
     });
-    return;
+  }
+
+  if (emojiPickerTab === 'recent') return fillGrid(recent, 'No recent emoji yet.');
+  if (emojiPickerTab === 'emoji') return fillGrid(EMOJI_PICKER_SET);
+
+  if (emojiPickerTab.startsWith('pack:')) {
+    // Emoji Store pack (Staff-curated, free for everyone — see Admin Panel
+    // -> Emoji Store). emojiPacksCache is already loaded by this point — the
+    // fetch at the top of this function runs before the tab list (and thus
+    // this tab) can even exist.
+    const packId = Number(emojiPickerTab.slice(5));
+    const pack = emojiPacksCache.find((p) => p.id === packId);
+    return fillGrid(pack ? pack.emoji : [], 'This pack is empty.', pack ? pack.name : '');
   }
 
   // Stickers tab — owned packs only (bought from Explore -> Sticker Store).
@@ -1924,17 +1983,9 @@ function renderEmojiPickerPopover() {
     grid.innerHTML = '<div class="empty-note">No sticker packs yet — check out the Sticker Store in Explore.</div>';
     return;
   }
-  ownedStickerPacksCache.forEach((pack) => {
-    pack.stickers.forEach((sticker) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'emoji-picker-item';
-      btn.title = pack.name;
-      btn.textContent = sticker;
-      btn.addEventListener('click', () => insertIntoChatInput(sticker));
-      grid.appendChild(btn);
-    });
-  });
+  const allOwnedStickers = [];
+  ownedStickerPacksCache.forEach((pack) => pack.stickers.forEach((s) => allOwnedStickers.push(s)));
+  fillGrid(allOwnedStickers);
 }
 
 $('#emojiPickerBtn').addEventListener('click', (e) => {
@@ -2550,7 +2601,103 @@ function openAdminPanel() {
   $('#adminUserSearchInput').focus();
   if (lastAdminSearch) runAdminSearch();
   loadMinCreateLevel();
+  renderAdminEmojiPacks();
 }
+
+// ---------- ADMIN PANEL: EMOJI STORE ----------
+// Staff-only pack management for the free (non-purchased) emoji packs shown
+// as extra tabs in the chat emoji picker — see routes/emojiPacks.js and
+// renderEmojiPickerPopover() above. Every mutation here also drops the
+// picker's own cache (emojiPacksCache) so the next time anyone opens the
+// chat emoji picker — including this Staff member, without a page reload —
+// it re-fetches and reflects the change immediately.
+async function renderAdminEmojiPacks() {
+  const listBox = $('#emojiPackList');
+  const select = $('#addEmojiTargetPack');
+  listBox.innerHTML = '<div class="empty-note">Loading…</div>';
+  let packs;
+  try {
+    ({ packs } = await api('/emoji-packs'));
+  } catch (err) {
+    listBox.innerHTML = '<div class="empty-note">Couldn\'t load emoji packs.</div>';
+    return;
+  }
+
+  select.innerHTML = '<option value="">— Custom (no pack) —</option>' +
+    packs.map((p) => `<option value="${p.id}">${escapeHtml(p.icon)} ${escapeHtml(p.name)}</option>`).join('');
+
+  if (!packs.length) {
+    listBox.innerHTML = '<div class="empty-note">No emoji packs yet — create one below.</div>';
+    return;
+  }
+  listBox.innerHTML = '';
+  packs.forEach((pack) => {
+    const card = document.createElement('div');
+    card.className = 'emoji-pack-admin-card';
+    const header = document.createElement('div');
+    header.className = 'emoji-pack-admin-header';
+    header.innerHTML = `<span>${escapeHtml(pack.icon)} <strong>${escapeHtml(pack.name)}</strong> <span style="color:var(--text-dim); font-size:12px;">(${pack.emoji.length})</span></span>`;
+    const delPackBtn = document.createElement('button');
+    delPackBtn.className = 'danger';
+    delPackBtn.textContent = 'Delete Pack';
+    delPackBtn.addEventListener('click', async () => {
+      if (!confirm(`Delete the "${pack.name}" pack and all its emoji?`)) return;
+      try {
+        await api(`/emoji-packs/${pack.id}`, { method: 'DELETE' });
+        emojiPacksCache = null;
+        toast(`Deleted ${pack.name}`);
+        renderAdminEmojiPacks();
+      } catch (err) { toast(err.message); }
+    });
+    header.appendChild(delPackBtn);
+    card.appendChild(header);
+
+    const chips = document.createElement('div');
+    chips.className = 'emoji-pack-admin-chips';
+    pack.emoji.forEach((e) => {
+      const chip = document.createElement('span');
+      chip.className = 'emoji-pack-admin-chip';
+      chip.innerHTML = `${escapeHtml(e)} <button type="button" title="Remove">✕</button>`;
+      chip.querySelector('button').addEventListener('click', async () => {
+        try {
+          await api(`/emoji-packs/${pack.id}/emoji`, { method: 'DELETE', body: JSON.stringify({ emoji: e }) });
+          emojiPacksCache = null;
+          renderAdminEmojiPacks();
+        } catch (err) { toast(err.message); }
+      });
+      chips.appendChild(chip);
+    });
+    if (!pack.emoji.length) chips.innerHTML = '<span class="empty-note">No emoji in this pack yet.</span>';
+    card.appendChild(chips);
+    listBox.appendChild(card);
+  });
+}
+$('#createEmojiPackBtn').addEventListener('click', async () => {
+  const name = $('#newEmojiPackName').value.trim();
+  const icon = $('#newEmojiPackIcon').value.trim();
+  if (!name) return toast('Give the pack a name');
+  if (!icon) return toast('Pick a tab icon (a single emoji) for the pack');
+  try {
+    await api('/emoji-packs', { method: 'POST', body: JSON.stringify({ name, icon }) });
+    emojiPacksCache = null;
+    $('#newEmojiPackName').value = '';
+    $('#newEmojiPackIcon').value = '';
+    toast(`Created ${name}`);
+    renderAdminEmojiPacks();
+  } catch (err) { toast(err.message); }
+});
+$('#addEmojiBtn').addEventListener('click', async () => {
+  const emoji = $('#addEmojiInput').value.trim();
+  const packId = $('#addEmojiTargetPack').value;
+  if (!emoji) return toast('Paste an emoji first');
+  try {
+    await api('/emoji-packs/emoji', { method: 'POST', body: JSON.stringify({ emoji, packId: packId || undefined }) });
+    emojiPacksCache = null;
+    $('#addEmojiInput').value = '';
+    toast('Emoji added');
+    renderAdminEmojiPacks();
+  } catch (err) { toast(err.message); }
+});
 
 // Staff-configurable minimum level required to create a chat room (see
 // GET/POST /rooms/settings/min-create-level and the note shown in the

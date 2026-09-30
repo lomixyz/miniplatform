@@ -125,6 +125,21 @@ CREATE TABLE IF NOT EXISTS user_sticker_packs (
   PRIMARY KEY (user_id, pack_id)
 );
 
+-- Emoji Store (Staff / Admin Panel -> Emoji Store) — unlike Sticker Store
+-- above, these are free for every user the moment Staff adds them; there's
+-- no coin cost or per-user ownership. Staff can group emoji into a named
+-- pack (its own tab in the chat emoji picker, with its own tab icon) or add
+-- a single emoji with no pack at all, which lands in an auto-created
+-- "Custom" pack (see ensureCustomEmojiPack in routes/emojiPacks.js) so the
+-- picker never needs a separate "loose emoji" concept.
+CREATE TABLE IF NOT EXISTS emoji_packs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL, -- shown on the pack's tab in the chat emoji picker
+  emoji TEXT NOT NULL, -- JSON array of emoji strings
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Color Shop catalog (Settings -> Color Shop). Was a hard-coded array in
 -- routes/colors.js; now a real table so Staff can change a color's price
 -- (POST /colors/:id/price) without a code change/redeploy. Kept a TEXT id
@@ -567,6 +582,36 @@ if (stickerPackCount === 0) {
   insertPack.run('Party Pack', JSON.stringify(['🎉','🎊','🥂','🎈','🍾','✨']), 500);
   insertPack.run('Love & Hearts', JSON.stringify(['❤️','💕','💗','💘','😘','🌹']), 500);
   insertPack.run('Animals', JSON.stringify(['🐶','🐱','🦁','🐼','🦊','🐸']), 400);
+}
+
+// Seed the Emoji Store catalog once (Staff can add more packs/emoji, or
+// remove/edit these, from the Admin Panel -> Emoji Store afterward — this
+// only runs the very first time, same idempotent pattern as Sticker Store
+// above). Five starter packs so the chat emoji picker already has real
+// category tabs (Smileys / Expressions / Creatures / Masks / Gestures) to
+// show instead of coming up empty on a fresh install.
+const emojiPackCount = db.prepare('SELECT COUNT(*) c FROM emoji_packs').get().c;
+if (emojiPackCount === 0) {
+  const insertEmojiPack = db.prepare('INSERT INTO emoji_packs (name, icon, emoji) VALUES (?, ?, ?)');
+  insertEmojiPack.run('Smileys', '😊', JSON.stringify([
+    '😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩',
+    '😘','😗','😚','😙','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🫡','🤐',
+  ]));
+  insertEmojiPack.run('Expressions', '😐', JSON.stringify([
+    '😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕',
+    '🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🥳','🥸','😎','🤓','🧐','😕','😟','🙁',
+  ]));
+  insertEmojiPack.run('Creatures', '👽', JSON.stringify([
+    '👽','👾','🤖','👻','💀','☠️','👹','👺','🤡','😈','😺','😸','😹','😻','😼','😽',
+    '🙀','😿','😾','🐵','🙈','🙉','🙊','🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨',
+  ]));
+  insertEmojiPack.run('Masks', '🦇', JSON.stringify([
+    '🦇','🎭','🥷','🦹','🦸','🧛','🧟','🧙','🧞','🧌','🧝','🦄','🐉','🐲','🕷️','🕸️',
+  ]));
+  insertEmojiPack.run('Gestures', '✋', JSON.stringify([
+    '✋','🖐️','🤚','🖖','👋','🤙','💪','🙏','👏','🙌','🤝','👍','👎','☝️','👆','👇',
+    '👈','👉','✌️','🤞','🤟','🤘','👌','🤌','🤏','✊','👊','🤛','🤜','🫶','💯','🔥',
+  ]));
 }
 
 // Seed the Color Shop catalog once (id, name, hex, starting cost — the same

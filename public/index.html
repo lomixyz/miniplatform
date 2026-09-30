@@ -591,6 +591,23 @@
       <button id="saveMinCreateLevelBtn" class="secondary">Save</button>
     </div>
     <div id="minCreateLevelNote" class="empty-note">0 = anyone can create a room. Staff always bypass this.</div>
+
+    <div class="section-header" style="margin-top:16px;">Emoji Store</div>
+    <p style="color:var(--text-dim); font-size:13px;">Free for every user the moment you add it — unlike the paid Sticker Store. Group emoji into a named pack (its own tab in the chat emoji picker), or add a single emoji with no pack — it goes into an auto "Custom" pack.</p>
+
+    <div id="emojiPackList"></div>
+
+    <div class="add-friend-bar" style="margin-top:10px;">
+      <input id="newEmojiPackName" placeholder="New pack name..." maxlength="40" style="flex:2;" />
+      <input id="newEmojiPackIcon" placeholder="Tab icon (emoji)" maxlength="8" style="flex:1;" />
+      <button id="createEmojiPackBtn">Create Pack</button>
+    </div>
+
+    <div class="add-friend-bar" style="margin-top:8px;">
+      <select id="addEmojiTargetPack" style="flex:2;"></select>
+      <input id="addEmojiInput" placeholder="Paste an emoji..." maxlength="8" style="flex:1;" />
+      <button id="addEmojiBtn">Add Emoji</button>
+    </div>
   </div>
 </div>
 
