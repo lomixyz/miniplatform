@@ -2162,7 +2162,11 @@ function attachSocket(io, sessionMiddleware) {
     for (const roomId of roomIds) broadcastRoomMembers(roomId);
   }
 
-  return { refreshUserPresence };
+  // Exposed the same way as refreshUserPresence above — lets a plain HTTP
+  // route (POST /api/friends/request) push a live event straight to the
+  // target user's open socket(s), e.g. so their Friends icon can badge
+  // immediately instead of waiting for their next poll/action.
+  return { refreshUserPresence, emitToUser };
 }
 
 module.exports = { attachSocket };

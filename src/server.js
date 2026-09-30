@@ -69,8 +69,9 @@ app.use('/api/merchant', merchantRoutes);
 app.use('/api/badges', badgeRoutes);
 app.use('/api/stickers', stickerRoutes);
 
-const { refreshUserPresence } = attachSocket(io, sessionMiddleware);
+const { refreshUserPresence, emitToUser } = attachSocket(io, sessionMiddleware);
 app.set('refreshUserPresence', refreshUserPresence); // lets HTTP routes (Color Shop, Avatar Maker) live-refresh a user's room presence
+app.set('emitToUser', emitToUser); // lets HTTP routes (Friends) push a live event straight to a specific user's socket(s)
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

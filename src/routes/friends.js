@@ -56,6 +56,18 @@ router.post('/request', requireLogin, (req, res) => {
   }
 
   db.prepare('INSERT INTO friendships (requester_id, addressee_id, status) VALUES (?, ?, ?)').run(me, target.id, 'pending');
+
+  // Live badge/toast on the Friends icon for the person being asked — see
+  // the 'friend_request_received' listener in app.js. Best-effort: if
+  // they're not connected right now, they'll just see it next time
+  // refreshBadgeCounts() runs (e.g. on login).
+  const emitToUser = req.app.get('emitToUser');
+  if (emitToUser) {
+    emitToUser(target.id, 'friend_request_received', {
+      fromUsername: req.session.user.username,
+    });
+  }
+
   res.json({ ok: true });
 });
 

@@ -1015,6 +1015,15 @@ function connectSocket() {
     }
     refreshBadgeCounts();
   });
+
+  // Live badge on the Friends icon (desktop top nav, mobile drawer, quick
+  // action) the moment someone sends a friend request — no need to wait
+  // for a poll or for the Friends panel to be opened.
+  socket.on('friend_request_received', (data) => {
+    toast(`👥 ${data.fromUsername} sent you a friend request`);
+    refreshBadgeCounts();
+    if (!$('#friendsOverlay').classList.contains('hidden')) renderFriendsPanel();
+  });
 }
 
 // ---------- HOME SCREEN ----------
@@ -1084,6 +1093,17 @@ async function refreshBadgeCounts() {
     setBadge($('#emailsBadge'), emailsUnread);
     setBadge($('#drawerEmailsBadge'), emailsUnread);
     setBadge($('#menuEmailsBadge'), emailsUnread);
+  } catch (e) {}
+  try {
+    // Incoming (not-yet-accepted/declined) friend requests — badges the
+    // Friends icon everywhere it appears (desktop top nav, mobile drawer,
+    // quick-action button) so a new request is noticeable without having
+    // to open the panel. Cleared by openFriends() below once seen.
+    const { incoming } = await api('/friends');
+    const pendingCount = (incoming || []).length;
+    setBadge($('#navFriendsBadge'), pendingCount);
+    setBadge($('#drawerFriendsBadge'), pendingCount);
+    setBadge($('#friendsBtnBadge'), pendingCount);
   } catch (e) {}
 }
 function setBadge(el, count) {
