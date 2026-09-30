@@ -699,14 +699,37 @@ body::after {
 .sheet-item:hover { background: var(--panel-alt); }
 .sheet-item.danger { color: var(--danger); }
 
-/* Slide-over panels (participants, emails, friends) */
-#participantsOverlay, #emailsOverlay, #friendsOverlay {
+/* Slide-over panels (emails, friends) — full-height, edge-to-edge. */
+#emailsOverlay, #friendsOverlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 975;
   display: flex; justify-content: flex-end;
 }
-#participantsPanel, .side-panel {
+.side-panel {
   width: 100%; max-width: 380px; height: 100%; background: var(--panel);
   border-left: 1px solid var(--border); display: flex; flex-direction: column;
+}
+
+/* Room Participants — a small floating card instead of a full-height panel
+   (it's just a quick glance at who's here, not a screen of its own): sits
+   below the topbar with room to breathe on every side, sized to its content
+   instead of stretching the whole right edge, and caps its own height so a
+   packed room scrolls internally rather than the card growing forever. */
+#participantsOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 975;
+  display: flex; justify-content: flex-end; align-items: flex-start;
+  padding: 76px 18px 18px;
+}
+#participantsPanel {
+  width: 100%; max-width: 260px; max-height: min(520px, calc(100vh - 100px));
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.28);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+@media (max-width: 640px) {
+  /* Small screens: a corner card would be cramped and easy to fat-finger
+     past — behave like the other slide-over panels instead. */
+  #participantsOverlay { padding: 0; align-items: stretch; background: rgba(0,0,0,0.5); }
+  #participantsPanel { max-width: 320px; max-height: 100%; border-radius: 0; border-left: 1px solid var(--border); border-top: none; box-shadow: none; }
 }
 
 /* Alerts / Notifications — a full-screen list (not a slide-over), per the
@@ -763,6 +786,16 @@ body::after {
   display: flex; align-items: center; justify-content: space-between;
 }
 .panel-body { flex: 1; overflow-y: auto; padding: 10px 16px; }
+
+/* Compact variant used only inside the small #participantsPanel card —
+   smaller header, tighter row padding, smaller avatar/text so the list
+   stays dense and readable without needing the panel to be wide. */
+#participantsPanel .panel-header { padding: 12px 14px; font-size: 14px; }
+#participantsPanel .panel-body { padding: 4px 8px; }
+#participantsPanel .participant-row { gap: 8px; padding: 7px 4px; font-size: 12.5px; }
+#participantsPanel .participant-row .avatar-circle { width: 24px; height: 24px; font-size: 11px; }
+#participantsPanel .level-badge { font-size: 10px; padding: 1px 5px; }
+#participantsPanel .role-badge-icon { font-size: 11px; }
 
 .participant-row {
   display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); font-size: 14px;
