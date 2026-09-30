@@ -2105,8 +2105,44 @@ $('#sheetLeaveRoom').addEventListener('click', () => {
 });
 
 // ---------- PARTICIPANTS PANEL ----------
+// Docks the small participants card right next to the room's own floating
+// chat window (#chatScreen.floating — desktop only, wherever it's currently
+// sitting, default bottom-right or dragged elsewhere) instead of a fixed
+// screen corner. Prefers the chat window's left side (so it never covers
+// the chat itself); if there isn't room on the left it docks above instead;
+// if neither fits (or there's no floating chat window at all — mobile, or
+// a non-desktop layout) it falls back to the static CSS default position.
+function positionParticipantsPanel() {
+  const panel = $('#participantsPanel');
+  // Clear any previous anchor so a stale position never lingers between opens.
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.top = '';
+  panel.style.bottom = '';
+
+  const chatWindow = $('#chatScreen');
+  if (!isDesktopLayout() || !chatWindow || !chatWindow.classList.contains('floating')) return;
+
+  const rect = chatWindow.getBoundingClientRect();
+  const GAP = 10;
+  const panelWidth = 260; // matches the CSS max-width
+  const estPanelHeight = Math.min(520, window.innerHeight - 100);
+
+  if (rect.left - GAP - panelWidth >= 8) {
+    // Room to the chat window's left — dock there, top-aligned with it.
+    panel.style.left = `${rect.left - GAP - panelWidth}px`;
+    panel.style.top = `${Math.min(rect.top, window.innerHeight - estPanelHeight - 8)}px`;
+  } else if (rect.top - GAP - estPanelHeight >= 8) {
+    // No room on the left (chat window pushed to the screen edge) — dock
+    // above it instead, right-aligned with its right edge.
+    panel.style.right = `${window.innerWidth - rect.right}px`;
+    panel.style.top = `${rect.top - GAP - estPanelHeight}px`;
+  }
+  // Otherwise leave everything cleared — the static CSS top/right fallback applies.
+}
 function openParticipants() {
   renderRoomMembers(lastRoomMembers);
+  positionParticipantsPanel();
   $('#participantsOverlay').classList.remove('hidden');
 }
 $('#closeParticipantsBtn').addEventListener('click', () => $('#participantsOverlay').classList.add('hidden'));

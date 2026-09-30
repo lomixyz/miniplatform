@@ -709,27 +709,35 @@ body::after {
   border-left: 1px solid var(--border); display: flex; flex-direction: column;
 }
 
-/* Room Participants — a small floating card instead of a full-height panel
-   (it's just a quick glance at who's here, not a screen of its own): sits
-   below the topbar with room to breathe on every side, sized to its content
-   instead of stretching the whole right edge, and caps its own height so a
-   packed room scrolls internally rather than the card growing forever. */
+/* Room Participants — a small floating card docked right next to the room's
+   own floating chat window (see openParticipants() in app.js, which measures
+   #chatScreen.floating's current position — default bottom-right, or wherever
+   it's been dragged to — and positions this card beside it via inline
+   top/left/right styles) instead of a fixed screen corner. #participantsOverlay
+   is just a transparent full-screen click-catcher for "click outside to
+   close"; it no longer does any positioning itself. Falls back to a static
+   top-right spot (the pre-anchoring default) when there's no floating chat
+   window to dock next to, e.g. mobile or a non-floating layout. */
 #participantsOverlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 975;
-  display: flex; justify-content: flex-end; align-items: flex-start;
-  padding: 76px 18px 18px;
+  position: fixed; inset: 0; background: transparent; z-index: 975;
 }
 #participantsPanel {
+  position: fixed; top: 76px; right: 18px;
   width: 100%; max-width: 260px; max-height: min(520px, calc(100vh - 100px));
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
   box-shadow: 0 16px 40px rgba(0,0,0,0.28);
   display: flex; flex-direction: column; overflow: hidden;
 }
 @media (max-width: 640px) {
-  /* Small screens: a corner card would be cramped and easy to fat-finger
-     past — behave like the other slide-over panels instead. */
-  #participantsOverlay { padding: 0; align-items: stretch; background: rgba(0,0,0,0.5); }
-  #participantsPanel { max-width: 320px; max-height: 100%; border-radius: 0; border-left: 1px solid var(--border); border-top: none; box-shadow: none; }
+  /* Small screens: a floating card docked to the chat window would be
+     cramped and easy to fat-finger past — behave like the other slide-over
+     panels instead (ignores any inline anchor position app.js set). */
+  #participantsOverlay { background: rgba(0,0,0,0.5); }
+  #participantsPanel {
+    top: 0 !important; left: auto !important; right: 0 !important; bottom: 0 !important;
+    max-width: 320px; max-height: 100%; height: 100%; width: 100%;
+    border-radius: 0; border-left: 1px solid var(--border); border-top: none; box-shadow: none;
+  }
 }
 
 /* Alerts / Notifications — a full-screen list (not a slide-over), per the
