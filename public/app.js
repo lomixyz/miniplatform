@@ -1402,6 +1402,8 @@ function enterRoom(id, name) {
   updateMediaButtonsState();
 
   legendarySelectedAnimal = null;
+  legendaryMinimized = false;
+  legendaryHidden = false;
   if (isInLegendaryRoom()) {
     socket.emit('legendary_get_state', {}, (state) => { if (state) { legendaryState = state; renderLegendaryPanel(); } });
   } else {
@@ -1762,12 +1764,26 @@ let legendarySelectedAmount = 500;
 let legendarySelectedAnimal = null;
 let legendaryState = { phase: 'idle', endsAt: 0, animalTotals: {} };
 let legendaryCountdownTimer = null;
+// Two independent declutter controls, matching the reference bar's 👁/− pair:
+// minimized keeps the header strip (countdown + current bet) but hides the
+// animal/amount rows; hidden drops the whole bar, leaving only a small tab
+// to bring it back. Both reset on room re-entry (not persisted) since they're
+// just "I don't want to look at this right now" toggles, not a preference.
+let legendaryMinimized = false;
+let legendaryHidden = false;
 
 function isInLegendaryRoom() { return currentRoomName === LEGENDARY_ROOM_NAME; }
 
 function renderLegendaryPanel() {
   const panel = $('#legendaryGamePanel');
   if (!isInLegendaryRoom()) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+
+  if (legendaryHidden) {
+    panel.classList.remove('hidden');
+    panel.innerHTML = `<button type="button" class="legendary-reopen-tab">🎲 Legendary</button>`;
+    panel.querySelector('.legendary-reopen-tab').addEventListener('click', () => { legendaryHidden = false; renderLegendaryPanel(); });
+    return;
+  }
   panel.classList.remove('hidden');
 
   const secondsLeft = legendaryState.phase === 'betting' ? Math.max(0, Math.ceil((legendaryState.endsAt - Date.now()) / 1000)) : 0;
@@ -1775,20 +1791,33 @@ function renderLegendaryPanel() {
 
   panel.innerHTML = `
     <div class="legendary-header">
-      <span class="legendary-title">🎲 Legendary Bot ${legendaryState.phase === 'betting' ? `<span class="legendary-countdown">${secondsLeft}s</span>` : `<span class="legendary-countdown idle">waiting for !start</span>`}</span>
-      ${selectedAnimalObj ? `<span class="legendary-selected">✓ ${selectedAnimalObj.label}</span>` : ''}
+      <span class="legendary-title-icon">🎲</span>
+      <span class="legendary-title">Legendary</span>
+      ${legendaryState.phase === 'betting'
+        ? `<span class="legendary-badge legendary-countdown">${secondsLeft}s</span>`
+        : `<span class="legendary-badge legendary-countdown idle">waiting for !start</span>`}
+      ${selectedAnimalObj ? `<span class="legendary-badge legendary-bet-summary">${selectedAnimalObj.label} · ${formatBetAmount(legendarySelectedAmount)}</span>` : ''}
+      <span class="legendary-header-spacer"></span>
+      <button type="button" class="legendary-icon-btn" id="legendaryHideBtn" title="Hide">👁</button>
+      <button type="button" class="legendary-icon-btn" id="legendaryMinBtn" title="${legendaryMinimized ? 'Expand' : 'Minimize'}">${legendaryMinimized ? '+' : '−'}</button>
     </div>
-    <div class="legendary-animal-grid"></div>
-    <div class="legendary-hint">Pick an amount below, then tap an animal to bid</div>
-    <div class="legendary-amount-row"></div>
+    ${legendaryMinimized ? '' : `
+      <div class="legendary-animal-row"></div>
+      <div class="legendary-amount-row"></div>
+    `}
   `;
 
-  const grid = panel.querySelector('.legendary-animal-grid');
+  panel.querySelector('#legendaryHideBtn').addEventListener('click', () => { legendaryHidden = true; renderLegendaryPanel(); });
+  panel.querySelector('#legendaryMinBtn').addEventListener('click', () => { legendaryMinimized = !legendaryMinimized; renderLegendaryPanel(); });
+
+  if (legendaryMinimized) return;
+
+  const row = panel.querySelector('.legendary-animal-row');
   LEGENDARY_ANIMALS.forEach((a) => {
-    const card = document.createElement('div');
-    card.className = 'legendary-animal-card' + (a.key === legendarySelectedAnimal ? ' selected' : '');
-    card.innerHTML = `<div class="legendary-animal-emoji">${a.emoji}</div><div class="legendary-animal-label">${a.label}</div>`;
-    card.addEventListener('click', () => {
+    const item = document.createElement('div');
+    item.className = 'legendary-animal-item' + (a.key === legendarySelectedAnimal ? ' selected' : '');
+    item.innerHTML = `<div class="legendary-animal-avatar">${a.emoji}</div><div class="legendary-animal-item-label">${a.label}</div>`;
+    item.addEventListener('click', () => {
       legendarySelectedAnimal = a.key;
       if (legendaryState.phase !== 'betting') { renderLegendaryPanel(); return toast('Betting is closed — wait for the next round'); }
       socket.emit('legendary_place_bet', { animal: a.key, amount: legendarySelectedAmount }, (ack) => {
@@ -1796,13 +1825,14 @@ function renderLegendaryPanel() {
       });
       renderLegendaryPanel();
     });
-    grid.appendChild(card);
+    row.appendChild(item);
   });
 
   const amountRow = panel.querySelector('.legendary-amount-row');
   LEGENDARY_BET_AMOUNTS.forEach((amt) => {
     const chip = document.createElement('button');
-    chip.className = 'legendary-amount-chip' + (amt === legendarySelectedAmount ? ' selected' : '');
+    chip.type = 'button';
+    chip.className = 'legendary-amount-pill' + (amt === legendarySelectedAmount ? ' selected' : '');
     chip.textContent = formatBetAmount(amt);
     chip.addEventListener('click', () => { legendarySelectedAmount = amt; renderLegendaryPanel(); });
     amountRow.appendChild(chip);

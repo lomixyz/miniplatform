@@ -672,32 +672,58 @@ body::after {
 }
 .legendary-bot-name { color: #7c3aed; font-weight: 700; }
 
-/* Legendary Bot betting panel */
+/* Legendary Bot betting panel — a dark purple strip pinned above the chat
+   input (matches the reference bar): countdown + current-bet pills in the
+   header, a row of circular animal "avatars" to tap, a row of bet-amount
+   pills below. Deliberately has its own dark palette instead of the
+   --panel/--border theme vars the rest of the UI uses — it reads as a game
+   console overlay, not a normal chat panel, in both light and dark mode. */
 #legendaryGamePanel {
-  background: var(--panel); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-  padding: 10px 16px;
+  background: linear-gradient(135deg, #3b0764, #5b21b6 55%, #312e81);
+  padding: 10px 14px 12px;
+  color: #fff;
 }
-.legendary-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.legendary-title { font-weight: 700; font-size: 14px; }
-.legendary-countdown { color: var(--accent); font-weight: 800; margin-left: 4px; }
-.legendary-countdown.idle { color: var(--text-dim); font-weight: 600; font-size: 12px; }
-.legendary-selected { color: var(--success); font-weight: 700; font-size: 13px; }
-.legendary-animal-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
-.legendary-animal-card {
-  background: var(--panel-alt); border: 2px solid transparent; border-radius: 10px;
-  padding: 8px 4px; text-align: center; cursor: pointer;
+.legendary-header { display: flex; align-items: center; gap: 6px; }
+.legendary-title-icon { font-size: 15px; }
+.legendary-title { font-weight: 800; font-size: 14px; }
+.legendary-header-spacer { flex: 1; }
+.legendary-badge {
+  background: rgba(255,255,255,0.16); border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
 }
-.legendary-animal-card.selected { border-color: var(--success); }
-.legendary-animal-card:hover { border-color: var(--accent-light); }
-.legendary-animal-emoji { font-size: 28px; }
-.legendary-animal-label { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.legendary-hint { font-size: 11px; color: var(--text-dim); text-align: center; margin: 8px 0 6px; }
-.legendary-amount-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
-.legendary-amount-chip {
-  background: var(--panel-alt); border: 1px solid var(--border); color: var(--text);
-  border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+.legendary-badge.legendary-countdown { background: rgba(255,255,255,0.22); }
+.legendary-badge.legendary-countdown.idle { font-weight: 600; opacity: 0.8; }
+.legendary-badge.legendary-bet-summary { background: #fff; color: #3b0764; }
+.legendary-icon-btn {
+  background: rgba(255,255,255,0.16); border: none; color: #fff; cursor: pointer;
+  width: 26px; height: 26px; border-radius: 50%; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; flex: none;
 }
-.legendary-amount-chip.selected { background: var(--accent); color: white; border-color: var(--accent); }
+.legendary-icon-btn:hover { background: rgba(255,255,255,0.3); }
+
+.legendary-animal-row { display: flex; gap: 6px; margin-top: 12px; overflow-x: auto; justify-content: space-between; }
+.legendary-animal-item { display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; flex: none; width: 52px; }
+.legendary-animal-avatar {
+  width: 46px; height: 46px; border-radius: 50%; font-size: 24px;
+  background: rgba(255,255,255,0.14); border: 2px solid transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.legendary-animal-item.selected .legendary-animal-avatar { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.35); }
+.legendary-animal-item:hover .legendary-animal-avatar { border-color: rgba(255,255,255,0.6); }
+.legendary-animal-item-label { font-size: 11px; color: rgba(255,255,255,0.85); }
+
+.legendary-amount-row { display: flex; gap: 6px; margin-top: 10px; overflow-x: auto; }
+.legendary-amount-pill {
+  flex: 1; min-width: 42px; background: rgba(255,255,255,0.14); border: none; color: #fff;
+  border-radius: 999px; padding: 8px 0; font-size: 12px; font-weight: 800; white-space: nowrap;
+}
+.legendary-amount-pill:hover { background: rgba(255,255,255,0.24); }
+.legendary-amount-pill.selected { background: #fff; color: #3b0764; }
+
+.legendary-reopen-tab {
+  background: linear-gradient(135deg, #3b0764, #5b21b6 55%, #312e81); color: #fff; border: none;
+  border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 700; margin: 6px auto; display: block;
+}
 
 #giftBar { display: flex; gap: 6px; padding: 0 20px 12px; flex-wrap: wrap; }
 .gift-chip { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; font-size: 13px; }
