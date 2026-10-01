@@ -831,6 +831,8 @@ function attachSocket(io, sessionMiddleware) {
     let draws = new Map(); // userId -> { survives, label }
     let pot = 0;
     let timer = null;
+    let totalJoined = 0; // how many joined this game (fixed once the join window closes; "X in" in the status bar)
+    let endsAt = 0; // join/round deadline, for a live countdown — same idea as legendaryEndsAt
 
     function getRoomId() {
       if (roomId == null) {
@@ -856,7 +858,25 @@ function attachSocket(io, sessionMiddleware) {
     }
     function endGame() {
       clearTimer();
-      phase = 'idle'; round = 0; players = new Map(); draws = new Map(); pot = 0;
+      phase = 'idle'; round = 0; players = new Map(); draws = new Map(); pot = 0; totalJoined = 0; endsAt = 0;
+      broadcastState();
+    }
+
+    // Live status-bar state for the room's game UI (e.g. the Cricket pitch
+    // bar) — mirrors broadcastLegendaryState's shape/purpose but for the
+    // shared elimination-game engine, so both LowCard and Cricket get it for
+    // free. "playersIn" is the total that joined this game (fixed once the
+    // join window closes); "playersLeft" is how many are still standing.
+    function getState() {
+      return {
+        roomId: getRoomId(), botName, phase, round,
+        playersIn: totalJoined, playersLeft: players.size, pot, endsAt,
+      };
+    }
+    function broadcastState() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      io.to(`room:${rid}`).emit('elimination_state', getState());
     }
 
     function tryStart() {
@@ -864,8 +884,10 @@ function attachSocket(io, sessionMiddleware) {
       if (rid < 0) return false; // room not seeded yet (very old DB mid-migration)
       if (phase !== 'idle') return false;
       clearTimer();
-      phase = 'joining'; players = new Map(); draws = new Map(); pot = 0; round = 0;
+      phase = 'joining'; players = new Map(); draws = new Map(); pot = 0; round = 0; totalJoined = 0;
+      endsAt = Date.now() + joinMs;
       botMessage(`🎮 New game started! Type !j to join (Entry: ${entryFee} coins) — ${Math.round(joinMs / 1000)} seconds.`);
+      broadcastState();
       timer = setTimeout(afterJoinWindow, joinMs);
       timer.unref?.();
       return true;
@@ -885,7 +907,9 @@ function attachSocket(io, sessionMiddleware) {
       emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
       pot += entryFee;
       players.set(user.id, user.username);
+      totalJoined = players.size;
       botMessage(`${user.username} joined! (${players.size} player${players.size === 1 ? '' : 's'} in, pot: ${pot} coins)`);
+      broadcastState();
     }
 
     function afterJoinWindow() {
@@ -902,7 +926,9 @@ function attachSocket(io, sessionMiddleware) {
       round += 1;
       phase = 'drawing';
       draws = new Map();
+      endsAt = Date.now() + roundMs;
       botMessage(`Round #${round}. Players !d to draw [${Math.round(roundMs / 1000)} seconds]`);
+      broadcastState();
       timer = setTimeout(resolveRound, roundMs);
       timer.unref?.();
     }
@@ -959,6 +985,8 @@ function attachSocket(io, sessionMiddleware) {
         return;
       }
       players = survivors;
+      phase = 'drawing'; // between rounds — status bar shows the updated "left" count while the next round's draw window spins up
+      broadcastState();
       timer = setTimeout(startRound, 2_000);
       timer.unref?.();
     }
@@ -966,7 +994,7 @@ function attachSocket(io, sessionMiddleware) {
     // Kick off the very first round shortly after boot, same as Legendary Bot.
     setTimeout(() => { if (getRoomId() >= 0) tryStart(); }, 15_000).unref?.();
 
-    return { getRoomId, tryStart, join, takeDraw };
+    return { getRoomId, tryStart, join, takeDraw, getState };
   }
 
   // LowCard — draw a card each round; whoever drew the lowest card (or
@@ -2120,6 +2148,15 @@ function attachSocket(io, sessionMiddleware) {
       const totals = {};
       for (const [k, v] of legendaryAnimalTotals) totals[k] = v;
       if (typeof ack === 'function') ack({ phase: legendaryPhase, endsAt: legendaryEndsAt, animalTotals: totals });
+    });
+
+    // ---- LowCard / Cricket status bar — initial state on room entry, same
+    // purpose as legendary_get_state (live updates after that come via the
+    // 'elimination_state' room broadcast). roomId identifies which of the
+    // two shared-engine games to read.
+    on('elimination_get_state', ({ roomId }, ack) => {
+      const game = [lowcardGame, cricketGame].find((g) => g.getRoomId() === roomId);
+      if (typeof ack === 'function') ack(game ? game.getState() : null);
     });
 
     socket.on('disconnect', () => {

@@ -859,6 +859,16 @@ function connectSocket() {
       if (isInLegendaryRoom() && legendaryState.phase === 'betting') renderLegendaryPanel();
     }, 1000);
   }
+  // Shared LowCard/Cricket engine broadcasts for both games on the same
+  // event — only react when it's the game the player is actually looking at.
+  socket.on('elimination_state', (state) => {
+    if (isInCricketRoom() && state.roomId === currentRoomId) { cricketState = state; renderCricketPanel(); }
+  });
+  if (!cricketCountdownTimer) {
+    cricketCountdownTimer = setInterval(() => {
+      if (isInCricketRoom() && cricketState.phase === 'joining') renderCricketPanel();
+    }, 1000);
+  }
   // Picking a voucher is private — a toast to the picker only, never posted
   // to the room chat for everyone else to see.
   socket.on('voucher_won', ({ amount }) => toast(`🎉 You picked the voucher and won ${amount} coins!`));
@@ -1410,6 +1420,12 @@ function enterRoom(id, name) {
     renderLegendaryPanel(); // hides the panel when leaving the Legendary room
   }
 
+  if (isInCricketRoom()) {
+    socket.emit('elimination_get_state', { roomId: id }, (state) => { if (state) { cricketState = state; renderCricketPanel(); } });
+  } else {
+    renderCricketPanel(); // hides the bar when leaving the Cricket room
+  }
+
   // Chat text is visible ONLY from the moment you actually enter a room —
   // for every single account, no exceptions for Staff, Global Admin, or any
   // other role. If you've had this room open as a tab already and are just
@@ -1773,6 +1789,45 @@ let legendaryMinimized = false;
 let legendaryHidden = false;
 
 function isInLegendaryRoom() { return currentRoomName === LEGENDARY_ROOM_NAME; }
+
+// ---------- CRICKET STATUS BAR (Official Cricket Room) ----------
+// Purely informational pitch-themed strip — Cricket is still played with the
+// !start/!j/!d chat commands (shared LowCard/Cricket engine in socket.js);
+// this just gives it a live visual readout of the round, matching the
+// reference screenshot (🏏 Cricket · players in/left on the left, ball in the
+// middle, phase badge on the right), the same way the Legendary panel gave
+// the dice game a visual bar on top of its existing chat-command play.
+const CRICKET_ROOM_NAME = 'Official Cricket Room';
+let cricketState = { roomId: null, botName: 'Cricket Bot', phase: 'idle', round: 0, playersIn: 0, playersLeft: 0, pot: 0, endsAt: 0 };
+let cricketCountdownTimer = null;
+function isInCricketRoom() { return currentRoomName === CRICKET_ROOM_NAME; }
+
+function renderCricketPanel() {
+  const panel = $('#cricketGamePanel');
+  if (!panel) return;
+  if (!isInCricketRoom()) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+  panel.classList.remove('hidden');
+
+  const phase = cricketState.phase;
+  let phaseBadge;
+  if (phase === 'joining') {
+    const secondsLeft = Math.max(0, Math.ceil((cricketState.endsAt - Date.now()) / 1000));
+    phaseBadge = `<span class="cricket-badge cricket-badge-joining">🟢 Joining · ${secondsLeft}s</span>`;
+  } else if (phase === 'drawing') {
+    phaseBadge = `<span class="cricket-badge cricket-badge-live">⏳ Game in progress</span>`;
+  } else {
+    phaseBadge = `<span class="cricket-badge cricket-badge-idle">Type !start to play</span>`;
+  }
+
+  panel.innerHTML = `
+    <div class="cricket-side cricket-side-left">
+      <span class="cricket-title">🏏 Cricket</span>
+      ${phase !== 'idle' ? `<span class="cricket-count">${cricketState.playersIn} in · ${cricketState.playersLeft} left</span>` : ''}
+    </div>
+    <div class="cricket-ball" title="${cricketState.pot ? `Pot: ${cricketState.pot} coins` : 'Cricket'}">🏏</div>
+    <div class="cricket-side cricket-side-right">${phaseBadge}</div>
+  `;
+}
 
 function renderLegendaryPanel() {
   const panel = $('#legendaryGamePanel');
@@ -3096,12 +3151,16 @@ function renderExplore(box) {
   if (!currentUser.is_merchant) {
     cards.push({ icon: '🧑‍💼', bg: '#0ea5e9', title: 'Become a Merchant', subtitle: 'Apply for the Merchant role', open: () => pushSubScreen('Become a Merchant', renderMerchantApply) });
   }
+  if (!currentUser.is_global_admin) {
+    cards.push({ icon: '🛡️', bg: '#dc2626', title: 'Become a Global Administrator', subtitle: 'Apply for Global Administrator permissions', open: () => pushSubScreen('Become a Global Administrator', renderGlobalAdminApply) });
+  }
   cards.push({ icon: '🎖️', bg: '#a855f7', title: 'Badge Store', subtitle: 'Purchase and unlock unique badges', open: () => pushSubScreen('Badge Store', renderBadgeStore) });
   cards.push({ icon: '🛡️', bg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your earned badges', open: () => pushSubScreen('Badge Panel', renderBadgePanel) });
   cards.push({ icon: '🌟', bg: '#f43f5e', title: 'Sticker Store', subtitle: 'Browse sticker packs to use in chat', open: () => pushSubScreen('Sticker Store', renderStickerStore) });
   if (currentUser.is_staff) {
     cards.push({ icon: '🛠️', bg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts (Staff)', open: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) });
     cards.push({ icon: '📋', bg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (Staff)', open: () => pushSubScreen('Merchant Applications', renderMerchantApplications) });
+    cards.push({ icon: '📋', bg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Administrator requests (Staff)', open: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) });
   }
   const grid = document.createElement('div');
   grid.className = 'explore-grid';
@@ -4658,6 +4717,101 @@ async function renderMerchantApplications(box) {
       });
       row.querySelector('.merchant-reject-btn').addEventListener('click', async () => {
         try { await api(`/merchant/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      box.appendChild(row);
+    });
+  };
+  draw();
+}
+
+// ---------- BECOME A GLOBAL ADMINISTRATOR (Explore -> Become a Global Administrator) ----------
+async function renderGlobalAdminApply(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let status;
+  try {
+    status = await api('/global-admin/status');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+
+  if (status.isGlobalAdmin) {
+    box.innerHTML = '<div class="empty-note">🛡️ You\'re already a Global Administrator.</div>';
+    return;
+  }
+  if (status.application && status.application.status === 'pending') {
+    box.innerHTML = `
+      <div class="empty-note">⏳ Your application is pending review by Staff.</div>
+      <div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">"${escapeHtml(status.application.message || '')}"</div></div></div>
+    `;
+    return;
+  }
+
+  const note = document.createElement('div');
+  note.className = 'empty-note';
+  note.textContent = status.application && status.application.status === 'rejected'
+    ? 'Your last application was declined — you can apply again below.'
+    : 'Tell Staff why you\'d like to become a Global Administrator, then submit. Approved admins instantly receive 1,000,000 coins.';
+  box.appendChild(note);
+
+  const composer = document.createElement('div');
+  composer.className = 'post-composer';
+  composer.innerHTML = `
+    <textarea id="globalAdminApplyMessage" placeholder="Why should you become a Global Administrator?" maxlength="500" rows="4" style="width:100%;"></textarea>
+    <button id="globalAdminApplySubmitBtn" class="primary-btn">Submit Application</button>
+  `;
+  box.appendChild(composer);
+  $('#globalAdminApplySubmitBtn').addEventListener('click', async () => {
+    const message = $('#globalAdminApplyMessage').value.trim();
+    try {
+      await api('/global-admin/apply', { method: 'POST', body: JSON.stringify({ message }) });
+      toast('Application submitted!');
+      renderGlobalAdminApply(box);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
+// ---------- GLOBAL ADMINISTRATOR APPLICATIONS (Explore -> Global Administrator Applications, Staff only) ----------
+async function renderGlobalAdminApplications(box) {
+  if (!currentUser.is_staff) { box.innerHTML = '<div class="empty-note">Staff only.</div>'; return; }
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+
+  const draw = async () => {
+    let applications;
+    try {
+      ({ applications } = await api('/global-admin/pending'));
+    } catch (err) {
+      box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    box.innerHTML = '';
+    if (!applications.length) {
+      box.innerHTML = '<div class="empty-note">No pending applications.</div>';
+      return;
+    }
+    applications.forEach((a) => {
+      const row = document.createElement('div');
+      row.className = 'list-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.innerHTML = `
+        <div class="list-row-title">${escapeHtml(a.username)}</div>
+        <div class="list-row-subtitle">"${escapeHtml(a.message || '(no message)')}"</div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="primary-btn globaladmin-approve-btn" data-id="${a.id}">Approve</button>
+          <button class="secondary-btn globaladmin-reject-btn" data-id="${a.id}">Reject</button>
+        </div>
+      `;
+      row.querySelector('.globaladmin-approve-btn').addEventListener('click', async () => {
+        try { await api(`/global-admin/${a.id}/approve`, { method: 'POST' }); toast(`${a.username} is now a Global Administrator (+1,000,000 coins)`); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      row.querySelector('.globaladmin-reject-btn').addEventListener('click', async () => {
+        try { await api(`/global-admin/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); draw(); }
         catch (err) { toast(err.message); }
       });
       box.appendChild(row);

@@ -214,6 +214,21 @@ CREATE TABLE IF NOT EXISTS merchant_applications (
   reviewed_at TEXT
 );
 
+-- Self-service "Become a Global Administrator" requests (Explore -> Become a
+-- Global Administrator) — same shape and flow as merchant_applications
+-- above. Approving sets is_global_admin = 1 AND credits 1,000,000 coins in
+-- one step (see routes/globalAdmin.js) — unlike Merchant, which is just the
+-- role flag with no coin grant.
+CREATE TABLE IF NOT EXISTS globaladmin_applications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+  reviewed_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  reviewed_at TEXT
+);
+
 -- Staff-authored posts, shared table for the Explore hub's Announcements and
 -- Blog cards (they're the same mechanism with a different label).
 CREATE TABLE IF NOT EXISTS posts (
