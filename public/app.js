@@ -1793,49 +1793,190 @@ const EFFECT_THEME = {
 };
 const EFFECT_THEME_DEFAULT = { headline: 'WOW!', color1: '#3b0764', color2: '#6d28d9', glow: '#facc15', debris: '#fde68a' };
 
+// Each effect gets its own full-screen "shape", not just a recolored
+// version of the same burst — a storm genuinely looks like a storm (dark
+// cloud + lightning), rain genuinely falls, birds genuinely fly across
+// instead of exploding outward. `kind` picks the particle motion:
+//   burst  — scattered across the screen, tumbling outward then falling (explosions)
+//   fall   — starts above the viewport, falls straight down (rain/snow/meteor)
+//   rise   — starts near the bottom, drifts upward (love/fire/ghost)
+//   fly    — starts off one edge, crosses the screen (birds/butterflies)
+//   storm  — no particles; a dark cloud band + flickering lightning bolts (thunder)
+const EFFECT_ARCHETYPE = {
+  bomb: { kind: 'burst', shake: true, ring: true, flash: true },
+  missile: { kind: 'burst', shake: true, ring: true, flash: true },
+  grenade: { kind: 'burst', shake: true, ring: true, flash: true },
+  firework: { kind: 'burst', particle: '✨', shake: false, ring: true, flash: true },
+  tomato: { kind: 'burst', particle: '🍅', shake: true, ring: true, flash: true },
+  laser: { kind: 'burst', particle: '⚡', shake: false, ring: true, flash: true },
+  meteor: { kind: 'fall', particle: '☄️', shake: true, ring: true, flash: true, fast: true },
+  rain: { kind: 'fall', shake: false, ring: false, flash: false, dense: true, color: 'rgba(125,211,252,0.7)' },
+  snowball: { kind: 'fall', particle: '❄️', shake: false, ring: false, flash: false, slow: true },
+  love: { kind: 'rise', particle: '💖', shake: false, ring: false, flash: false },
+  dragon: { kind: 'rise', particle: '🔥', shake: true, ring: true, flash: true },
+  ghost: { kind: 'rise', particle: '👻', shake: false, ring: false, flash: false, dark: true },
+  bird: { kind: 'fly', particle: '🐦', shake: false, ring: false, flash: false },
+  butterfly: { kind: 'fly', particle: '🦋', shake: false, ring: false, flash: false },
+  thunder: { kind: 'storm', shake: true, ring: true, flash: true },
+};
+const EFFECT_ARCHETYPE_DEFAULT = { kind: 'burst', shake: true, ring: true, flash: true };
+
 function playEffectImpact({ key, emoji, username, level }) {
   const theme = EFFECT_THEME[key] || EFFECT_THEME_DEFAULT;
+  const arch = EFFECT_ARCHETYPE[key] || EFFECT_ARCHETYPE_DEFAULT;
   const wrap = document.createElement('div');
   wrap.className = 'effect-impact';
   wrap.style.setProperty('--fx-glow', theme.glow);
   wrap.style.setProperty('--fx-text', theme.glow);
 
   // Full-viewport color wash — the "whole screen reacts" part. A quick
-  // flash in, long fade out, tinted from the theme's glow color.
-  const flash = document.createElement('div');
-  flash.className = 'effect-impact-flash';
-  flash.style.background = `radial-gradient(circle, ${theme.glow} 0%, transparent 70%)`;
-  wrap.appendChild(flash);
+  // flash in, long fade out. Most effects tint from their glow color; a
+  // "dark"-flagged one (ghost) washes toward black instead for a spookier
+  // read.
+  if (arch.flash) {
+    const flash = document.createElement('div');
+    flash.className = 'effect-impact-flash';
+    flash.style.background = arch.dark
+      ? 'radial-gradient(circle, rgba(10,10,25,0.15) 0%, rgba(5,5,20,0.7) 100%)'
+      : `radial-gradient(circle, ${theme.glow} 0%, transparent 70%)`;
+    wrap.appendChild(flash);
+  }
+
+  // Storm (thunder): a dark cloud band across the top of the screen plus a
+  // few staggered lightning-flash strobes — no debris, the sky itself is
+  // the effect.
+  if (arch.kind === 'storm') {
+    const cloud = document.createElement('div');
+    cloud.className = 'effect-impact-cloud';
+    wrap.appendChild(cloud);
+    [0, 0.35, 0.85].forEach((delay) => {
+      const bolt = document.createElement('div');
+      bolt.className = 'effect-impact-bolt';
+      bolt.style.animationDelay = delay + 's';
+      wrap.appendChild(bolt);
+    });
+  }
 
   // A shockwave ring sized in vmax so it genuinely grows to cover the
   // screen (not just a small circle in the middle) — two, staggered, for
-  // a bit of depth.
-  const ring1 = document.createElement('div'); ring1.className = 'effect-impact-ring';
-  const ring2 = document.createElement('div'); ring2.className = 'effect-impact-ring ring2';
-  wrap.append(ring1, ring2);
+  // a bit of depth. Only for effects with a real "impact" (explosions,
+  // dragon roar, thunder clap) — a shower of birds doesn't shock the room.
+  if (arch.ring) {
+    const ring1 = document.createElement('div'); ring1.className = 'effect-impact-ring';
+    const ring2 = document.createElement('div'); ring2.className = 'effect-impact-ring ring2';
+    wrap.append(ring1, ring2);
+  }
 
-  // Debris scattered across the ENTIRE viewport (not bursting from one
-  // center point) — each particle picks its own random spot on screen,
-  // tumbles a little, and falls, so the whole screen feels like it's part
-  // of the effect rather than one badge in the middle of it.
   const vw = window.innerWidth, vh = window.innerHeight;
-  const count = 60;
-  for (let i = 0; i < count; i++) {
-    const d = document.createElement('div');
-    d.className = 'effect-impact-debris';
-    d.style.left = Math.random() * vw + 'px';
-    d.style.top = (Math.random() * vh * 0.7) + 'px';
-    d.style.setProperty('--dx', `${(Math.random() - 0.5) * 160}px`);
-    d.style.setProperty('--dy', `${120 + Math.random() * (vh * 0.5)}px`);
-    d.style.setProperty('--rot', `${(Math.random() - 0.5) * 720}deg`);
-    d.style.background = theme.debris;
-    const size = 6 + Math.random() * 10;
-    d.style.width = size + 'px';
-    d.style.height = size + 'px';
-    d.style.borderRadius = Math.random() < 0.4 ? '50%' : '2px';
-    d.style.animationDuration = (1.4 + Math.random() * 0.8) + 's';
-    d.style.animationDelay = (Math.random() * 0.4) + 's';
-    wrap.appendChild(d);
+  let ttl = 2800;
+
+  if (arch.kind === 'burst') {
+    // Scattered across the ENTIRE viewport (not bursting from one center
+    // point) — each particle picks its own random spot on screen, tumbles
+    // a little, and falls, so the whole screen feels hit rather than one
+    // badge in the middle of it.
+    const count = 60;
+    for (let i = 0; i < count; i++) {
+      const d = document.createElement('div');
+      d.className = 'effect-impact-debris';
+      d.style.left = Math.random() * vw + 'px';
+      d.style.top = (Math.random() * vh * 0.7) + 'px';
+      d.style.setProperty('--dx', `${(Math.random() - 0.5) * 160}px`);
+      d.style.setProperty('--dy', `${120 + Math.random() * (vh * 0.5)}px`);
+      d.style.setProperty('--rot', `${(Math.random() - 0.5) * 720}deg`);
+      d.style.animationDuration = (1.4 + Math.random() * 0.8) + 's';
+      d.style.animationDelay = (Math.random() * 0.4) + 's';
+      if (arch.particle) {
+        d.textContent = arch.particle;
+        d.style.fontSize = (14 + Math.random() * 14) + 'px';
+        d.style.lineHeight = '1';
+      } else {
+        d.style.background = theme.debris;
+        const size = 6 + Math.random() * 10;
+        d.style.width = size + 'px';
+        d.style.height = size + 'px';
+        d.style.borderRadius = Math.random() < 0.4 ? '50%' : '2px';
+      }
+      wrap.appendChild(d);
+    }
+    ttl = 2800;
+  } else if (arch.kind === 'fall') {
+    // Starts above the viewport and falls straight down past the bottom —
+    // rain (dense, fast, thin streaks, slight consistent wind-drift), snow
+    // (sparse, slow, drifting flakes), or meteor (fast diagonal streaks
+    // with an impact shake+ring when they land).
+    const count = arch.dense ? 110 : arch.fast ? 16 : 60;
+    const durRange = arch.dense ? [0.5, 0.9] : arch.fast ? [0.9, 1.3] : [1.8, 2.6];
+    const delayMax = arch.dense ? 1.0 : arch.fast ? 0.6 : 1.0;
+    for (let i = 0; i < count; i++) {
+      const d = document.createElement('div');
+      d.className = 'effect-impact-drift';
+      d.style.left = Math.random() * vw + 'px';
+      d.style.top = (-40 - Math.random() * vh * 0.4) + 'px';
+      const driftX = arch.dense ? (-40 - Math.random() * 20) : (Math.random() - 0.5) * 100;
+      d.style.setProperty('--dx', `${driftX}px`);
+      d.style.setProperty('--dy', `${vh * 1.3 + Math.random() * vh * 0.3}px`);
+      d.style.setProperty('--rot', arch.dense || arch.fast ? '0deg' : `${(Math.random() - 0.5) * 360}deg`);
+      d.style.animationDuration = (durRange[0] + Math.random() * (durRange[1] - durRange[0])) + 's';
+      d.style.animationDelay = (Math.random() * delayMax) + 's';
+      if (arch.particle) {
+        d.textContent = arch.particle;
+        d.style.fontSize = (arch.fast ? 20 + Math.random() * 10 : 12 + Math.random() * 10) + 'px';
+        d.style.lineHeight = '1';
+      } else {
+        d.style.width = '2px';
+        d.style.height = (14 + Math.random() * 10) + 'px';
+        d.style.background = arch.color || theme.debris;
+        d.style.borderRadius = '2px';
+        d.style.transform = 'rotate(10deg)';
+      }
+      wrap.appendChild(d);
+    }
+    ttl = arch.dense || arch.fast ? 2200 : 3800;
+  } else if (arch.kind === 'rise') {
+    // Starts near the bottom and drifts upward — hearts floating up, fire
+    // and embers rising, a handful of ghosts bobbing skyward.
+    const count = key === 'ghost' ? 10 : 36;
+    for (let i = 0; i < count; i++) {
+      const d = document.createElement('div');
+      d.className = 'effect-impact-drift';
+      d.style.left = Math.random() * vw + 'px';
+      d.style.top = (vh * 0.7 + Math.random() * vh * 0.3) + 'px';
+      d.style.setProperty('--dx', `${(Math.random() - 0.5) * 140}px`);
+      d.style.setProperty('--dy', `${-(vh * 0.7 + Math.random() * vh * 0.4)}px`);
+      d.style.setProperty('--rot', `${(Math.random() - 0.5) * 180}deg`);
+      d.style.animationDuration = (1.8 + Math.random() * 1.2) + 's';
+      d.style.animationDelay = (Math.random() * 0.8) + 's';
+      d.textContent = arch.particle;
+      d.style.fontSize = (16 + Math.random() * 14) + 'px';
+      d.style.lineHeight = '1';
+      if (arch.dark) d.style.opacity = '0.85';
+      wrap.appendChild(d);
+    }
+    ttl = 3800;
+  } else if (arch.kind === 'fly') {
+    // Starts off one random edge of the screen and crosses to the other —
+    // birds/butterflies passing through the room rather than exploding in it.
+    const count = 14;
+    for (let i = 0; i < count; i++) {
+      const d = document.createElement('div');
+      d.className = 'effect-impact-drift';
+      const fromLeft = Math.random() < 0.5;
+      d.style.left = (fromLeft ? -40 : vw + 40) + 'px';
+      d.style.top = (vh * 0.1 + Math.random() * vh * 0.6) + 'px';
+      d.style.setProperty('--dx', `${(fromLeft ? 1 : -1) * (vw * 0.8 + Math.random() * vw * 0.4)}px`);
+      d.style.setProperty('--dy', `${(Math.random() - 0.5) * 140}px`);
+      d.style.setProperty('--rot', '0deg');
+      d.style.animationDuration = (1.8 + Math.random() * 1) + 's';
+      d.style.animationDelay = (Math.random() * 0.8) + 's';
+      d.textContent = arch.particle;
+      d.style.fontSize = (18 + Math.random() * 12) + 'px';
+      d.style.lineHeight = '1';
+      wrap.appendChild(d);
+    }
+    ttl = 3400;
+  } else if (arch.kind === 'storm') {
+    ttl = 3200;
   }
 
   const headline = document.createElement('div');
@@ -1851,13 +1992,16 @@ function playEffectImpact({ key, emoji, username, level }) {
 
   // A brief screen-shake sells the "impact" — applied to the whole app
   // shell, not just this overlay, so it reads as the room itself getting
-  // hit rather than a sticker floating on top of it.
-  const shell = document.getElementById('app') || document.body;
-  shell.classList.add('effect-screen-shake');
-  setTimeout(() => shell.classList.remove('effect-screen-shake'), 500);
+  // hit rather than a sticker floating on top of it. Only for effects that
+  // should actually jolt the screen (explosions, dragon roar, thunderclap).
+  if (arch.shake) {
+    const shell = document.getElementById('app') || document.body;
+    shell.classList.add('effect-screen-shake');
+    setTimeout(() => shell.classList.remove('effect-screen-shake'), 500);
+  }
 
   document.body.appendChild(wrap);
-  setTimeout(() => wrap.remove(), 2800);
+  setTimeout(() => wrap.remove(), ttl);
 }
 
 // "/purchase effect" (catalog) and "/purchase effect info" (owned-only) both

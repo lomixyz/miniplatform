@@ -1603,11 +1603,16 @@ function attachSocket(io, sessionMiddleware) {
       // its own icon badge.
       postMessage(roomId, { userId: user.id, username: user.username, type: `effect_${entry.key}`, content: `${entry.emoji} ${text}` });
 
-      // One-shot big "IMPACT!"-style center-screen animation — not
-      // persisted, just a live flourish for whoever's looking right now.
-      io.to(`room:${roomId}`).emit('effect_triggered', {
+      // One-shot big full-screen animation — not persisted, just a live
+      // flourish for whoever's online right now. Broadcast to EVERY
+      // connected socket (not just this room) so a purchased effect reads
+      // as the grand, server-wide gesture it's priced as (50,000 coins /
+      // 30 days) — someone in a different room still sees the room name
+      // that triggered it, same as the persisted chat bar's audience is
+      // scoped to that room but the screen moment isn't.
+      io.emit('effect_triggered', {
         key: entry.key, emoji: entry.emoji, label: entry.label,
-        username: user.username, level: currentLevel(user.id),
+        username: user.username, level: currentLevel(user.id), roomId,
       });
     }
 
