@@ -887,7 +887,7 @@ function connectSocket() {
   // when someone actually fires an owned effect ("/bomb", "/thunder", ...).
   socket.on('effect_catalog', ({ effects }) => showEffectStoreModal(effects, 'catalog'));
   socket.on('effect_my_list', ({ effects }) => showEffectStoreModal(effects, 'owned'));
-  socket.on('effect_triggered', (data) => playEffectShower(data));
+  socket.on('effect_triggered', (data) => playEffectImpact(data));
   socket.on('whois_result', (data) => showWhoisPopup(data));
   // Now carries roomId (see broadcastRoomMembers in socket.js, needed once a
   // socket can be subscribed to several rooms' channels at once) — the
@@ -1539,7 +1539,22 @@ function buildMessageEl(msg) {
   const div = document.createElement('div');
   if (msg.id != null) div.dataset.msgId = String(msg.id);
   div.className = 'msg ' + (msg.type || 'text');
-  if (msg.type === 'system' || msg.type === 'voucher') {
+  if (msg.type && msg.type.startsWith('effect_')) {
+    // Purchased chat effect line ("/bomb", "/thunder", ...) — a persisted,
+    // full-width gradient bar (theme keyed by the part of the type after
+    // "effect_"), not a plain system notice. Content is "<emoji> <text>"
+    // (see triggerPurchasedEffect in socket.js); split the leading emoji off
+    // into its own icon badge, matching the reference bar's layout.
+    const key = msg.type.slice(7);
+    const theme = EFFECT_THEME[key] || EFFECT_THEME_DEFAULT;
+    div.className = 'msg effect-bar';
+    div.style.background = `linear-gradient(90deg, ${theme.color1}, ${theme.color2})`;
+    const content = msg.content || '';
+    const spaceIdx = content.indexOf(' ');
+    const icon = spaceIdx === -1 ? content : content.slice(0, spaceIdx);
+    const rest = spaceIdx === -1 ? '' : content.slice(spaceIdx + 1);
+    div.innerHTML = `<span class="effect-bar-icon">${escapeHtml(icon)}</span> ${escapeHtml(rest)}`;
+  } else if (msg.type === 'system' || msg.type === 'voucher') {
     div.textContent = msg.content;
   } else if (msg.type === 'gift') {
     div.textContent = msg.content;
@@ -1752,38 +1767,76 @@ function playGiftShower({ username, level, emojis, giftName }) {
   setTimeout(() => banner.remove(), 2300);
 }
 
-// Purchased chat effect ("/bomb", "/thunder", ...) — same falling-emoji
-// layer as the gift shower above, themed per effect, plus a small centered
-// banner naming who fired it. The actual "<user> summoned a thunderstorm!"
-// line is posted to room chat separately as a system_message (see
-// triggerPurchasedEffect in socket.js) — this is just the visual flourish.
-const EFFECT_SHOWER_EMOJIS = {
-  bomb: ['💣', '💥'], missile: ['🚀', '💥'], grenade: ['🍍', '💥'],
-  love: ['💖', '💕', '💗'], bird: ['🐦', '🕊️'], butterfly: ['🦋'],
-  dragon: ['🐉', '🔥'], rain: ['🌧️', '💧'], ghost: ['👻'],
-  meteor: ['☄️', '🔥'], thunder: ['⚡', '🌩️'], snowball: ['❄️', '☃️'],
-  tomato: ['🍅'], laser: ['🔫', '✨'], firework: ['🎆', '🎇'],
+// Purchased chat effect ("/bomb", "/thunder", ...) — themed look shared by
+// two things: the persisted full-width gradient bar embedded right in the
+// chat scrollback (see buildMessageEl's "effect_<key>" branch — that's the
+// actual "<user> summoned a thunderstorm!" line, posted + persisted like a
+// gift/legendary-bot line, see triggerPurchasedEffect in socket.js) and the
+// one-shot big center-screen "IMPACT!" celebration below. One place to add,
+// recolor, or reword an effect's look.
+const EFFECT_THEME = {
+  bomb: { headline: 'BOOM!', color1: '#7c2d12', color2: '#dc2626', glow: '#f97316', debris: '#fca5a5' },
+  missile: { headline: 'IMPACT!', color1: '#7f1d1d', color2: '#b91c1c', glow: '#f59e0b', debris: '#fcd34d' },
+  grenade: { headline: 'BOOM!', color1: '#365314', color2: '#4d7c0f', glow: '#a3e635', debris: '#bef264' },
+  love: { headline: 'LOVE!', color1: '#831843', color2: '#db2777', glow: '#f472b6', debris: '#fbcfe8' },
+  bird: { headline: 'FREEDOM!', color1: '#0c4a6e', color2: '#0284c7', glow: '#7dd3fc', debris: '#bae6fd' },
+  butterfly: { headline: 'BEAUTY!', color1: '#581c87', color2: '#9333ea', glow: '#e9d5ff', debris: '#d8b4fe' },
+  dragon: { headline: 'ROAR!', color1: '#14532d', color2: '#15803d', glow: '#4ade80', debris: '#86efac' },
+  rain: { headline: 'SPLASH!', color1: '#0c4a6e', color2: '#0369a1', glow: '#7dd3fc', debris: '#bae6fd' },
+  ghost: { headline: 'BOO!', color1: '#312e81', color2: '#4338ca', glow: '#c7d2fe', debris: '#e0e7ff' },
+  meteor: { headline: 'IMPACT!', color1: '#7c2d12', color2: '#c2410c', glow: '#fb923c', debris: '#fed7aa' },
+  thunder: { headline: 'STRIKE!', color1: '#3b0764', color2: '#6d28d9', glow: '#facc15', debris: '#fde68a' },
+  snowball: { headline: 'SPLAT!', color1: '#0c4a6e', color2: '#0891b2', glow: '#e0f2fe', debris: '#f0f9ff' },
+  tomato: { headline: 'SPLAT!', color1: '#7f1d1d', color2: '#b91c1c', glow: '#fca5a5', debris: '#fecaca' },
+  laser: { headline: 'ZAP!', color1: '#1e3a8a', color2: '#2563eb', glow: '#93c5fd', debris: '#bfdbfe' },
+  firework: { headline: 'BOOM!', color1: '#7c2d12', color2: '#c026d3', glow: '#fde047', debris: '#fef08a' },
 };
-function playEffectShower({ key, emoji, username, level }) {
-  const layer = $('#giftShowerLayer');
-  const set = EFFECT_SHOWER_EMOJIS[key] || [emoji || '✨'];
-  for (let i = 0; i < 16; i++) {
-    const span = document.createElement('span');
-    span.className = 'shower-emoji';
-    span.textContent = set[Math.floor(Math.random() * set.length)];
-    span.style.left = Math.random() * 96 + '%';
-    span.style.animationDuration = (2 + Math.random() * 1.5) + 's';
-    span.style.animationDelay = (i * 0.06) + 's';
-    layer.appendChild(span);
-    setTimeout(() => span.remove(), 4500);
+const EFFECT_THEME_DEFAULT = { headline: 'WOW!', color1: '#3b0764', color2: '#6d28d9', glow: '#facc15', debris: '#fde68a' };
+
+function playEffectImpact({ key, emoji, username, level }) {
+  const theme = EFFECT_THEME[key] || EFFECT_THEME_DEFAULT;
+  const wrap = document.createElement('div');
+  wrap.className = 'effect-impact';
+  wrap.style.setProperty('--fx-glow', theme.glow);
+  wrap.style.setProperty('--fx-text', theme.glow);
+
+  const ring1 = document.createElement('div'); ring1.className = 'effect-impact-ring';
+  const ring2 = document.createElement('div'); ring2.className = 'effect-impact-ring ring2';
+  const blob = document.createElement('div'); blob.className = 'effect-impact-blob';
+  wrap.append(ring1, ring2, blob);
+
+  // Debris bursts outward from the center then falls with a bit of gravity
+  // — --dx/--dy/--rot drive the keyframe (see impact-debris-fly in CSS),
+  // randomized per particle so no two plays look identical.
+  for (let i = 0; i < 22; i++) {
+    const d = document.createElement('div');
+    d.className = 'effect-impact-debris';
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 60 + Math.random() * 140;
+    d.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
+    d.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
+    d.style.setProperty('--rot', `${Math.random() * 360}deg`);
+    d.style.background = theme.debris;
+    const size = 6 + Math.random() * 8;
+    d.style.width = size + 'px';
+    d.style.height = size + 'px';
+    d.style.animationDelay = (Math.random() * 0.15) + 's';
+    wrap.appendChild(d);
   }
 
+  const headline = document.createElement('div');
+  headline.className = 'effect-impact-headline';
+  headline.textContent = theme.headline;
+  wrap.appendChild(headline);
+
   const who = level != null ? `${username} [${level}]` : username;
-  const banner = document.createElement('div');
-  banner.className = 'effect-banner';
-  banner.innerHTML = `${emoji || '✨'} ${escapeHtml(who)} used <b>/${escapeHtml(key)}</b>!`;
-  document.body.appendChild(banner);
-  setTimeout(() => banner.remove(), 2300);
+  const by = document.createElement('div');
+  by.className = 'effect-impact-by';
+  by.innerHTML = `${emoji || '✨'} by ${escapeHtml(who)}`;
+  wrap.appendChild(by);
+
+  document.body.appendChild(wrap);
+  setTimeout(() => wrap.remove(), 2600);
 }
 
 // "/purchase effect" (catalog) and "/purchase effect info" (owned-only) both

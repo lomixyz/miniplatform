@@ -1591,7 +1591,20 @@ function attachSocket(io, sessionMiddleware) {
     function triggerPurchasedEffect(roomId, key) {
       const entry = EFFECTS_BY_KEY.get(key);
       const me = nameWithLevel(user.id, user.username);
-      announceRoleplay(roomId, entry.text.replace('{user}', me));
+      const text = entry.text.replace('{user}', me);
+
+      // Persisted, full-width themed bar in the chat scrollback — same
+      // persistence as a gift/legendary-bot line (postMessage writes to the
+      // messages table and replays on the next join_room), unlike the
+      // lighter, never-replayed system_message the roleplay/emote commands
+      // use. type is "effect_<key>" purely so the client (buildMessageEl)
+      // can theme the bar per effect without extra payload fields; content
+      // leads with the effect's own emoji, which the client splits off into
+      // its own icon badge.
+      postMessage(roomId, { userId: user.id, username: user.username, type: `effect_${entry.key}`, content: `${entry.emoji} ${text}` });
+
+      // One-shot big "IMPACT!"-style center-screen animation — not
+      // persisted, just a live flourish for whoever's looking right now.
       io.to(`room:${roomId}`).emit('effect_triggered', {
         key: entry.key, emoji: entry.emoji, label: entry.label,
         username: user.username, level: currentLevel(user.id),
