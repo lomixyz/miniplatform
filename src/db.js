@@ -229,6 +229,21 @@ CREATE TABLE IF NOT EXISTS globaladmin_applications (
   reviewed_at TEXT
 );
 
+-- Chat "/purchase effect" store — time-limited access to a themed chat
+-- effect command ("/bomb", "/thunder", ...; catalog in effectsCatalog.js).
+-- One row per (user, effect): buying an effect the user already owns just
+-- pushes expires_at another N days out from now rather than stacking rows
+-- (see the ON CONFLICT upsert in socket.js), so "already own it" always
+-- means "renew/extend", never a duplicate purchase.
+CREATE TABLE IF NOT EXISTS user_effects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  effect_key TEXT NOT NULL,
+  purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  UNIQUE(user_id, effect_key)
+);
+
 -- Staff-authored posts, shared table for the Explore hub's Announcements and
 -- Blog cards (they're the same mechanism with a different label).
 CREATE TABLE IF NOT EXISTS posts (

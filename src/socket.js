@@ -8,6 +8,7 @@ const voucher = require('./voucher');
 const chatbots = require('./chatbots');
 const roomSilence = require('./roomSilence');
 const { ROLEPLAY_COMMANDS, BENGALI_COMMANDS } = require('./roleplayCommands');
+const { EFFECTS, EFFECTS_BY_KEY } = require('./effectsCatalog');
 
 // Voice notes and shared pictures (see canSendMedia below) are written to
 // disk under public/uploads and served back out by express.static (already
@@ -100,6 +101,18 @@ const FLAME_LINES = [
   "{target}'s comebacks are still loading... 🔥",
   '{target} called, they said the roast was free. 🔥',
 ];
+
+// "/purchase ..." — the chat effect store (see effectsCatalog.js). A bare
+// "/purchase" or "/purchase effect" lists what's on sale; "/purchase
+// <effect>" (or "/purchase effect <effect>") stages a purchase that must be
+// confirmed with a plain "/purchase confirm" within PURCHASE_CONFIRM_MS, same
+// "type it again to mean it" shape as any other irreversible spend in the
+// app. "/purchase effect info" lists the caller's own owned effects. Staged
+// purchases live only in memory (per connected user id) — a server restart
+// or a stale stage just means the player has to start over, never a
+// half-charged purchase.
+const PURCHASE_CONFIRM_MS = 60_000;
+const pendingEffectPurchases = new Map(); // userId -> { key, expiresAt }
 
 function attachSocket(io, sessionMiddleware) {
   // Share express-session with socket.io
@@ -1346,6 +1359,20 @@ function attachSocket(io, sessionMiddleware) {
       if (rpMatch) {
         const cmd = rpMatch[1].toLowerCase();
         const arg = rpMatch[2] ? rpMatch[2].trim() : '';
+        // "/purchase ..." — the effect store (see effectsCatalog.js).
+        if (cmd === 'purchase') {
+          return handlePurchaseCommand(roomId, arg);
+        }
+        // A bare, argument-less "/bomb", "/thunder", etc. from someone who
+        // actually owns that effect fires it. Checked BEFORE the roleplay
+        // map so an owned effect takes priority over a same-named free emote
+        // ("/love" is both) — but only when bare: "/love <username>" (an
+        // arg present) still falls through to the normal targeted emote
+        // below, and a non-owner typing "/bomb" harmlessly falls through to
+        // "unrecognized command" same as before this feature existed.
+        if (!arg && EFFECTS_BY_KEY.has(cmd) && userOwnsEffect(user.id, cmd)) {
+          return triggerPurchasedEffect(roomId, cmd);
+        }
         if (SPECIAL_COMMANDS.has(cmd)) {
           return handleSpecialCommand(roomId, cmd, arg);
         }
@@ -1540,6 +1567,99 @@ function attachSocket(io, sessionMiddleware) {
         if (!target) return socket.emit('error_message', `No user named "${arg}"`);
         return post(`🔨 ${me} whacks ${nameWithLevel(target.id, target.username)} with a giant mallet!`);
       }
+    }
+
+    // ---- "/purchase ..." — the chat effect store (see effectsCatalog.js) ----
+    function userOwnsEffect(userId, key) {
+      const row = db.prepare(
+        "SELECT 1 FROM user_effects WHERE user_id = ? AND effect_key = ? AND expires_at > datetime('now')"
+      ).get(userId, key);
+      return !!row;
+    }
+
+    function effectCatalogForUser(userId) {
+      const owned = new Map(
+        db.prepare("SELECT effect_key, expires_at FROM user_effects WHERE user_id = ? AND expires_at > datetime('now')")
+          .all(userId).map((r) => [r.effect_key, r.expires_at])
+      );
+      return EFFECTS.map((e) => ({
+        key: e.key, emoji: e.emoji, label: e.label, price: e.price, days: e.days,
+        owned: owned.has(e.key), expiresAt: owned.get(e.key) || null,
+      }));
+    }
+
+    function triggerPurchasedEffect(roomId, key) {
+      const entry = EFFECTS_BY_KEY.get(key);
+      const me = nameWithLevel(user.id, user.username);
+      announceRoleplay(roomId, entry.text.replace('{user}', me));
+      io.to(`room:${roomId}`).emit('effect_triggered', {
+        key: entry.key, emoji: entry.emoji, label: entry.label,
+        username: user.username, level: currentLevel(user.id),
+      });
+    }
+
+    function handlePurchaseCommand(roomId, arg) {
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const first = (parts[0] || '').toLowerCase();
+
+      if (!first || first === 'effect') {
+        const second = (parts[1] || '').toLowerCase();
+        if (second === 'info') {
+          const mine = effectCatalogForUser(user.id).filter((e) => e.owned);
+          return socket.emit('effect_my_list', { effects: mine });
+        }
+        if (!second) return socket.emit('effect_catalog', { effects: effectCatalogForUser(user.id) });
+        return startEffectPurchase(second);
+      }
+      if (first === 'confirm') return finalizeEffectPurchase();
+      return startEffectPurchase(first);
+    }
+
+    function startEffectPurchase(key) {
+      const entry = EFFECTS_BY_KEY.get(key);
+      if (!entry) {
+        return socket.emit('error_message', `Unknown effect "${key}" — type /purchase effect to see what's on sale.`);
+      }
+      const balance = db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins;
+      if (balance < entry.price) {
+        return socket.emit('error_message', `You need ${entry.price.toLocaleString()} coins to buy ${entry.emoji} /${entry.key} (you have ${balance.toLocaleString()}).`);
+      }
+      pendingEffectPurchases.set(user.id, { key, expiresAt: Date.now() + PURCHASE_CONFIRM_MS });
+      const already = userOwnsEffect(user.id, key);
+      const note = already
+        ? `${entry.emoji} /${entry.key} — ${entry.price.toLocaleString()} coins to extend your access by ${entry.days} more days. Type /purchase confirm within 60 seconds to buy.`
+        : `${entry.emoji} /${entry.key} — ${entry.price.toLocaleString()} coins for ${entry.days} days of use. Type /purchase confirm within 60 seconds to buy.`;
+      socket.emit('personal_notice', note);
+    }
+
+    function finalizeEffectPurchase() {
+      const pending = pendingEffectPurchases.get(user.id);
+      if (!pending || pending.expiresAt < Date.now()) {
+        pendingEffectPurchases.delete(user.id);
+        return socket.emit('error_message', 'Nothing to confirm — type /purchase <effect> first (e.g. /purchase bomb).');
+      }
+      const entry = EFFECTS_BY_KEY.get(pending.key);
+      pendingEffectPurchases.delete(user.id);
+      if (!entry) return socket.emit('error_message', 'That effect is no longer available.');
+
+      // Deduct atomically, checking the balance in the same statement so the
+      // 60-second confirm window can never be used to overdraw (e.g. the
+      // player spent coins elsewhere in another tab in the meantime).
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(entry.price, user.id, entry.price);
+      if (result.changes === 0) {
+        return socket.emit('error_message', `You no longer have enough coins for ${entry.emoji} /${entry.key}.`);
+      }
+      db.logCoinTx(user.id, -entry.price, 'other', `Purchased effect: /${entry.key}`);
+      db.prepare(`
+        INSERT INTO user_effects (user_id, effect_key, purchased_at, expires_at)
+        VALUES (?, ?, datetime('now'), datetime('now', '+' || ? || ' days'))
+        ON CONFLICT(user_id, effect_key) DO UPDATE SET
+          expires_at = datetime('now', '+' || ? || ' days'),
+          purchased_at = datetime('now')
+      `).run(user.id, entry.key, entry.days, entry.days);
+
+      socket.emit('coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+      socket.emit('personal_notice', `✅ Purchased ${entry.emoji} /${entry.key} — usable for the next ${entry.days} days!`);
     }
 
     function handlePick(roomId, code) {

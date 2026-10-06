@@ -882,6 +882,12 @@ function connectSocket() {
     if (leveledUp) toast(`⭐ Level up! You're now Lv.${level}`);
   });
   socket.on('gift_shower', (data) => playGiftShower(data));
+  // "/purchase effect" store (see effectsCatalog.js on the server) — catalog
+  // listing, the caller's own owned effects, and the themed visual/chat line
+  // when someone actually fires an owned effect ("/bomb", "/thunder", ...).
+  socket.on('effect_catalog', ({ effects }) => showEffectStoreModal(effects, 'catalog'));
+  socket.on('effect_my_list', ({ effects }) => showEffectStoreModal(effects, 'owned'));
+  socket.on('effect_triggered', (data) => playEffectShower(data));
   socket.on('whois_result', (data) => showWhoisPopup(data));
   // Now carries roomId (see broadcastRoomMembers in socket.js, needed once a
   // socket can be subscribed to several rooms' channels at once) — the
@@ -1746,6 +1752,65 @@ function playGiftShower({ username, level, emojis, giftName }) {
   setTimeout(() => banner.remove(), 2300);
 }
 
+// Purchased chat effect ("/bomb", "/thunder", ...) — same falling-emoji
+// layer as the gift shower above, themed per effect, plus a small centered
+// banner naming who fired it. The actual "<user> summoned a thunderstorm!"
+// line is posted to room chat separately as a system_message (see
+// triggerPurchasedEffect in socket.js) — this is just the visual flourish.
+const EFFECT_SHOWER_EMOJIS = {
+  bomb: ['💣', '💥'], missile: ['🚀', '💥'], grenade: ['🍍', '💥'],
+  love: ['💖', '💕', '💗'], bird: ['🐦', '🕊️'], butterfly: ['🦋'],
+  dragon: ['🐉', '🔥'], rain: ['🌧️', '💧'], ghost: ['👻'],
+  meteor: ['☄️', '🔥'], thunder: ['⚡', '🌩️'], snowball: ['❄️', '☃️'],
+  tomato: ['🍅'], laser: ['🔫', '✨'], firework: ['🎆', '🎇'],
+};
+function playEffectShower({ key, emoji, username, level }) {
+  const layer = $('#giftShowerLayer');
+  const set = EFFECT_SHOWER_EMOJIS[key] || [emoji || '✨'];
+  for (let i = 0; i < 16; i++) {
+    const span = document.createElement('span');
+    span.className = 'shower-emoji';
+    span.textContent = set[Math.floor(Math.random() * set.length)];
+    span.style.left = Math.random() * 96 + '%';
+    span.style.animationDuration = (2 + Math.random() * 1.5) + 's';
+    span.style.animationDelay = (i * 0.06) + 's';
+    layer.appendChild(span);
+    setTimeout(() => span.remove(), 4500);
+  }
+
+  const who = level != null ? `${username} [${level}]` : username;
+  const banner = document.createElement('div');
+  banner.className = 'effect-banner';
+  banner.innerHTML = `${emoji || '✨'} ${escapeHtml(who)} used <b>/${escapeHtml(key)}</b>!`;
+  document.body.appendChild(banner);
+  setTimeout(() => banner.remove(), 2300);
+}
+
+// "/purchase effect" (catalog) and "/purchase effect info" (owned-only) both
+// render through the same modal — mode picks the title/footer/empty state.
+function showEffectStoreModal(effects, mode) {
+  $('#effectStoreTitle').textContent = mode === 'owned' ? '🎒 Your Effects' : '✨ Effects on Sale';
+  $('#effectStoreFooter').classList.toggle('hidden', mode === 'owned');
+  const list = $('#effectStoreList');
+  list.innerHTML = '';
+  if (!effects.length) {
+    list.innerHTML = `<div class="empty-note">${mode === 'owned' ? "You don't own any effects yet — try /purchase effect" : 'Nothing on sale right now.'}</div>`;
+  } else {
+    effects.forEach((e) => {
+      let subtitle = `${e.price.toLocaleString()} coins · ${e.days} days`;
+      if (mode === 'owned') {
+        const daysLeft = Math.max(0, Math.ceil((new Date(e.expiresAt.replace(' ', 'T') + 'Z') - Date.now()) / 86400000));
+        subtitle = `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`;
+      } else if (e.owned) {
+        subtitle += ' · already owned';
+      }
+      list.appendChild(listRow({ icon: e.emoji, iconBg: '#7c3aed', title: `/${e.key}`, subtitle }));
+    });
+  }
+  $('#effectStoreModal').classList.remove('hidden');
+}
+function closeEffectStore() { $('#effectStoreModal').classList.add('hidden'); }
+
 // "/whois <username>" result — a small popup with level, country, and live
 // status. Open to every user (see WHOIS_COMMAND in socket.js).
 function showWhoisPopup(u) {
@@ -1762,6 +1827,9 @@ function showWhoisPopup(u) {
 function closeWhois() { $('#whoisModal').classList.add('hidden'); }
 $('#closeWhoisBtn').addEventListener('click', closeWhois);
 $('#whoisModal').addEventListener('click', (e) => { if (e.target.id === 'whoisModal') closeWhois(); });
+
+$('#closeEffectStoreBtn').addEventListener('click', closeEffectStore);
+$('#effectStoreModal').addEventListener('click', (e) => { if (e.target.id === 'effectStoreModal') closeEffectStore(); });
 
 // ---------- LEGENDARY BOT (dice-betting game) ----------
 const LEGENDARY_ROOM_NAME = 'Legendary Bot Official';
@@ -3995,6 +4063,10 @@ const SPECIAL_COMMANDS_LIST = [
   { cmd: '/findmymatch', desc: 'Official rooms only — get randomly paired with someone else currently in the room' },
   { cmd: '/flame <username>', desc: 'Playfully roast a user' },
   { cmd: '/whackit <username>', desc: 'Whack a user with a giant mallet 🔨' },
+  { cmd: '/purchase effect', desc: 'See the chat effects on sale (💣 /bomb, ⚡ /thunder, 🎆 /firework, ...)' },
+  { cmd: '/purchase <effect>', desc: 'Start buying an effect — then type /purchase confirm within 60s' },
+  { cmd: '/purchase confirm', desc: 'Confirm a pending effect purchase (deducts coins, unlocks for 30 days)' },
+  { cmd: '/purchase effect info', desc: 'See which effects you own and how many days are left' },
 ];
 
 let commandListTab = 'commands';
