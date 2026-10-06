@@ -1800,27 +1800,41 @@ function playEffectImpact({ key, emoji, username, level }) {
   wrap.style.setProperty('--fx-glow', theme.glow);
   wrap.style.setProperty('--fx-text', theme.glow);
 
+  // Full-viewport color wash — the "whole screen reacts" part. A quick
+  // flash in, long fade out, tinted from the theme's glow color.
+  const flash = document.createElement('div');
+  flash.className = 'effect-impact-flash';
+  flash.style.background = `radial-gradient(circle, ${theme.glow} 0%, transparent 70%)`;
+  wrap.appendChild(flash);
+
+  // A shockwave ring sized in vmax so it genuinely grows to cover the
+  // screen (not just a small circle in the middle) — two, staggered, for
+  // a bit of depth.
   const ring1 = document.createElement('div'); ring1.className = 'effect-impact-ring';
   const ring2 = document.createElement('div'); ring2.className = 'effect-impact-ring ring2';
-  const blob = document.createElement('div'); blob.className = 'effect-impact-blob';
-  wrap.append(ring1, ring2, blob);
+  wrap.append(ring1, ring2);
 
-  // Debris bursts outward from the center then falls with a bit of gravity
-  // — --dx/--dy/--rot drive the keyframe (see impact-debris-fly in CSS),
-  // randomized per particle so no two plays look identical.
-  for (let i = 0; i < 22; i++) {
+  // Debris scattered across the ENTIRE viewport (not bursting from one
+  // center point) — each particle picks its own random spot on screen,
+  // tumbles a little, and falls, so the whole screen feels like it's part
+  // of the effect rather than one badge in the middle of it.
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const count = 60;
+  for (let i = 0; i < count; i++) {
     const d = document.createElement('div');
     d.className = 'effect-impact-debris';
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 60 + Math.random() * 140;
-    d.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
-    d.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
-    d.style.setProperty('--rot', `${Math.random() * 360}deg`);
+    d.style.left = Math.random() * vw + 'px';
+    d.style.top = (Math.random() * vh * 0.7) + 'px';
+    d.style.setProperty('--dx', `${(Math.random() - 0.5) * 160}px`);
+    d.style.setProperty('--dy', `${120 + Math.random() * (vh * 0.5)}px`);
+    d.style.setProperty('--rot', `${(Math.random() - 0.5) * 720}deg`);
     d.style.background = theme.debris;
-    const size = 6 + Math.random() * 8;
+    const size = 6 + Math.random() * 10;
     d.style.width = size + 'px';
     d.style.height = size + 'px';
-    d.style.animationDelay = (Math.random() * 0.15) + 's';
+    d.style.borderRadius = Math.random() < 0.4 ? '50%' : '2px';
+    d.style.animationDuration = (1.4 + Math.random() * 0.8) + 's';
+    d.style.animationDelay = (Math.random() * 0.4) + 's';
     wrap.appendChild(d);
   }
 
@@ -1835,8 +1849,15 @@ function playEffectImpact({ key, emoji, username, level }) {
   by.innerHTML = `${emoji || '✨'} by ${escapeHtml(who)}`;
   wrap.appendChild(by);
 
+  // A brief screen-shake sells the "impact" — applied to the whole app
+  // shell, not just this overlay, so it reads as the room itself getting
+  // hit rather than a sticker floating on top of it.
+  const shell = document.getElementById('app') || document.body;
+  shell.classList.add('effect-screen-shake');
+  setTimeout(() => shell.classList.remove('effect-screen-shake'), 500);
+
   document.body.appendChild(wrap);
-  setTimeout(() => wrap.remove(), 2600);
+  setTimeout(() => wrap.remove(), 2800);
 }
 
 // "/purchase effect" (catalog) and "/purchase effect info" (owned-only) both
