@@ -10,6 +10,7 @@ const roomSilence = require('./roomSilence');
 const { ROLEPLAY_COMMANDS, BENGALI_COMMANDS } = require('./roleplayCommands');
 const { EFFECTS, EFFECTS_BY_KEY } = require('./effectsCatalog');
 const { publicUser } = require('./auth');
+const { COLOR_TIERS_BY_KEY } = require('./colorCatalog');
 
 // Voice notes and shared pictures (see canSendMedia below) are written to
 // disk under public/uploads and served back out by express.static (already
@@ -142,20 +143,53 @@ function attachSocket(io, sessionMiddleware) {
       : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null, active_color_key: null, gender: null };
   }
 
-  // Small inline badge shown after a bracketed level in system/gift text,
-  // mirroring the role-icon-next-to-name look from the reference screenshots.
-  // Priority when an account holds more than one role: Staff outranks
-  // Executive Board, Global Admin, Country Rep, Elite, Mentor, and Merchant
-  // (matches roleClass()/roleIcon() in app.js).
+  // Same priority list resolveActiveColor()/roleIcon() use client-side (and
+  // myOwnedColors() in routes/colors.js, minus Moderator which is a
+  // per-room, not account-level, flag — see is_moderator below).
+  const ROLE_BADGE_DEFS = [
+    { key: 'exec_board', flag: 'is_exec_board', icon: '🎖️' },
+    { key: 'global_admin', flag: 'is_global_admin', icon: '🛡️' },
+    { key: 'moderator', flag: 'is_moderator', icon: '🔰' },
+    { key: 'country_rep', flag: 'is_country_rep', icon: '🌐' },
+    { key: 'elite', flag: 'is_elite', icon: '🏅' },
+    { key: 'mentor', flag: 'is_mentor', icon: '🧭' },
+    { key: 'merchant', flag: 'is_merchant', icon: '🅼' },
+  ];
+
+  // Small inline icon shown after a bracketed level in system/gift text
+  // ("has entered"/"has left") — this is plain text, so it's just the bare
+  // icon, not the full colored-ring badge chat/participants show, but it
+  // needs to resolve to the SAME thing that's actually showing on the
+  // user's name right now: whichever Color Shop tier or role color is
+  // currently ACTIVE (flags.active_color_key), a purchased tier included —
+  // not just "any role held", which is all this used to check before the
+  // Color Shop redesign (so a Merchant who'd toggled their badge off, or a
+  // King/Queen/Diamond/... buyer with no role at all, showed nothing here).
+  // Mirrors resolveActiveColor() in app.js exactly: Staff always wins; then
+  // the active purchased tier or role; then the automatic top-priority held
+  // role when nothing's been explicitly toggled; otherwise nothing (a plain
+  // legacy username_color has no icon to show, same as colorBadgeHtml()).
   function roleBadge(flags) {
     if (flags.is_staff) return ' 👑';
-    if (flags.is_exec_board) return ' 🎖️';
-    if (flags.is_global_admin) return ' 🛡️';
-    if (flags.is_country_rep) return ' 🌐';
-    if (flags.is_elite) return ' 🏅';
-    if (flags.is_mentor) return ' 🧭';
-    if (flags.is_merchant) return ' 💼';
+    if (flags.active_color_key) {
+      const tier = COLOR_TIERS_BY_KEY.get(flags.active_color_key);
+      if (tier) return ' ' + tier.icon;
+      const activeRole = ROLE_BADGE_DEFS.find((d) => d.key === flags.active_color_key);
+      if (activeRole && flags[activeRole.flag]) return ' ' + activeRole.icon;
+    }
+    const topRole = ROLE_BADGE_DEFS.find((d) => flags[d.flag]);
+    if (topRole) return ' ' + topRole.icon;
     return '';
+  }
+
+  // roleBadge() needs is_moderator too (a per-room flag, not one
+  // freshRoleFlags() returns) for the "has entered"/"has left" text to show
+  // a Moderator icon correctly — this is the one spot that actually knows
+  // which room is involved, so it looks moderator status up fresh here.
+  function roleBadgeForRoom(userId, roomId) {
+    const flags = freshRoleFlags(userId);
+    flags.is_moderator = isRoomModerator(userId, roomId);
+    return roleBadge(flags);
   }
 
   function roomName(roomId) {
@@ -515,7 +549,7 @@ function attachSocket(io, sessionMiddleware) {
     markEntered(bot.id, roomId);
     presence.markOnline(bot.id);
     const level = currentLevel(bot.id);
-    const badge = roleBadge(freshRoleFlags(bot.id));
+    const badge = roleBadgeForRoom(bot.id, roomId);
     io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has entered` });
     broadcastRoomMembers(roomId);
   }
@@ -539,11 +573,11 @@ function attachSocket(io, sessionMiddleware) {
     const action = !canLeave ? 'join' : !canJoin ? 'leave' : (Math.random() < 0.55 ? 'join' : 'leave');
 
     const level = currentLevel(bot.id);
-    const badge = roleBadge(freshRoleFlags(bot.id));
 
     if (action === 'leave') {
       const roomId = activeRoomIds[Math.floor(Math.random() * activeRoomIds.length)];
       const name = roomName(roomId);
+      const badge = roleBadgeForRoom(bot.id, roomId);
       if (!leaveMembership(bot.id, roomId)) return;
       io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has left` });
       broadcastRoomMembers(roomId);
@@ -1161,7 +1195,7 @@ function attachSocket(io, sessionMiddleware) {
       socket.data.roomId = roomId;
 
       const level = currentLevel(user.id);
-      const badge = roleBadge(freshRoleFlags(user.id));
+      const badge = roleBadgeForRoom(user.id, roomId);
 
       const { isNew } = ensureMembership(user.id, roomId);
 
@@ -1244,7 +1278,7 @@ function attachSocket(io, sessionMiddleware) {
 
       if (wasActive) {
         const level = currentLevel(user.id);
-        const badge = roleBadge(freshRoleFlags(user.id));
+        const badge = roleBadgeForRoom(user.id, roomId);
         const name = roomName(roomId);
         io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${user.username} [${level}]${badge} has left` });
         broadcastRoomMembers(roomId);

@@ -933,10 +933,18 @@ body::after {
 /* Admin panel + Give Coins — both are a full-screen overlay (.modal-overlay)
    wrapping a centered card (.modal-panel). Shared classes so every such
    popup gets the same positioning/close behavior automatically instead of
-   each one needing its own copy-pasted (and easy to forget) CSS rule. */
+   each one needing its own copy-pasted (and easy to forget) CSS rule.
+   z-index 985 — deliberately ABOVE #subScreenOverlay (975): any pushSubScreen
+   page (Explore, Color Shop, Level, ...) is itself an overlay, so a
+   .modal-overlay opened from inside one (e.g. the Effect Shop from Explore)
+   used to render fully invisible, stacked behind it at the old z-index 950 —
+   it was really there (un-hidden, full-screen) but never visible or
+   clickable until you backed out to a screen with no subScreenOverlay
+   active. Still below #toast/#broadcastBanner (995/990) so those keep
+   showing over an open modal. */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: flex; align-items: center; justify-content: center; z-index: 950;
+  display: flex; align-items: center; justify-content: center; z-index: 985;
 }
 .modal-panel {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;

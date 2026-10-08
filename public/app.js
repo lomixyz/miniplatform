@@ -3569,10 +3569,41 @@ function renderTournamentArena(box) {
   `;
 }
 
+// Client-side mirror of src/effectsCatalog.js's EFFECTS (same pattern as
+// EFFECT_THEME/COLOR_TIERS above) — prices/days aren't staff-editable
+// anywhere (unlike the Color Shop), so this is safe to hardcode. It exists
+// purely so the Effect Shop modal can open INSTANTLY on tap instead of
+// sitting blank until the server round-trip comes back: every user can see
+// this catalog (no permission check, server or client, ever gated it), so
+// there's nothing to wait on to show the list itself — only per-user
+// ownership/expiry needs the live answer, filled in moments later.
+const EFFECT_CATALOG_STATIC = [
+  { key: 'bomb', emoji: '💣', label: 'Bomb', price: 50000, days: 30 },
+  { key: 'missile', emoji: '🚀', label: 'Missile', price: 50000, days: 30 },
+  { key: 'grenade', emoji: '🍍', label: 'Grenade', price: 50000, days: 30 },
+  { key: 'love', emoji: '💖', label: 'Love', price: 50000, days: 30 },
+  { key: 'bird', emoji: '🐦', label: 'Bird', price: 50000, days: 30 },
+  { key: 'butterfly', emoji: '🦋', label: 'Butterfly', price: 50000, days: 30 },
+  { key: 'dragon', emoji: '🐉', label: 'Dragon', price: 50000, days: 30 },
+  { key: 'rain', emoji: '🌧️', label: 'Rain', price: 50000, days: 30 },
+  { key: 'ghost', emoji: '👻', label: 'Ghost', price: 50000, days: 30 },
+  { key: 'meteor', emoji: '☄️', label: 'Meteor', price: 50000, days: 30 },
+  { key: 'thunder', emoji: '⚡', label: 'Thunder', price: 50000, days: 30 },
+  { key: 'snowball', emoji: '❄️', label: 'Snowball', price: 50000, days: 30 },
+  { key: 'tomato', emoji: '🍅', label: 'Tomato', price: 50000, days: 30 },
+  { key: 'laser', emoji: '🔫', label: 'Laser', price: 50000, days: 30 },
+  { key: 'firework', emoji: '🎆', label: 'Firework', price: 50000, days: 30 },
+];
+
 // Effect Shop (Explore -> Store) — the same catalog "/purchase effect"
-// shows in chat, opened directly without needing to be in a room first.
+// shows in chat, opened directly without needing to be in a room first, and
+// open to every user (no role/permission gate, same as Color Shop/Badge
+// Store/etc). Shows the modal with the static catalog the instant it's
+// tapped — no blank wait on the server — then silently refreshes it in
+// place with each effect's real owned/expiry status once that arrives.
 function openEffectShop() {
-  if (!socket) return toast('Connecting…');
+  showEffectStoreModal(EFFECT_CATALOG_STATIC.map((e) => ({ ...e, owned: false, expiresAt: null })), 'catalog');
+  if (!socket) return;
   socket.emit('request_effect_catalog');
 }
 
