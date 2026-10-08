@@ -1,7 +1,13 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireFlag, publicUser, FLAG_MAP } = require('../auth');
 const { setLevel } = require('../xp');
+
+// Same character rule as public signup (routes/auth.js) — only the minimum
+// length differs (3 here vs. 6 there), since this endpoint is Staff-only.
+const USERNAME_CHARS_RE = /^[A-Za-z0-9_.-]+$/;
+const MIN_USERNAME_LEN_STAFF = 3;
 
 // Every role column Staff can toggle from the Admin Panel — kept as one list
 // (derived from the same FLAG_MAP requireFlag() uses) so adding a role later
@@ -24,6 +30,53 @@ router.get('/users', requireFlag('staff'), (req, res) => {
   const rows = db.prepare('SELECT * FROM users WHERE username LIKE ? ORDER BY username COLLATE NOCASE LIMIT 20')
     .all(`%${q}%`);
   res.json({ users: rows.map(publicUser), query: q });
+});
+
+// Staff-only: create a new account directly from the Admin Panel. This is
+// the ONLY way to get a short (3-5 letter) User ID — public /auth/register
+// always enforces the 6+ minimum, since the "requester is Staff" check
+// there needs a Staff session already attached, which the logged-out
+// Register screen never has. Deliberately does NOT touch req.session —
+// unlike /auth/register, creating a user here must never log the Staff
+// member themselves out of their own account.
+router.post('/users/create', requireFlag('staff'), (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const email = String(body.email || '').trim();
+  const password = String(body.password || '');
+  const gender = body.gender === 'female' ? 'female' : body.gender === 'male' ? 'male' : null;
+  const country = String(body.country || '').trim().slice(0, 80);
+
+  if (!username || username.length < MIN_USERNAME_LEN_STAFF) {
+    return res.status(400).json({ error: `User ID must be at least ${MIN_USERNAME_LEN_STAFF} characters` });
+  }
+  if (!USERNAME_CHARS_RE.test(username)) {
+    return res.status(400).json({ error: 'User ID can only contain letters, numbers, and _ - .' });
+  }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'A valid Email ID is required' });
+  }
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Secret Code must be at least 4 characters' });
+  }
+
+  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  if (existing) return res.status(409).json({ error: 'Username already taken' });
+  const existingEmail = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
+  if (existingEmail) return res.status(409).json({ error: 'That Email ID is already registered' });
+
+  const hash = bcrypt.hashSync(password, 10);
+  const info = db.prepare(`
+    INSERT INTO users (username, email, password_hash, gender, country, is_staff, is_global_admin, coins, xp)
+    VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0)
+  `).run(username, email, hash, gender, country || null, 5000);
+
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  db.seedDefaultGiftFavorites(row.id);
+  db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)')
+    .run(row.id, 'system', 'Welcome to MiniPlatform! 🎉', `Hey ${row.username}, explore rooms, make friends, and start chatting.`);
+
+  res.json({ user: publicUser(row) });
 });
 
 // Staff can promote a normal user to Global Administrator.
@@ -49,12 +102,15 @@ router.post('/users/:id/promote-to-admin', requireFlag('staff'), (req, res) => {
 // is_elite), independently of each other, so a single account can hold any
 // combination — only the flags present in the request body are touched.
 //
-// The 'admin' and 'miniplatform' accounts are the exception: their Staff
-// flag is permanently locked on. They're how the very first role gets
-// granted to anyone else, so it can never be unchecked — attempting to turn
-// it off is silently ignored rather than erroring, since every other flag on
-// that request still applies. (Kept in sync with PROTECTED_ACCOUNTS in db.js.)
-const PROTECTED_ACCOUNTS = ['admin', 'miniplatform'];
+// The 'miniplatform' account is the exception: its Staff flag is permanently
+// locked on. It's how the very first role gets granted to anyone else, so it
+// can never be unchecked — attempting to turn it off is silently ignored
+// rather than erroring, since every other flag on that request still
+// applies. (Kept in sync with STAFF_ENFORCED_ACCOUNTS in db.js.) 'admin' used
+// to be locked the same way, but was demoted to a plain user on request and
+// is now a perfectly ordinary account here too — Staff can freely toggle any
+// of its flags, same as 'boss-3llam' or anyone else.
+const PROTECTED_ACCOUNTS = ['miniplatform'];
 router.post('/users/:id/set-flags', requireFlag('staff'), (req, res) => {
   const targetId = Number(req.params.id);
   const body = req.body || {};

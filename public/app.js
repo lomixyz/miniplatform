@@ -252,6 +252,19 @@ $$('.gender-btn').forEach((btn) => {
   });
 })();
 
+// Admin Panel -> Create User country picker, same fixed catalog, "No
+// country" is a valid (optional) choice here unlike the Register form.
+(function populateCreateUserCountry() {
+  const select = $('#createUserCountry');
+  if (!select) return;
+  COUNTRIES.forEach(([flag, name]) => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = `${flag} ${name}`;
+    select.appendChild(opt);
+  });
+})();
+
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const username = $('#loginUsername').value.trim();
@@ -3112,7 +3125,51 @@ function openAdminPanel() {
   if (lastAdminSearch) runAdminSearch();
   loadMinCreateLevel();
   renderAdminEmojiPacks();
+  resetCreateUserForm();
 }
+
+// ---------- ADMIN PANEL: CREATE USER ----------
+// The only UI path to a short (3-5 letter) User ID — see POST
+// /admin/users/create in routes/admin.js for why this can't just reuse the
+// public Register form/endpoint (that one always replaces the CALLER's own
+// session with the new account, which would log Staff out of themselves).
+function resetCreateUserForm() {
+  $('#createUserUsername').value = '';
+  $('#createUserEmail').value = '';
+  $('#createUserPassword').value = '';
+  $('#createUserGender').value = 'male';
+  $('#createUserCountry').value = '';
+  const result = $('#createUserResult');
+  result.classList.add('hidden');
+  result.textContent = '';
+}
+$('#createUserBtn').addEventListener('click', async () => {
+  const username = $('#createUserUsername').value.trim();
+  const email = $('#createUserEmail').value.trim();
+  const password = $('#createUserPassword').value;
+  const gender = $('#createUserGender').value;
+  const country = $('#createUserCountry').value;
+  const result = $('#createUserResult');
+  result.classList.remove('hidden');
+  result.style.color = '';
+  result.textContent = 'Creating…';
+  try {
+    const { user } = await api('/admin/users/create', {
+      method: 'POST',
+      body: JSON.stringify({ username, email, password, gender, country }),
+    });
+    result.style.color = 'var(--success, #22c55e)';
+    result.textContent = `✅ Created "${user.username}" — they can log in with the Secret Code you set.`;
+    toast(`User "${user.username}" created`);
+    $('#createUserUsername').value = '';
+    $('#createUserEmail').value = '';
+    $('#createUserPassword').value = '';
+    if (lastAdminSearch) runAdminSearch();
+  } catch (err) {
+    result.style.color = 'var(--danger, #ef4444)';
+    result.textContent = err.message;
+  }
+});
 
 // ---------- ADMIN PANEL: EMOJI STORE ----------
 // Staff-only pack management for the free (non-purchased) emoji packs shown

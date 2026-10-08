@@ -583,6 +583,25 @@
     </table>
     <div id="adminSearchEmpty" class="empty-note">Type a username above and press search.</div>
 
+    <div class="section-header" style="margin-top:16px;">Create User</div>
+    <p style="color:var(--text-dim); font-size:13px;">The only way to create a short (3-5 letter) User ID — public signup always needs 6+. This doesn't touch your own session.</p>
+    <div id="adminCreateUserForm" style="display:flex; flex-direction:column; gap:8px; max-width:360px;">
+      <input id="createUserUsername" placeholder="User ID (3+ letters, numbers, _ - .)" autocomplete="off" />
+      <input id="createUserEmail" type="email" placeholder="Email ID" autocomplete="off" />
+      <input id="createUserPassword" type="password" placeholder="Secret Code (4+ characters)" autocomplete="new-password" />
+      <div style="display:flex; gap:8px;">
+        <select id="createUserGender" style="flex:1;">
+          <option value="male">♂ Male</option>
+          <option value="female">♀ Female</option>
+        </select>
+        <select id="createUserCountry" style="flex:1;">
+          <option value="">No country</option>
+        </select>
+      </div>
+      <button id="createUserBtn" class="primary-btn" type="button">Create User</button>
+      <div id="createUserResult" class="empty-note hidden"></div>
+    </div>
+
     <div class="section-header" style="margin-top:16px;">Room Creation Settings</div>
     <div class="lock-level-bar">
       <span style="font-size:13px; color:var(--text-dim);">Minimum level to create a room:</span>
