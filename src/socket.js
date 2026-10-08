@@ -9,6 +9,7 @@ const chatbots = require('./chatbots');
 const roomSilence = require('./roomSilence');
 const { ROLEPLAY_COMMANDS, BENGALI_COMMANDS } = require('./roleplayCommands');
 const { EFFECTS, EFFECTS_BY_KEY } = require('./effectsCatalog');
+const { publicUser } = require('./auth');
 
 // Voice notes and shared pictures (see canSendMedia below) are written to
 // disk under public/uploads and served back out by express.static (already
@@ -128,7 +129,7 @@ function attachSocket(io, sessionMiddleware) {
 
   function freshRoleFlags(userId) {
     const row = db.prepare(`
-      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient
+      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient, active_color_key, gender
       FROM users WHERE id = ?
     `).get(userId);
     return row
@@ -136,8 +137,9 @@ function attachSocket(io, sessionMiddleware) {
           is_staff: !!row.is_staff, is_global_admin: !!row.is_global_admin, is_mentor: !!row.is_mentor, is_merchant: !!row.is_merchant,
           is_exec_board: !!row.is_exec_board, is_country_rep: !!row.is_country_rep, is_elite: !!row.is_elite,
           username_color: row.username_color || null, username_gradient: row.username_gradient || null,
+          active_color_key: row.active_color_key || null, gender: row.gender || null,
         }
-      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null };
+      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null, active_color_key: null, gender: null };
   }
 
   // Small inline badge shown after a bracketed level in system/gift text,
@@ -229,7 +231,7 @@ function attachSocket(io, sessionMiddleware) {
              COALESCE(u.is_staff, 0) AS is_staff, COALESCE(u.is_global_admin, 0) AS is_global_admin,
              COALESCE(u.is_mentor, 0) AS is_mentor, COALESCE(u.is_merchant, 0) AS is_merchant,
              COALESCE(u.is_exec_board, 0) AS is_exec_board, COALESCE(u.is_country_rep, 0) AS is_country_rep,
-             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient
+             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient, u.active_color_key, u.gender
       FROM messages m LEFT JOIN users u ON u.id = m.user_id
       WHERE m.room_id = ? AND m.created_at > ?
       ORDER BY m.id ASC LIMIT 300
@@ -240,7 +242,7 @@ function attachSocket(io, sessionMiddleware) {
       is_staff: !!r.is_staff, is_global_admin: !!r.is_global_admin, is_mentor: !!r.is_mentor,
       is_merchant: !!r.is_merchant, is_exec_board: !!r.is_exec_board, is_country_rep: !!r.is_country_rep,
       is_elite: !!r.is_elite, is_moderator: r.user_id != null && moderatorIds.has(r.user_id), username_color: r.username_color || null,
-      username_gradient: r.username_gradient || null,
+      username_gradient: r.username_gradient || null, active_color_key: r.active_color_key || null, gender: r.gender || null,
     }));
   }
 
@@ -337,7 +339,8 @@ function attachSocket(io, sessionMiddleware) {
   function activeMemberRows(roomId) {
     return db.prepare(`
       SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
-             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status
+             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status, u.active_color_key, u.gender,
+             u.avatar_photo_url
       FROM room_memberships rm JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? AND rm.active = 1
     `).all(roomId);
@@ -403,6 +406,9 @@ function attachSocket(io, sessionMiddleware) {
       is_moderator: moderatorIds.has(r.id),
       username_color: r.username_color || null,
       username_gradient: r.username_gradient || null,
+      active_color_key: r.active_color_key || null,
+      gender: r.gender || null,
+      avatar_photo_url: r.avatar_photo_url || null,
       invisible: !!invisibleByUser.get(r.id) || !!r.ghost_mode,
       ghost_mode: !!r.ghost_mode,
       online: presence.isOnline(r.id),
@@ -1447,6 +1453,37 @@ function attachSocket(io, sessionMiddleware) {
       if (typeof ack === 'function') ack({ ok: true });
     });
 
+    // Profile photo upload (Avatar Maker / My Profile -> "Upload photo") —
+    // same binary-over-socket pattern as send_media_message above, just
+    // simpler: no room, no chat message, just a column on the user's own
+    // row. Shown by avatarPreviewHtml() in place of the colored-initial
+    // avatar wherever a user's big avatar renders (Avatar Maker, My
+    // Profile, any public profile view).
+    on('upload_avatar_photo', ({ mime, data }, ack) => {
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); else socket.emit('error_message', error); };
+      const ext = MEDIA_EXT.image && MEDIA_EXT.image[mime];
+      if (!ext) return fail('Unsupported file type — use PNG, JPEG, GIF, or WEBP');
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (!buf.length) return fail('Empty file');
+      if (buf.length > MEDIA_MAX_BYTES) return fail(`File too large — max ${Math.floor(MEDIA_MAX_BYTES / 1024 / 1024)}MB`);
+
+      const filename = `avatar-${user.id}-${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      const url = `/uploads/${filename}`;
+      db.prepare('UPDATE users SET avatar_photo_url = ? WHERE id = ?').run(url, user.id);
+      const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      refreshUserPresence(user.id);
+      if (typeof ack === 'function') ack({ ok: true, user: publicUser(updated) });
+    });
+
+    // Explore -> Effect Shop card — the same catalog "/purchase effect"
+    // shows in chat, just reachable without needing to be in a room first
+    // (listing effects doesn't need one; only actually buying/firing one
+    // does, which still goes through the normal /purchase chat command).
+    on('request_effect_catalog', () => {
+      socket.emit('effect_catalog', { effects: effectCatalogForUser(user.id) });
+    });
+
     function handleRemovalCommand(roomId, usernameArg, mode) {
       const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
       if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
@@ -1775,6 +1812,9 @@ function attachSocket(io, sessionMiddleware) {
         is_country_rep: !!target.is_country_rep,
         is_elite: !!target.is_elite,
         username_color: target.username_color || null,
+        active_color_key: target.active_color_key || null,
+        gender: target.gender || null,
+        avatar_photo_url: target.avatar_photo_url || null,
       });
     }
 

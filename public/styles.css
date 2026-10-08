@@ -1080,6 +1080,37 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
    used by renderExplore() and renderMembersGroups(). */
 .explore-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 10px; }
 @media (max-width: 480px) { .explore-grid { grid-template-columns: 1fr; } }
+
+/* Explore hub (sectioned redesign) — a full-width Announcements banner,
+   then STORE/CONTEST/COMMUNITY/MORE sections, each laid out the way that
+   section reads best (a banner, a row of compact store tiles, a 2-column
+   grid of list rows, or a plain list). */
+.explore-announcement-banner {
+  display: flex; align-items: center; gap: 12px; padding: 14px 16px; margin: 10px 10px 4px;
+  border-radius: 14px; cursor: pointer; border: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(100,116,139,0.25), rgba(100,116,139,0.05));
+}
+.explore-announcement-banner:hover { border-color: var(--accent); }
+.explore-announcement-banner .list-icon { width: 42px; height: 42px; font-size: 19px; }
+.explore-announcement-banner .list-row-title { font-size: 15px; }
+
+.explore-section-wrap { padding: 0 10px; }
+.explore-store-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.explore-store-tile {
+  flex: 1 1 140px; min-width: 110px; display: flex; flex-direction: column; align-items: center;
+  gap: 8px; padding: 18px 10px; border-radius: 14px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border); text-align: center;
+}
+.explore-store-tile:hover { border-color: var(--accent); }
+.explore-store-tile-icon {
+  width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center;
+  justify-content: center; font-size: 21px;
+}
+.explore-store-tile-title { font-weight: 800; font-size: 13px; }
+
+.explore-2col-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 4px; }
+@media (max-width: 480px) { .explore-2col-grid { grid-template-columns: 1fr; } }
+.explore-2col-grid .list-row { margin-bottom: 0; }
 .explore-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
   padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 10px;
@@ -1131,7 +1162,78 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   padding: 6px 12px; font-size: 12px; font-weight: 600;
 }
 
-/* Color Shop */
+/* Color Shop (tiered redesign) */
+.color-shop-coins-row {
+  text-align: right; font-weight: 800; font-size: 15px; padding: 2px 4px 10px; color: var(--text);
+}
+
+/* The small round badge shown next to a username everywhere (chat,
+   participants, whois, leaderboards, profile) — a gradient ring matching
+   the active color/role's tier, with its icon centered inside. */
+.color-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%; font-size: 11px; line-height: 1;
+  border: 1.5px solid; vertical-align: -3px; margin-left: 2px;
+}
+.color-badge.big { width: 36px; height: 36px; font-size: 18px; border-width: 2px; flex: none; }
+.color-badge.huge { width: 56px; height: 56px; font-size: 26px; border-width: 3px; }
+
+.color-owned-section {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 12px; margin-bottom: 16px;
+}
+.color-owned-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.color-owned-title { font-weight: 800; font-size: 14px; }
+.color-owned-subtitle { font-size: 11px; color: var(--text-dim); margin-top: 2px; max-width: 360px; }
+.color-owned-count {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--panel-alt);
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+}
+.color-owned-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; margin-bottom: 6px;
+}
+.color-owned-row.active { background: var(--panel-alt); }
+.color-active-tag {
+  display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.04em;
+  background: var(--accent); color: #fff; border-radius: 999px; padding: 1px 8px; margin-left: 6px;
+  vertical-align: middle;
+}
+.color-toggle-switch { position: relative; flex: none; width: 40px; height: 22px; display: inline-block; }
+.color-toggle-switch .color-toggle-input { opacity: 0; width: 0; height: 0; }
+.color-toggle-slider {
+  position: absolute; inset: 0; background: var(--panel-alt); border: 1px solid var(--border);
+  border-radius: 999px; cursor: pointer; transition: background 0.15s;
+}
+.color-toggle-slider::before {
+  content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px;
+  background: #fff; border-radius: 50%; transition: transform 0.15s;
+}
+.color-toggle-input:checked + .color-toggle-slider { background: var(--accent); border-color: var(--accent); }
+.color-toggle-input:checked + .color-toggle-slider::before { transform: translateX(18px); }
+
+.color-catalog-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+@media (max-width: 480px) { .color-catalog-grid { grid-template-columns: 1fr; } }
+.color-tier-card {
+  position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 16px 12px 12px; text-align: center; overflow: hidden;
+}
+.color-tier-strip { position: absolute; top: 0; left: 0; right: 0; height: 4px; background: linear-gradient(90deg, var(--tier-ring1), var(--tier-ring2)); }
+.color-tier-badge-wrap { display: flex; justify-content: center; margin: 6px 0 10px; }
+.color-tier-name { font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.color-tier-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.color-tier-price { font-weight: 800; font-size: 17px; margin-top: 4px; }
+.color-tier-tag {
+  display: inline-block; margin-top: 6px; font-size: 11px; color: var(--text-dim);
+  background: var(--panel-alt); border-radius: 999px; padding: 2px 10px;
+}
+.color-tier-perks { margin-top: 8px; display: flex; justify-content: center; gap: 10px; font-size: 13px; }
+.color-tier-price-edit { display: flex; gap: 4px; justify-content: center; margin-top: 8px; }
+.color-tier-buy-btn {
+  width: 100%; margin-top: 10px; padding: 9px; border-radius: 10px; font-size: 13px; font-weight: 700;
+  background: var(--accent); color: #fff; border: none; cursor: pointer;
+}
+.color-tier-buy-btn:disabled { background: var(--panel-alt); color: var(--text-dim); cursor: not-allowed; }
+
 .color-shop-row {
   display: flex; align-items: center; gap: 12px; padding: 10px 12px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px;
@@ -1160,6 +1262,14 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   width: 92px; height: 92px; font-size: 34px;
   position: relative; overflow: hidden;
 }
+/* An uploaded profile photo fills the circle (object-fit: cover via
+   background-size) instead of the colored-initial/scene/pet look. */
+.avatar-circle-photo { background-size: cover; background-position: center; }
+.avatar-circle-pet-badge {
+  position: absolute; right: -2px; bottom: -2px; font-size: 22px; line-height: 1;
+  background: var(--panel); border-radius: 50%; padding: 2px; border: 2px solid var(--panel);
+}
+.avatar-photo-upload-row { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
 /* The chosen Scene fills the circle as a backdrop, behind the pet/letter. */
 .avatar-circle-scene-bg {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;

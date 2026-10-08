@@ -80,6 +80,8 @@ function publicUser(row) {
     status: row.status === 'away' || row.status === 'busy' ? row.status : 'online',
     username_color_locked_until: colorLockedUntil(row.username_color_bought_at),
     equipped_badge: equippedBadge || null,
+    active_color_key: row.active_color_key || null,
+    avatar_photo_url: row.avatar_photo_url || null,
   };
 }
 

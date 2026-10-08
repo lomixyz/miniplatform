@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { xpForLevel } = require('./level');
+const { COLOR_TIERS } = require('./colorCatalog');
 
 // The data/ folder isn't tracked by git (only files are, and the .db itself
 // is gitignored), so on a fresh clone it doesn't exist yet — create it
@@ -143,13 +144,30 @@ CREATE TABLE IF NOT EXISTS emoji_packs (
 -- Color Shop catalog (Settings -> Color Shop). Was a hard-coded array in
 -- routes/colors.js; now a real table so Staff can change a color's price
 -- (POST /colors/:id/price) without a code change/redeploy. Kept a TEXT id
--- (the old catalog's short slugs: 'sunset', 'ocean', ...) so nothing else
--- that might reference a color by id breaks.
+-- (the old catalog's short slugs) so nothing else that might reference a
+-- color by id breaks. icon/ring1/ring2/bold/voice_perk/sort_order were
+-- added for the tiered-badge redesign (King/Queen/Mafia/Vip/Diamond/
+-- Premium/Supporter/Streamer) — see the migration loop below and
+-- src/colorCatalog.js for the seed data.
 CREATE TABLE IF NOT EXISTS color_catalog (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   hex TEXT NOT NULL,
   cost INTEGER NOT NULL
+);
+
+-- Multi-ownership for Color Shop purchases (the tiered redesign) — unlike
+-- the old single username_color field, a user can now own SEVERAL tiers at
+-- once (each with its own purchase/expiry) and toggle which one is active
+-- (users.active_color_key). Buying an already-owned, still-active tier
+-- extends expires_at rather than creating a duplicate row.
+CREATE TABLE IF NOT EXISTS user_colors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  color_id TEXT NOT NULL,
+  purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  UNIQUE(user_id, color_id)
 );
 
 -- Each user's own quick-send gift bar (shown in the chat room's gift row) —
@@ -428,10 +446,31 @@ const newUserColumns = [
   ['status', "TEXT NOT NULL DEFAULT 'online'"], // 'online' | 'away' | 'busy' — the user's own chosen presence state while connected; the *effective* status shown to others is 'offline' whenever they have no live socket at all, regardless of this column (see presence.js effectiveStatus).
   ['username_color_bought_at', 'TEXT'], // when the current username_color was purchased from the Color Shop — a purchased color can't be reset/replaced for 30 days from this timestamp (see routes/colors.js COLOR_LOCK_DAYS). NULL means no active lock (never bought one, or it already expired).
   ['equipped_badge_id', 'INTEGER'], // Badge Store (Explore -> Badge Store to buy, Badge Panel to equip/unequip) — the one owned badge (badges_catalog.id, or NULL for none) currently showcased on this user's profile card.
+  ['active_color_key', 'TEXT'], // Color Shop (new tiered redesign) — which ONE owned color is currently toggled on: either a color_catalog id (a purchased tier) or a role key ('merchant','elite','mentor','exec_board','country_rep','global_admin'). NULL = automatic default (the old behavior: highest-priority held role, or legacy username_color, or nothing). Staff is excluded — their gradient always wins regardless of this.
+  ['avatar_photo_url', 'TEXT'], // Avatar Maker: an uploaded profile photo ("/uploads/<file>"), shown instead of the colored-initial avatar everywhere avatarPreviewHtml() renders. NULL = no photo uploaded, falls back to the initial/pet/scene avatar.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${col} ${def}`);
+  }
+}
+
+// Migrate older databases created before the tiered Color Shop redesign
+// (badge icon + colored ring + duration/bold tag + an optional "voice"
+// perk per tier, shown on the shop card — see src/colorCatalog.js).
+const colorCatalogColumns = db.prepare('PRAGMA table_info(color_catalog)').all().map((c) => c.name);
+const newColorCatalogColumns = [
+  ['icon', 'TEXT'],
+  ['ring1', 'TEXT'],
+  ['ring2', 'TEXT'],
+  ['days', 'INTEGER NOT NULL DEFAULT 30'],
+  ['bold', 'INTEGER NOT NULL DEFAULT 0'],
+  ['voice_perk', 'INTEGER NOT NULL DEFAULT 1'],
+  ['sort_order', 'INTEGER NOT NULL DEFAULT 0'],
+];
+for (const [col, def] of newColorCatalogColumns) {
+  if (!colorCatalogColumns.includes(col)) {
+    db.exec(`ALTER TABLE color_catalog ADD COLUMN ${col} ${def}`);
   }
 }
 
@@ -644,23 +683,22 @@ if (emojiPackCount === 0) {
   ]));
 }
 
-// Seed the Color Shop catalog once (id, name, hex, starting cost — the same
-// values the old hard-coded array used). Only inserted if the row is
-// missing, so a price a Staff member later changes is never stomped back to
-// this default on the next boot.
-const COLOR_CATALOG_SEED = [
-  ['sunset', 'Sunset Orange', '#f97316', 200],
-  ['ocean', 'Ocean Teal', '#14b8a6', 200],
-  ['violet', 'Royal Violet', '#8b5cf6', 300],
-  ['rose', 'Rose Pink', '#f43f5e', 300],
-  ['lime', 'Electric Lime', '#84cc16', 400],
-  ['gold', 'Champion Gold', '#eab308', 500],
-  ['ice', 'Ice Blue', '#38bdf8', 500],
-  ['chrome', 'Chrome Silver', '#cbd5e1', 750],
-];
-const insertColorIfMissing = db.prepare('INSERT OR IGNORE INTO color_catalog (id, name, hex, cost) VALUES (?, ?, ?, ?)');
-for (const [id, name, hex, cost] of COLOR_CATALOG_SEED) {
-  insertColorIfMissing.run(id, name, hex, cost);
+// Seed the Color Shop catalog from src/colorCatalog.js's 8 tiers (King,
+// Queen, Mafia, Vip, Diamond, Premium, Supporter, Streamer — the tiered
+// badge redesign). The old flat hex-color catalog (Sunset Orange, Ocean
+// Teal, ...) is removed outright — it has no icon/ring/days and doesn't fit
+// the new card design, and nothing references those ids outside this table.
+// INSERT OR IGNORE on id so a price a Staff member already changed under a
+// new id is never stomped back to the default on a later boot.
+db.exec(
+  "DELETE FROM color_catalog WHERE id IN ('sunset','ocean','violet','rose','lime','gold','ice','chrome')"
+);
+const insertColorIfMissing = db.prepare(
+  'INSERT OR IGNORE INTO color_catalog (id, name, hex, cost, icon, ring1, ring2, days, bold, voice_perk, sort_order) ' +
+  'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+);
+for (const t of COLOR_TIERS) {
+  insertColorIfMissing.run(t.key, t.name, t.hex, t.price, t.icon, t.ring1, t.ring2, t.days, t.bold ? 1 : 0, t.voicePerk ? 1 : 0, t.order);
 }
 
 // Seed a themed gift for every country in the app's country list (the same

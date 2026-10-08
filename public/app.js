@@ -168,6 +168,19 @@ function paintAvatar(el, name) {
 function avatarPreviewHtml(u) {
   const initial = escapeHtml((u.username || '?').charAt(0).toUpperCase());
   const centerContent = u.avatar_pet ? u.avatar_pet : initial;
+  // A real uploaded profile photo (Avatar Maker -> Upload photo) takes over
+  // the whole circle in place of the colored-initial/scene/pet look — the
+  // frame color ring and the Pet badge (now floating on the photo's corner
+  // instead of replacing it) still apply, since those are independent picks.
+  if (u.avatar_photo_url) {
+    return `
+      <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
+        <div class="avatar-circle avatar-circle-photo" style="background-image:url('${escapeHtml(u.avatar_photo_url)}')">
+          ${u.avatar_pet ? `<span class="avatar-circle-pet-badge">${u.avatar_pet}</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="avatar-maker-preview" style="border-color:${u.avatar_frame_color || '#3b82f6'}">
       <div class="avatar-circle" style="background:${colorFor(u.username)}">
@@ -345,6 +358,84 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
   }
 }
 
+// ---------- COLOR SHOP (tiered redesign) ----------
+// Mirrors src/colorCatalog.js's COLOR_TIERS and src/routes/colors.js's
+// ROLE_COLOR_DEFS — kept as a client-side copy (same pattern as EFFECT_THEME
+// mirroring src/effectsCatalog.js) so a chat message or participant row can
+// render a username's color + little round badge instantly, without a round
+// trip to the Color Shop API just to look up what a tier's icon/ring is.
+const COLOR_TIERS = {
+  king: { name: 'King', hex: '#22d3ee', ring1: '#22d3ee', ring2: '#0e7490', icon: '👑', bold: true },
+  queen: { name: 'Queen', hex: '#f472b6', ring1: '#f472b6', ring2: '#be185d', icon: '👑', bold: true },
+  mafia: { name: 'Mafia', hex: '#fb7185', ring1: '#fb7185', ring2: '#9f1239', icon: '🎩', bold: false },
+  vip: { name: 'Vip', hex: '#fb7185', ring1: '#fb7185', ring2: '#be123c', icon: '🏅', bold: true },
+  diamond: { name: 'Diamond', hex: '#38bdf8', ring1: '#38bdf8', ring2: '#0369a1', icon: '💎', bold: false },
+  premium: { name: 'Premium', hex: '#facc15', ring1: '#facc15', ring2: '#a16207', icon: '🅿️', bold: true },
+  supporter: { name: 'Supporter', hex: '#38bdf8', ring1: '#38bdf8', ring2: '#1d4ed8', icon: '🆂', bold: false },
+  streamer: { name: 'Streamer', hex: '#fb7185', ring1: '#fb7185', ring2: '#86198f', icon: '🎥', bold: false },
+};
+// Priority order for the AUTOMATIC default when active_color_key is NULL —
+// same order roleClass()/roleIcon() always used. Staff is excluded — it's
+// handled separately (gradient, always wins, see resolveActiveColor below).
+const ROLE_COLOR_DEFS = [
+  { key: 'exec_board', flag: 'is_exec_board', name: 'Executive Board', hex: '#6366f1', ring1: '#6366f1', ring2: '#4338ca', icon: '🎖️' },
+  { key: 'global_admin', flag: 'is_global_admin', name: 'Global Admin', hex: '#facc15', ring1: '#facc15', ring2: '#a16207', icon: '🛡️' },
+  // Room moderator — not a real account-level "owned color" (it's granted
+  // per-room, see is_room_moderator elsewhere), so it's never listed in the
+  // Color Shop's "My Owned Colors" or toggleable; it only ever applies via
+  // the automatic-default fallback below, at the same priority slot the
+  // original roleClass()/roleIcon() always gave it (between Global Admin
+  // and Country Rep).
+  { key: 'moderator', flag: 'is_moderator', name: 'Moderator', hex: '#facc15', ring1: '#facc15', ring2: '#a16207', icon: '🔰' },
+  { key: 'country_rep', flag: 'is_country_rep', name: 'Country Rep', hex: '#b45309', ring1: '#b45309', ring2: '#78350f', icon: '🌐' },
+  { key: 'elite', flag: 'is_elite', name: 'Elite', hex: '#14b8a6', ring1: '#14b8a6', ring2: '#0f766e', icon: '🏅' },
+  { key: 'mentor', flag: 'is_mentor', name: 'Mentor', hex: '#ef4444', ring1: '#ef4444', ring2: '#b91c1c', icon: '🧭' },
+  { key: 'merchant', flag: 'is_merchant', name: 'Merchant', hex: '#a855f7', ring1: '#a855f7', ring2: '#7e22ce', icon: '🅼' },
+];
+
+// The single source of truth for "what color/badge is this user showing
+// right now" — used by roleClass()/usernameStyleAttr()/roleIcon() below so
+// every existing call site (chat, participants, whois, leaderboards, ...)
+// picks up the new tiered/role system automatically, with zero call-site
+// changes. Resolution order: 1) Staff gradient/color always wins — can't be
+// bought or toggled over. 2) u.active_color_key, if it still points at
+// something the user actually holds (a role flag that's still true, or an
+// unexpired purchased tier — we trust the server's snapshot here rather
+// than re-checking expiry client-side). 3) Automatic default — the
+// highest-priority held role. 4) A legacy flat username_color from the old
+// single-color shop, if still set. 5) Nothing special.
+function resolveActiveColor(u) {
+  if (u.is_staff) return null; // handled by the existing Staff-gradient path in usernameStyleAttr/roleClass
+  if (u.active_color_key) {
+    const tier = COLOR_TIERS[u.active_color_key];
+    if (tier) return { kind: 'purchased', key: u.active_color_key, ...tier };
+    const roleDef = ROLE_COLOR_DEFS.find((d) => d.key === u.active_color_key);
+    if (roleDef && u[roleDef.flag]) {
+      const name = roleDef.key === 'elite' && (u.gender === 'male' || u.gender === 'female')
+        ? `Elite ${u.gender === 'male' ? 'Male' : 'Female'}` : roleDef.name;
+      return { kind: 'role', key: roleDef.key, name, hex: roleDef.hex, ring1: roleDef.ring1, ring2: roleDef.ring2, icon: roleDef.icon, bold: true };
+    }
+  }
+  const topRole = ROLE_COLOR_DEFS.find((d) => u[d.flag]);
+  if (topRole) {
+    const name = topRole.key === 'elite' && (u.gender === 'male' || u.gender === 'female')
+      ? `Elite ${u.gender === 'male' ? 'Male' : 'Female'}` : topRole.name;
+    return { kind: 'role', key: topRole.key, name, hex: topRole.hex, ring1: topRole.ring1, ring2: topRole.ring2, icon: topRole.icon, bold: true };
+  }
+  if (u.username_color) return { kind: 'legacy', key: null, name: 'Custom color', hex: u.username_color, ring1: u.username_color, ring2: u.username_color, icon: null, bold: false };
+  return null;
+}
+
+// Small round badge shown right after a username (chat, participants,
+// whois, leaderboards, profile) — a colored ring matching the active
+// color's tier/role, with its icon/emoji centered inside. Returns '' when
+// there's nothing to show (plain user, no active color).
+function colorBadgeHtml(u) {
+  const active = resolveActiveColor(u);
+  if (!active || !active.icon) return '';
+  return `<span class="color-badge" title="${escapeHtml(active.name)}" style="background:linear-gradient(135deg, ${active.ring1}, ${active.ring2}); border-color:${active.ring1}">${active.icon}</span>`;
+}
+
 // A global admin is shown solid yellow; staff (without global admin) gets the
 // mixed green/blue/red gradient; a plain user gets no special class.
 // Color priority: Staff always wins (its gradient can't be bought over). For
@@ -355,27 +446,12 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
 // Global Admin, Country Representative, Elite User, Mentor, Merchant.
 function roleClass(u) {
   if (u.is_staff) return 'role-staff';
-  if (u.username_color) return '';
-  if (u.is_exec_board) return 'role-exec-board';
-  if (u.is_global_admin) return 'role-global-admin';
-  if (u.is_moderator) return 'role-moderator';
-  if (u.is_country_rep) return 'role-country-rep';
-  if (u.is_elite) return 'role-elite';
-  if (u.is_mentor) return 'role-mentor';
-  if (u.is_merchant) return 'role-merchant';
-  return '';
+  return ''; // every other role/purchased color now renders via usernameStyleAttr's inline style, not a CSS class
 }
 
 function roleIcon(u) {
   if (u.is_staff) return ' 👑';
-  if (u.is_exec_board) return ' 🎖️';
-  if (u.is_global_admin) return ' 🛡️';
-  if (u.is_moderator) return ' 🔰';
-  if (u.is_country_rep) return ' 🌐';
-  if (u.is_elite) return ' 🏅';
-  if (u.is_mentor) return ' 🧭';
-  if (u.is_merchant) return ' 💼';
-  return '';
+  return colorBadgeHtml(u);
 }
 
 // Inline style="" for a rendered username, in priority order:
@@ -383,9 +459,8 @@ function roleIcon(u) {
 //    5 to 8 hex colors picked in Settings -> Color Shop -> Staff Gradient),
 //    which overrides the default 3-color green/blue/red .role-staff CSS
 //    gradient with their personal mix.
-// 2) A plain user's purchased Color Shop color — only applies when no role
-//    color/gradient is in play (a role always communicates permission level
-//    first, same priority rule as roleClass() above).
+// 2) The resolved active color (role or purchased tier, or a legacy flat
+//    username_color) from resolveActiveColor() above.
 function usernameStyleAttr(u) {
   if (u.is_staff && u.username_gradient) {
     let colors = null;
@@ -394,6 +469,10 @@ function usernameStyleAttr(u) {
       const stops = colors.map((c) => escapeHtml(c)).join(', ');
       return ` style="background-image:linear-gradient(90deg, ${stops});-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;"`;
     }
+  }
+  const active = !u.is_staff ? resolveActiveColor(u) : null;
+  if (active) {
+    return ` style="color:${escapeHtml(active.hex)}${active.bold ? ';font-weight:800' : ''}"`;
   }
   if (!roleClass(u) && u.username_color) {
     return ` style="color:${escapeHtml(u.username_color)}"`;
@@ -478,6 +557,33 @@ function levelRoadmapTiles(level) {
   return tiles;
 }
 
+// A companion dragon that visibly grows as you level up — shown in the
+// Level screen's ring (in place of a static icon) plus its own "Dragon
+// Growth" strip of stages, locked ones greyed out, like the "Dragon Growth"
+// reference layout. Only three base emoji exist for an egg/hatchling/dragon
+// progression, so later dragon stages are differentiated with a CSS
+// `filter` tint (hue-rotate/saturate/brightness) rather than real art —
+// same emoji-first visual language the rest of the app already uses.
+const DRAGON_STAGES = [
+  { min: 1, max: 5, name: 'Dragon Egg', icon: '🥚', filter: 'none' },
+  { min: 6, max: 10, name: 'Hatchling', icon: '🐣', filter: 'none' },
+  { min: 11, max: 20, name: 'Baby Dragon', icon: '🐲', filter: 'none' },
+  { min: 21, max: 30, name: 'Young Dragon', icon: '🐉', filter: 'hue-rotate(150deg) saturate(1.3)' },
+  { min: 31, max: 40, name: 'Swift Dragon', icon: '🐉', filter: 'hue-rotate(170deg) saturate(1.4) brightness(1.05)' },
+  { min: 41, max: 50, name: 'Fire Dragon', icon: '🐉', filter: 'none' },
+  { min: 51, max: 60, name: 'Flame Dragon', icon: '🐉', filter: 'hue-rotate(-20deg) saturate(1.6)' },
+  { min: 61, max: 70, name: 'War Dragon', icon: '🐉', filter: 'grayscale(0.55) brightness(0.75)' },
+  { min: 71, max: 80, name: 'Mystic Dragon', icon: '🐉', filter: 'hue-rotate(250deg) saturate(1.5)' },
+  { min: 81, max: 90, name: 'Storm Dragon', icon: '🐉', filter: 'hue-rotate(180deg) saturate(0.4) brightness(1.3)' },
+  { min: 91, max: Infinity, name: 'Inferno Dragon', icon: '🐉', filter: 'hue-rotate(-30deg) saturate(1.8) brightness(0.9)' },
+];
+function dragonStageForLevel(level) {
+  return DRAGON_STAGES.find((s) => level >= s.min && level <= s.max) || DRAGON_STAGES[DRAGON_STAGES.length - 1];
+}
+function dragonStageIndex(level) {
+  return DRAGON_STAGES.findIndex((s) => level >= s.min && level <= s.max);
+}
+
 function renderLevelScreen(box) {
   const level = currentUser.level;
   const into = currentUser.xpIntoLevel || 0;
@@ -486,6 +592,9 @@ function renderLevelScreen(box) {
   const tier = tierForLevel(level);
   const tiles = levelRoadmapTiles(level);
   const nextTile = tiles[1];
+  const stageIdx = dragonStageIndex(level);
+  const stage = DRAGON_STAGES[stageIdx];
+  const nextStage = DRAGON_STAGES[stageIdx + 1] || null;
 
   const radius = 80;
   const circumference = 2 * Math.PI * radius;
@@ -500,17 +609,32 @@ function renderLevelScreen(box) {
             stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
         </svg>
         <div class="level-ring-center">
+          <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
           <div class="level-ring-number">${level}</div>
           <div class="level-ring-label">Level</div>
-          <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
         </div>
       </div>
+    </div>
+    <div class="level-stage-pills">
+      <div class="level-stage-badge">${escapeHtml(stage.name.toUpperCase())}</div>
+      <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
     </div>
     <div class="level-progress-row">
       <span class="level-progress-pct">${pct}%</span>
       <span style="color:var(--text-dim); font-size:13px;"> · ${100 - pct}% to go</span>
       <div class="level-progress-caption">Progress to level ${level + 1}</div>
     </div>
+    ${nextStage ? `
+      <div class="level-next-dragon-card">
+        <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
+        <div>
+          <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
+          <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
+        </div>
+      </div>
+    ` : ''}
+    <div class="level-roadmap-title">Dragon growth</div>
+    <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
     <div class="level-roadmap-title">Level roadmap</div>
     <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
     <div class="level-next-reward-card">
@@ -522,6 +646,21 @@ function renderLevelScreen(box) {
       <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
     </div>
   `;
+
+  const dragonScroll = box.querySelector('#dragonGrowthScroll');
+  DRAGON_STAGES.forEach((s, i) => {
+    const reached = i <= stageIdx;
+    const tile = document.createElement('div');
+    tile.className = 'dragon-growth-tile' + (i === stageIdx ? ' current' : '') + (reached ? '' : ' locked');
+    const rangeLabel = s.max === Infinity ? `Lv ${s.min}+` : `Lv ${s.min}–${s.max}`;
+    tile.innerHTML = `
+      ${i === stageIdx ? '<div class="dragon-growth-you">YOU</div>' : ''}
+      <div class="dragon-growth-icon" style="filter:${reached ? s.filter : 'none'}">${reached ? s.icon : '🔒'}</div>
+      <div class="dragon-growth-range">${rangeLabel}</div>
+      <div class="dragon-growth-name">${escapeHtml(s.name)}</div>
+    `;
+    dragonScroll.appendChild(tile);
+  });
 
   const scroll = box.querySelector('#levelRoadmapScroll');
   tiles.forEach((t) => {
@@ -3420,38 +3559,108 @@ function sectionLabel(text) {
   return el;
 }
 
+// Tournament Arena (Explore -> Contest) — a lightweight placeholder: there's
+// no scheduled-tournament backend yet, so this just shows a friendly empty
+// state rather than a dead/missing link. Easy to wire up to real data later
+// without touching the Explore layout.
+function renderTournamentArena(box) {
+  box.innerHTML = `
+    <div class="empty-note">🚩 No tournament is running right now — check back later for tonight's bracket and results.</div>
+  `;
+}
+
+// Effect Shop (Explore -> Store) — the same catalog "/purchase effect"
+// shows in chat, opened directly without needing to be in a room first.
+function openEffectShop() {
+  if (!socket) return toast('Connecting…');
+  socket.emit('request_effect_catalog');
+}
+
 // ---------- EXPLORE HUB ----------
+// Sectioned layout: a full-width Announcements banner, then STORE (compact
+// icon tiles), CONTEST (a 2-column grid of list rows), COMMUNITY (a plain
+// list), and MORE (another compact 2-up row) — plus any staff-only tools
+// grouped into their own trailing STAFF section so nothing existing is lost.
 function renderExplore(box) {
-  const cards = [
-    { icon: '📣', bg: '#3b82f6', title: 'Announcements', subtitle: 'Official news from Staff', open: () => pushSubScreen('Announcements', renderPostsScreen('announcement')) },
-    { icon: '🎁', bg: '#ec4899', title: 'Gift Store', subtitle: 'Send a gift to any user', open: () => pushSubScreen('Gift Store', renderGiftStore) },
-    { icon: '👥', bg: '#6366f1', title: 'Members', subtitle: 'Browse roles across the community', open: () => pushSubScreen('Members', renderMembersGroups) },
-    { icon: '🏆', bg: '#eab308', title: 'Leader Board', subtitle: 'Top players by XP', open: () => pushSubScreen('Leader Board', renderLeaderboardScreen('wins')) },
-    { icon: '👑', bg: '#f97316', title: 'Legendary Contest', subtitle: 'Live ranking by total spend', open: () => pushSubScreen('Legendary Contest', renderLeaderboardScreen('spend')) },
-    { icon: '🎉', bg: '#22c55e', title: 'Gift Contest', subtitle: 'Live ranking by gifts sent', open: () => pushSubScreen('Gift Contest', renderLeaderboardScreen('gifts')) },
-    { icon: '🎰', bg: '#8b5cf6', title: 'Daily Spin', subtitle: 'Free coins & XP every 24h', open: () => pushSubScreen('Daily Spin', renderSpin) },
-    { icon: '🎨', bg: '#06b6d4', title: 'Color Shop', subtitle: 'Buy a custom username color', open: () => pushSubScreen('Color Shop', renderColorShop) },
-    { icon: '🧑‍🎨', bg: '#ef4444', title: 'Avatar Maker', subtitle: 'Frame, pet & scene', open: () => pushSubScreen('Avatar Maker', renderAvatarMaker) },
-    { icon: '📜', bg: '#10b981', title: 'Command List', subtitle: 'Chat commands you can use', open: () => pushSubScreen('Command List', renderCommandList) },
-  ];
-  if (!currentUser.is_merchant) {
-    cards.push({ icon: '🧑‍💼', bg: '#0ea5e9', title: 'Become a Merchant', subtitle: 'Apply for the Merchant role', open: () => pushSubScreen('Become a Merchant', renderMerchantApply) });
+  box.innerHTML = '';
+
+  const announcement = document.createElement('div');
+  announcement.className = 'explore-announcement-banner';
+  announcement.innerHTML = `
+    <div class="list-icon" style="background:#eab30822; color:#eab308">📣</div>
+    <div class="list-row-body">
+      <div class="list-row-title">Announcements</div>
+      <div class="list-row-subtitle">News & updates from Staff</div>
+    </div>
+    <div class="list-chevron">›</div>
+  `;
+  announcement.addEventListener('click', () => pushSubScreen('Announcements', renderPostsScreen('announcement')));
+  box.appendChild(announcement);
+
+  function sectionWrap(label) {
+    box.appendChild(sectionLabel(label));
+    const wrap = document.createElement('div');
+    wrap.className = 'explore-section-wrap';
+    box.appendChild(wrap);
+    return wrap;
   }
+  function storeTile({ icon, iconBg, title, onClick }) {
+    const tile = document.createElement('div');
+    tile.className = 'explore-store-tile';
+    tile.innerHTML = `
+      <div class="explore-store-tile-icon" style="background:${iconBg}22; color:${iconBg}">${icon}</div>
+      <div class="explore-store-tile-title">${escapeHtml(title)}</div>
+    `;
+    tile.addEventListener('click', onClick);
+    return tile;
+  }
+
+  // STORE
+  const storeWrap = sectionWrap('STORE');
+  const storeRow = document.createElement('div');
+  storeRow.className = 'explore-store-row';
+  storeRow.appendChild(storeTile({ icon: '🎁', iconBg: '#ec4899', title: 'Gift Store', onClick: () => pushSubScreen('Gift Store', renderGiftStore) }));
+  storeRow.appendChild(storeTile({ icon: '🎨', iconBg: '#8b5cf6', title: 'Color Shop', onClick: () => pushSubScreen('Color Shop', renderColorShop) }));
+  storeRow.appendChild(storeTile({ icon: '✨', iconBg: '#f97316', title: 'Effect Shop', onClick: openEffectShop }));
+  storeRow.appendChild(storeTile({ icon: '🎖️', iconBg: '#a855f7', title: 'Badge Store', onClick: () => pushSubScreen('Badge Store', renderBadgeStore) }));
+  storeRow.appendChild(storeTile({ icon: '🌟', iconBg: '#f43f5e', title: 'Sticker Store', onClick: () => pushSubScreen('Sticker Store', renderStickerStore) }));
+  storeWrap.appendChild(storeRow);
+
+  // CONTEST
+  const contestWrap = sectionWrap('CONTEST');
+  const contestGrid = document.createElement('div');
+  contestGrid.className = 'explore-2col-grid';
+  contestGrid.appendChild(listRow({ icon: '🎁', iconBg: '#ef4444', title: 'Gift Contest', subtitle: 'Top gifters', onClick: () => pushSubScreen('Gift Contest', renderLeaderboardScreen('gifts')) }));
+  contestGrid.appendChild(listRow({ icon: '🏆', iconBg: '#eab308', title: 'Legendary Contest', subtitle: 'Top players by spend', onClick: () => pushSubScreen('Legendary Contest', renderLeaderboardScreen('spend')) }));
+  contestGrid.appendChild(listRow({ icon: '🚩', iconBg: '#10b981', title: 'Tournament Arena', subtitle: "Tonight's tournament and results", onClick: () => pushSubScreen('Tournament Arena', renderTournamentArena) }));
+  contestGrid.appendChild(listRow({ icon: '📊', iconBg: '#06b6d4', title: 'Leader Board', subtitle: 'Top game winners', onClick: () => pushSubScreen('Leader Board', renderLeaderboardScreen('wins')) }));
+  contestWrap.appendChild(contestGrid);
+
+  // COMMUNITY
+  const communityWrap = sectionWrap('COMMUNITY');
+  communityWrap.appendChild(listRow({ icon: '👥', iconBg: '#3b82f6', title: 'Members', subtitle: 'Staff, global mods, mentors & merchants', onClick: () => pushSubScreen('Members', renderMembersGroups) }));
+  communityWrap.appendChild(listRow({ icon: '🧑‍💼', iconBg: '#10b981', title: 'Merchant', subtitle: 'Become a merchant or manage your merchant role', onClick: () => pushSubScreen('Merchant', renderMerchantApply) }));
+  communityWrap.appendChild(listRow({ icon: '⌨️', iconBg: '#64748b', title: 'Command List', subtitle: 'All chat commands and their responses', onClick: () => pushSubScreen('Command List', renderCommandList) }));
   if (!currentUser.is_global_admin) {
-    cards.push({ icon: '🛡️', bg: '#dc2626', title: 'Become a Global Administrator', subtitle: 'Apply for Global Administrator permissions', open: () => pushSubScreen('Become a Global Administrator', renderGlobalAdminApply) });
+    communityWrap.appendChild(listRow({ icon: '🛡️', iconBg: '#dc2626', title: 'Become a Global Administrator', subtitle: 'Apply for Global Administrator permissions', onClick: () => pushSubScreen('Become a Global Administrator', renderGlobalAdminApply) }));
   }
-  cards.push({ icon: '🎖️', bg: '#a855f7', title: 'Badge Store', subtitle: 'Purchase and unlock unique badges', open: () => pushSubScreen('Badge Store', renderBadgeStore) });
-  cards.push({ icon: '🛡️', bg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your earned badges', open: () => pushSubScreen('Badge Panel', renderBadgePanel) });
-  cards.push({ icon: '🌟', bg: '#f43f5e', title: 'Sticker Store', subtitle: 'Browse sticker packs to use in chat', open: () => pushSubScreen('Sticker Store', renderStickerStore) });
+  communityWrap.appendChild(listRow({ icon: '🛡️', iconBg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your earned badges', onClick: () => pushSubScreen('Badge Panel', renderBadgePanel) }));
+
+  // MORE
+  const moreWrap = sectionWrap('MORE');
+  const moreGrid = document.createElement('div');
+  moreGrid.className = 'explore-2col-grid';
+  moreGrid.appendChild(listRow({ icon: '🎰', iconBg: '#8b5cf6', title: 'Daily Spin', subtitle: 'One free spin every day', onClick: () => pushSubScreen('Daily Spin', renderSpin) }));
+  moreGrid.appendChild(listRow({ icon: '🧑‍🎨', iconBg: '#22c55e', title: 'Avatar Maker', subtitle: 'Build your character', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
+  moreWrap.appendChild(moreGrid);
+
+  // STAFF (unchanged tools, just grouped into their own section)
   if (currentUser.is_staff) {
-    cards.push({ icon: '🛠️', bg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts (Staff)', open: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) });
-    cards.push({ icon: '📋', bg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (Staff)', open: () => pushSubScreen('Merchant Applications', renderMerchantApplications) });
-    cards.push({ icon: '📋', bg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Administrator requests (Staff)', open: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) });
+    const staffWrap = sectionWrap('STAFF');
+    staffWrap.appendChild(listRow({ icon: '🛠️', iconBg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts', onClick: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) }));
+    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests', onClick: () => pushSubScreen('Merchant Applications', renderMerchantApplications) }));
+    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Administrator requests', onClick: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) }));
   }
-  const grid = document.createElement('div');
-  grid.className = 'explore-grid';
-  cards.forEach((c) => grid.appendChild(exploreCard({ icon: c.icon, iconBg: c.bg, title: c.title, subtitle: c.subtitle, onClick: c.open })));
-  box.appendChild(grid);
 }
 function openDrawerExplore() { openSubScreenFromDrawer('Explore', renderExplore); }
 
@@ -3611,24 +3820,64 @@ async function renderSpin(box) {
 }
 
 // ---------- COLOR SHOP ----------
+// Color Shop (tiered redesign) — "My Owned Colors" (role perks + purchased
+// tiers you hold, each toggleable on/off) above "Available Colors" (the
+// 8-tier catalog as 2-column cards: badge icon, price, duration/bold tag,
+// a couple of perk icons, and Buy/Need more).
 async function renderColorShop(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   try {
-    const { catalog } = await api('/colors');
+    const { catalog, myColors } = await api('/colors');
     box.innerHTML = '';
-    box.appendChild(sectionLabel(`YOUR COINS: ${currentUser.coins} 🪙`));
 
-    // A purchased color is locked in for 30 days from purchase — Buy (on
-    // any other color) and Reset are both disabled until it passes, so
-    // buying colors can't be used to game the coin economy by flipping
-    // straight back for a refund-equivalent reset.
-    const lockedUntil = currentUser.username_color_locked_until ? new Date(currentUser.username_color_locked_until) : null;
-    if (lockedUntil) {
-      const daysLeft = Math.max(1, Math.ceil((lockedUntil.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
-      const lockNote = document.createElement('div');
-      lockNote.className = 'color-lock-note';
-      lockNote.textContent = `🔒 Your color is locked in for ${daysLeft} more day${daysLeft === 1 ? '' : 's'} — you can switch or reset it after that.`;
-      box.appendChild(lockNote);
+    const coinsRow = document.createElement('div');
+    coinsRow.className = 'color-shop-coins-row';
+    coinsRow.textContent = `🪙 ${currentUser.coins.toLocaleString()}`;
+    box.appendChild(coinsRow);
+
+    // ---- My Owned Colors ----
+    if (myColors.length) {
+      const ownedSection = document.createElement('div');
+      ownedSection.className = 'color-owned-section';
+      ownedSection.innerHTML = `
+        <div class="color-owned-header">
+          <div>
+            <div class="color-owned-title">🏅 My Owned Colors</div>
+            <div class="color-owned-subtitle">Toggle each color on/off. When OFF, your role color (mod/user) shows.</div>
+          </div>
+          <div class="color-owned-count">${myColors.length}</div>
+        </div>
+      `;
+      myColors.forEach((c) => {
+        const daysLeft = c.expiresAt ? Math.max(1, Math.ceil((new Date(c.expiresAt.replace(' ', 'T') + 'Z').getTime() - Date.now()) / (24 * 60 * 60 * 1000))) : null;
+        const row = document.createElement('div');
+        row.className = 'color-owned-row' + (c.active ? ' active' : '');
+        row.innerHTML = `
+          <span class="color-badge big" style="background:linear-gradient(135deg, ${c.ring1}, ${c.ring2}); border-color:${c.ring1}">${c.icon || '🎨'}</span>
+          <div class="list-row-body">
+            <div class="list-row-title">${escapeHtml(c.name)} ${c.active ? '<span class="color-active-tag">ACTIVE</span>' : ''}</div>
+            <div class="list-row-subtitle">${daysLeft != null ? `⏱ ${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : 'Role perk'}</div>
+          </div>
+          <label class="color-toggle-switch">
+            <input type="checkbox" class="color-toggle-input" ${c.active ? 'checked' : ''} />
+            <span class="color-toggle-slider"></span>
+          </label>
+        `;
+        row.querySelector('.color-toggle-input').addEventListener('change', async (e) => {
+          const on = e.target.checked;
+          try {
+            const res = await api(`/colors/${c.key}/toggle`, { method: 'POST', body: JSON.stringify({ on }) });
+            currentUser = res.user;
+            updateUserBar();
+            renderColorShop(box);
+          } catch (err) {
+            toast(err.message);
+            e.target.checked = !on;
+          }
+        });
+        ownedSection.appendChild(row);
+      });
+      box.appendChild(ownedSection);
     }
 
     // Staff-only: a personal 5-8 color gradient for your username, replacing
@@ -3699,27 +3948,43 @@ async function renderColorShop(box) {
       box.appendChild(gradBox);
     }
 
+    // ---- Available Colors ----
+    box.appendChild(sectionLabel(`Available Colors · ${catalog.length} styles`));
+    const grid = document.createElement('div');
+    grid.className = 'color-catalog-grid';
     catalog.forEach((c) => {
-      const owned = currentUser.username_color === c.hex;
-      const row = document.createElement('div');
-      row.className = 'color-shop-row';
-      row.innerHTML = `
-        <div class="color-shop-swatch" style="background:${c.hex}"></div>
-        <div class="list-row-body">
-          <div class="list-row-title" style="color:${c.hex}">${escapeHtml(c.name)}</div>
-          <div class="list-row-subtitle">
-            ${currentUser.is_staff ? `
-              <input type="number" class="color-price-input" data-id="${c.id}" value="${c.cost}" min="1" max="1000000" />
-              <button type="button" class="color-price-save-btn" data-id="${c.id}">Save</button>
-            ` : `${c.cost} 🪙`}
-          </div>
+      const canAfford = currentUser.coins >= c.cost;
+      const card = document.createElement('div');
+      card.className = 'color-tier-card';
+      card.style.setProperty('--tier-ring1', c.ring1);
+      card.style.setProperty('--tier-ring2', c.ring2);
+      card.innerHTML = `
+        <div class="color-tier-strip"></div>
+        <div class="color-tier-badge-wrap">
+          <span class="color-badge huge" style="background:linear-gradient(135deg, ${c.ring1}, ${c.ring2}); border-color:${c.ring1}">${c.icon}</span>
         </div>
-        <button class="color-buy-btn" ${owned || lockedUntil ? 'disabled' : ''}>${owned ? 'Equipped' : 'Buy'}</button>
+        <div class="color-tier-name"><span class="color-tier-dot" style="background:${c.hex}"></span>${escapeHtml(c.name)}</div>
+        <div class="color-tier-price">${c.cost.toLocaleString()}</div>
+        <div class="color-tier-tag">${c.days} days${c.bold ? ' · bold' : ''}</div>
+        <div class="color-tier-perks">
+          <span title="Custom badge included">🖼️</span>
+          <span title="${c.voicePerk ? 'Voice perk included' : 'No voice perk'}">${c.voicePerk ? '🎤' : '🚫🎤'}</span>
+        </div>
+        ${currentUser.is_staff ? `
+          <div class="color-tier-price-edit">
+            <input type="number" class="color-price-input" value="${c.cost}" min="1" max="5000000" />
+            <button type="button" class="color-price-save-btn">Save</button>
+          </div>
+        ` : ''}
+        <button class="color-tier-buy-btn" ${c.owned || canAfford ? '' : 'disabled'}>
+          ${c.owned ? '✓ Owned — Extend' : canAfford ? 'Buy' : '🔒 Need more'}
+        </button>
       `;
-      row.querySelector('.color-buy-btn').addEventListener('click', async () => {
+      card.querySelector('.color-tier-buy-btn').addEventListener('click', async () => {
+        if (!c.owned && !canAfford) return;
         try {
-          const { user } = await api(`/colors/${c.id}/buy`, { method: 'POST' });
-          currentUser = user;
+          const res = await api(`/colors/${c.id}/buy`, { method: 'POST' });
+          currentUser = res.user;
           updateUserBar();
           toast(`${c.name} equipped!`);
           renderColorShop(box);
@@ -3727,10 +3992,10 @@ async function renderColorShop(box) {
           toast(err.message);
         }
       });
-      const saveBtn = row.querySelector('.color-price-save-btn');
+      const saveBtn = card.querySelector('.color-price-save-btn');
       if (saveBtn) saveBtn.addEventListener('click', async () => {
-        const input = row.querySelector('.color-price-input');
-        const cost = Math.round(Number(input.value));
+        const priceInput = card.querySelector('.color-price-input');
+        const cost = Math.round(Number(priceInput.value));
         if (!cost || cost < 1) return toast('Enter a valid price');
         try {
           await api(`/colors/${c.id}/price`, { method: 'POST', body: JSON.stringify({ cost }) });
@@ -3740,24 +4005,9 @@ async function renderColorShop(box) {
           toast(err.message);
         }
       });
-      box.appendChild(row);
+      grid.appendChild(card);
     });
-    const resetRow = document.createElement('button');
-    resetRow.className = 'primary-btn';
-    resetRow.style.marginTop = '12px';
-    resetRow.textContent = 'Reset to default color';
-    resetRow.disabled = !!lockedUntil;
-    resetRow.addEventListener('click', async () => {
-      try {
-        const { user } = await api('/colors/reset', { method: 'POST' });
-        currentUser = user;
-        updateUserBar();
-        renderColorShop(box);
-      } catch (err) {
-        toast(err.message);
-      }
-    });
-    box.appendChild(resetRow);
+    box.appendChild(grid);
   } catch (err) {
     box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
   }
@@ -4204,6 +4454,11 @@ async function renderAvatarMaker(box) {
     const draw = () => {
       box.innerHTML = `
         ${avatarPreviewHtml(currentUser)}
+        <div class="avatar-photo-upload-row">
+          <button type="button" class="secondary-btn" id="avatarPhotoBtn">${currentUser.avatar_photo_url ? '📷 Change photo' : '📷 Upload photo'}</button>
+          ${currentUser.avatar_photo_url ? '<button type="button" class="secondary-btn" id="avatarPhotoRemoveBtn">Remove photo</button>' : ''}
+          <input type="file" id="avatarPhotoInput" accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+        </div>
         <div class="list-section-label">FRAME COLOR</div>
         <div class="swatch-row" id="frameRow"></div>
         <div class="list-section-label">PET</div>
@@ -4211,6 +4466,28 @@ async function renderAvatarMaker(box) {
         <div class="list-section-label">SCENE</div>
         <div class="swatch-row" id="sceneRow"></div>
       `;
+      const photoInput = box.querySelector('#avatarPhotoInput');
+      box.querySelector('#avatarPhotoBtn').addEventListener('click', () => photoInput.click());
+      const removeBtn = box.querySelector('#avatarPhotoRemoveBtn');
+      if (removeBtn) removeBtn.addEventListener('click', async () => {
+        const { user } = await api('/avatar', { method: 'POST', body: JSON.stringify({ removePhoto: true }) });
+        currentUser = user;
+        updateUserBar();
+        draw();
+      });
+      photoInput.addEventListener('change', async () => {
+        const file = photoInput.files && photoInput.files[0];
+        if (!file) return;
+        if (file.size > 6 * 1024 * 1024) return toast('File too large — max 6MB');
+        const buf = await file.arrayBuffer();
+        socket.emit('upload_avatar_photo', { mime: file.type, data: buf }, (res) => {
+          if (!res || !res.ok) return toast((res && res.error) || 'Upload failed');
+          currentUser = res.user;
+          updateUserBar();
+          toast('Photo updated!');
+          draw();
+        });
+      });
       const frameRow = box.querySelector('#frameRow');
       frameColors.forEach((hex) => {
         const b = document.createElement('button');
