@@ -85,6 +85,7 @@ function myOwnedColors(user) {
 // GET /api/colors — the whole Color Shop screen in one call: the 8-tier
 // catalog (with ownership/expiry per tier) and the user's owned-colors list.
 router.get('/', requireLogin, (req, res) => {
+  db.clearExpiredActiveColor(req.session.user.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user.id);
   const catalogRows = db.prepare('SELECT * FROM color_catalog ORDER BY sort_order ASC, cost ASC').all();
   const ownedMap = new Map(

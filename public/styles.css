@@ -1279,6 +1279,47 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 }
 .color-price-save-btn { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
 
+/* ---- Effect Shop (full-screen redesign, dark-navy card grid) ---- */
+.effect-shop-tabs {
+  display: flex; gap: 8px; background: var(--panel-alt); border-radius: 12px;
+  padding: 4px; margin-bottom: 14px;
+}
+.effect-shop-tab {
+  flex: 1; border: none; background: transparent; color: var(--text-dim);
+  font-weight: 700; font-size: 13px; padding: 9px 6px; border-radius: 9px; cursor: pointer;
+}
+.effect-shop-tab.active { background: #1e2749; color: #fff; }
+:root:not([data-theme="dark"]) .effect-shop-tab.active { background: var(--accent); color: #fff; }
+.effect-shop-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+@media (max-width: 480px) { .effect-shop-grid { grid-template-columns: 1fr; } }
+.effect-card {
+  position: relative; background: #141b36; border: 1px solid #262f52; border-radius: 14px;
+  padding: 16px 12px 12px; text-align: center; overflow: hidden;
+}
+:root:not([data-theme="dark"]) .effect-card { background: var(--panel); border-color: var(--border); }
+.effect-card-preview {
+  font-size: 40px; line-height: 1; margin: 4px 0 10px;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));
+}
+.effect-card-owned-tag {
+  position: absolute; top: 8px; right: 8px; background: #22c55e; color: #052e16;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 999px;
+}
+.effect-card-name { font-weight: 800; font-size: 14px; color: #fff; }
+:root:not([data-theme="dark"]) .effect-card-name { color: var(--text); }
+.effect-card-slug { font-size: 11px; color: #8b93b8; margin-top: 2px; }
+:root:not([data-theme="dark"]) .effect-card-slug { color: var(--text-dim); }
+.effect-card-meta {
+  display: inline-block; margin-top: 8px; font-size: 11px; color: #8b93b8;
+  background: rgba(255,255,255,0.06); border-radius: 999px; padding: 3px 10px;
+}
+:root:not([data-theme="dark"]) .effect-card-meta { color: var(--text-dim); background: var(--panel-alt); }
+.effect-card-buy-btn {
+  width: 100%; margin-top: 10px; padding: 9px; border-radius: 10px; font-size: 13px; font-weight: 700;
+  background: var(--accent); color: #fff; border: none; cursor: pointer;
+}
+.effect-card-buy-btn:disabled { background: var(--panel-alt); color: var(--text-dim); cursor: not-allowed; }
+
 /* Avatar Maker */
 .avatar-maker-preview {
   position: relative; width: 140px; height: 140px; margin: 0 auto 18px; border-radius: 50%;

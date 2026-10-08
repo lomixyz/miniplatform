@@ -129,6 +129,7 @@ function attachSocket(io, sessionMiddleware) {
   }
 
   function freshRoleFlags(userId) {
+    db.clearExpiredActiveColor(userId);
     const row = db.prepare(`
       SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient, active_color_key, gender
       FROM users WHERE id = ?
@@ -371,6 +372,10 @@ function attachSocket(io, sessionMiddleware) {
   }
 
   function activeMemberRows(roomId) {
+    // Self-heal any lapsed purchased color before building the list that
+    // feeds the Participants panel/chat — see db.clearExpiredActiveColor.
+    const memberIds = db.prepare('SELECT user_id FROM room_memberships WHERE room_id = ? AND active = 1').all(roomId);
+    for (const { user_id } of memberIds) db.clearExpiredActiveColor(user_id);
     return db.prepare(`
       SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
              u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status, u.active_color_key, u.gender,
@@ -1831,8 +1836,10 @@ function attachSocket(io, sessionMiddleware) {
     // live status (online/away/busy/offline). Sent privately back to just the
     // requester (never posted to the room), open to every user.
     function handleWhoisCommand(usernameArg) {
-      const target = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      let target = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
       if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      db.clearExpiredActiveColor(target.id);
+      target = db.prepare('SELECT * FROM users WHERE id = ?').get(target.id);
       socket.emit('whois_result', {
         username: target.username,
         level: currentLevel(target.id),

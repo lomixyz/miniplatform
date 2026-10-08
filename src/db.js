@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { xpForLevel } = require('./level');
-const { COLOR_TIERS } = require('./colorCatalog');
+const { COLOR_TIERS, COLOR_TIERS_BY_KEY } = require('./colorCatalog');
 
 // The data/ folder isn't tracked by git (only files are, and the .db itself
 // is gitignored), so on a fresh clone it doesn't exist yet — create it
@@ -917,14 +917,12 @@ for (const username of PROTECTED_ACCOUNTS) {
   }
 }
 
-// These protected accounts are always Staff + Global Admin by design — it's
-// how the very first role gets granted to anyone else, so they must never
-// lose those flags (the Admin Panel also locks their Staff checkbox — see
-// routes/admin.js). Enforced again here on every boot so they self-heal even
-// if the DB was edited by hand or restored from an older backup, and their
-// password/level are kept at the fixed values above regardless of prior
-// state, so this always works whether the DB was just created or a server
-// from an earlier version of this app is being upgraded in place.
+// These protected accounts' password and baseline level are enforced on
+// every boot (via xpForLevel) so they self-heal even if the DB was edited by
+// hand or restored from an older backup — this always works whether the DB
+// was just created or a server from an earlier version of this app is being
+// upgraded in place. (Their Staff/Global Admin flags are a separate concern —
+// see STAFF_ENFORCED_ACCOUNTS right below.)
 for (const username of PROTECTED_ACCOUNTS) {
   const row = db.prepare('SELECT id, xp FROM users WHERE username = ?').get(username);
   if (row) {
@@ -932,9 +930,45 @@ for (const username of PROTECTED_ACCOUNTS) {
     if ((row.xp || 0) < minXp) {
       db.prepare('UPDATE users SET xp = ? WHERE id = ?').run(minXp, row.id);
     }
-    db.prepare('UPDATE users SET is_staff = 1, is_global_admin = 1, password_hash = ? WHERE id = ?')
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
       .run(bcrypt.hashSync(ADMIN_PASSWORD, 10), row.id);
   }
+}
+
+// Of the protected accounts, only 'miniplatform' is always Staff + Global
+// Admin by design — it's how the very first role gets granted to anyone
+// else, so it must never lose those flags (the Admin Panel also locks its
+// Staff checkbox — see routes/admin.js). Enforced again here on every boot
+// so it self-heals even from a hand-edited or restored-from-backup DB.
+// 'admin' and 'boss-3llam' used to be enforced the same way, but were
+// demoted to plain, no-privilege users on request — see the one-time
+// founders_demoted_at migration below, which clears whatever role flags they
+// currently hold the first time this code runs on a given database (and
+// only that once — staff can freely re-promote either of them afterward,
+// same as any other account, without this undoing it on the next restart).
+const STAFF_ENFORCED_ACCOUNTS = ['miniplatform'];
+for (const username of STAFF_ENFORCED_ACCOUNTS) {
+  db.prepare('UPDATE users SET is_staff = 1, is_global_admin = 1 WHERE username = ?').run(username);
+}
+
+// One-time: 'admin' and 'boss-3llam' go from permanently-enforced Staff +
+// Global Admin to plain normal users (every role flag cleared) — requested
+// once, then left alone, so this must only ever run once per database.
+// Reuses the app_settings singleton row the way the "Deprecated" migrations
+// above it do, rather than standing up a whole migrations table for one flag.
+const appSettingsFoundersCol = db.prepare('PRAGMA table_info(app_settings)').all().map((c) => c.name);
+if (!appSettingsFoundersCol.includes('founders_demoted_at')) {
+  db.exec('ALTER TABLE app_settings ADD COLUMN founders_demoted_at TEXT');
+}
+db.exec('INSERT OR IGNORE INTO app_settings (id) VALUES (1)');
+const foundersDemoted = db.prepare('SELECT founders_demoted_at FROM app_settings WHERE id = 1').get();
+if (foundersDemoted && !foundersDemoted.founders_demoted_at) {
+  db.prepare(`
+    UPDATE users SET is_staff = 0, is_global_admin = 0, is_mentor = 0, is_merchant = 0,
+      is_exec_board = 0, is_country_rep = 0, is_elite = 0
+    WHERE username IN ('admin', 'boss-3llam')
+  `).run();
+  db.prepare("UPDATE app_settings SET founders_demoted_at = datetime('now') WHERE id = 1").run();
 }
 
 // ---- Per-room announcement (mig66/mig33-style "/announcement" command) ----
@@ -984,6 +1018,31 @@ db.checkEliteEligibility = function checkEliteEligibility(userId) {
     userId, 'system', 'You are now an Elite User! 🏅',
     `You've sent over ${ELITE_GIFT_THRESHOLD.toLocaleString()} gifts — Elite User status has been granted automatically.`
   );
+};
+
+// A purchased Color Shop tier is time-limited (user_colors.expires_at); once
+// it lapses it should also stop being the thing showing on that person's
+// name — "My Owned Colors" already only lists non-expired rows (see
+// myOwnedColors() in routes/colors.js), but users.active_color_key is a
+// separate column that just sits there pointing at the (now-expired) tier
+// key until something clears it, so without this, chat/participants/whois
+// would keep showing an expired purchase's badge and username color
+// indefinitely. There's no cron here, so this is checked lazily instead —
+// call it anywhere active_color_key is about to be read for display
+// (freshRoleFlags, /auth/me, /auth/login, the Color Shop routes) and it
+// self-heals the moment anyone looks. A role-granted color (key isn't in
+// COLOR_TIERS_BY_KEY — e.g. 'merchant', 'elite') never expires this way, so
+// it's left alone; only a purchased tier that's missing or past its
+// expires_at in user_colors gets cleared.
+db.clearExpiredActiveColor = function clearExpiredActiveColor(userId) {
+  const row = db.prepare('SELECT active_color_key FROM users WHERE id = ?').get(userId);
+  if (!row || !row.active_color_key || !COLOR_TIERS_BY_KEY.has(row.active_color_key)) return;
+  const stillOwned = db.prepare(
+    "SELECT 1 FROM user_colors WHERE user_id = ? AND color_id = ? AND expires_at > datetime('now')"
+  ).get(userId, row.active_color_key);
+  if (!stillOwned) {
+    db.prepare('UPDATE users SET active_color_key = NULL WHERE id = ?').run(userId);
+  }
 };
 
 module.exports = db;

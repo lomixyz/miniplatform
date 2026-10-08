@@ -5,6 +5,16 @@ const { publicUser, requireLogin } = require('../auth');
 
 const router = express.Router();
 
+// Only letters, numbers, and _ - . are allowed in a User ID — everything
+// else (spaces, @, emoji, other punctuation, ...) is rejected outright.
+const USERNAME_CHARS_RE = /^[A-Za-z0-9_.-]+$/;
+// Short (3-5 char) User IDs are reserved — only Staff can create one (e.g.
+// for a short/VIP-looking name), checked against the CURRENT session, i.e.
+// whoever is filling out this form, before it's overwritten by the new
+// account below. Everyone else needs 6+ characters.
+const MIN_USERNAME_LEN_STAFF = 3;
+const MIN_USERNAME_LEN_PUBLIC = 6;
+
 // Registration screen: User ID, Email ID, Secret Code (+Confirm), Gender,
 // Country, and an optional Referrer User ID. There's no mail server behind
 // this build, so email is just stored on the account (used later for the
@@ -22,7 +32,19 @@ router.post('/register', (req, res) => {
   const referrerUsername = String(body.referrerUsername || '').trim();
   const agreedTerms = !!body.agreedTerms;
 
-  if (!username || username.length < 3) return res.status(400).json({ error: 'User ID must be at least 3 characters' });
+  // Whoever is SUBMITTING this form right now (before it's replaced by the
+  // new account's session below) — only this lets Staff create a short User
+  // ID; a brand new signup is always anonymous here and gets the public
+  // minimum.
+  const requesterIsStaff = !!(req.session.user && req.session.user.is_staff);
+  const minUsernameLen = requesterIsStaff ? MIN_USERNAME_LEN_STAFF : MIN_USERNAME_LEN_PUBLIC;
+
+  if (!username || username.length < minUsernameLen) {
+    return res.status(400).json({ error: `User ID must be at least ${minUsernameLen} characters` });
+  }
+  if (!USERNAME_CHARS_RE.test(username)) {
+    return res.status(400).json({ error: 'User ID can only contain letters, numbers, and _ - .' });
+  }
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'A valid Email ID is required' });
   if (!password || password.length < 4) return res.status(400).json({ error: 'Secret Code must be at least 4 characters' });
   if (password !== confirmPassword) return res.status(400).json({ error: "Secret Code and Confirm Code don't match" });
@@ -65,7 +87,8 @@ router.post('/login', (req, res) => {
   if (!row || !bcrypt.compareSync(password || '', row.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
-  const user = publicUser(row);
+  db.clearExpiredActiveColor(row.id);
+  const user = publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(row.id));
   req.session.user = user;
 
   // "Remember me" keeps the session cookie around for 30 days instead of the
@@ -120,8 +143,12 @@ router.post('/logout', (req, res) => {
 router.get('/me', (req, res) => {
   if (!req.session.user) return res.json({ user: null });
   // refresh coins/xp/roles in case they changed
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(req.session.user.id)) {
+    req.session.destroy(() => {});
+    return res.json({ user: null });
+  }
+  db.clearExpiredActiveColor(req.session.user.id);
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user.id);
-  if (!row) { req.session.destroy(() => {}); return res.json({ user: null }); }
   const user = publicUser(row);
   req.session.user = user;
   res.json({ user });

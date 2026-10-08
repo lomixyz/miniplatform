@@ -3569,42 +3569,102 @@ function renderTournamentArena(box) {
   `;
 }
 
-// Client-side mirror of src/effectsCatalog.js's EFFECTS (same pattern as
-// EFFECT_THEME/COLOR_TIERS above) — prices/days aren't staff-editable
-// anywhere (unlike the Color Shop), so this is safe to hardcode. It exists
-// purely so the Effect Shop modal can open INSTANTLY on tap instead of
-// sitting blank until the server round-trip comes back: every user can see
-// this catalog (no permission check, server or client, ever gated it), so
-// there's nothing to wait on to show the list itself — only per-user
-// ownership/expiry needs the live answer, filled in moments later.
-const EFFECT_CATALOG_STATIC = [
-  { key: 'bomb', emoji: '💣', label: 'Bomb', price: 50000, days: 30 },
-  { key: 'missile', emoji: '🚀', label: 'Missile', price: 50000, days: 30 },
-  { key: 'grenade', emoji: '🍍', label: 'Grenade', price: 50000, days: 30 },
-  { key: 'love', emoji: '💖', label: 'Love', price: 50000, days: 30 },
-  { key: 'bird', emoji: '🐦', label: 'Bird', price: 50000, days: 30 },
-  { key: 'butterfly', emoji: '🦋', label: 'Butterfly', price: 50000, days: 30 },
-  { key: 'dragon', emoji: '🐉', label: 'Dragon', price: 50000, days: 30 },
-  { key: 'rain', emoji: '🌧️', label: 'Rain', price: 50000, days: 30 },
-  { key: 'ghost', emoji: '👻', label: 'Ghost', price: 50000, days: 30 },
-  { key: 'meteor', emoji: '☄️', label: 'Meteor', price: 50000, days: 30 },
-  { key: 'thunder', emoji: '⚡', label: 'Thunder', price: 50000, days: 30 },
-  { key: 'snowball', emoji: '❄️', label: 'Snowball', price: 50000, days: 30 },
-  { key: 'tomato', emoji: '🍅', label: 'Tomato', price: 50000, days: 30 },
-  { key: 'laser', emoji: '🔫', label: 'Laser', price: 50000, days: 30 },
-  { key: 'firework', emoji: '🎆', label: 'Firework', price: 50000, days: 30 },
-];
-
-// Effect Shop (Explore -> Store) — the same catalog "/purchase effect"
-// shows in chat, opened directly without needing to be in a room first, and
-// open to every user (no role/permission gate, same as Color Shop/Badge
-// Store/etc). Shows the modal with the static catalog the instant it's
-// tapped — no blank wait on the server — then silently refreshes it in
-// place with each effect's real owned/expiry status once that arrives.
+// Effect Shop (Explore -> Store) — full-screen page (dark card grid, Shop /
+// My effects tabs, direct Buy/Extend buttons) replacing the old chat-only
+// "/purchase <effect>" + "/purchase confirm" flow for this entry point. The
+// chat commands themselves (handlePurchaseCommand in socket.js) and the
+// small popup they still reply through (showEffectStoreModal, below) are
+// untouched — this is just a second, friendlier door into the same
+// user_effects table, via GET/POST /api/effects.
 function openEffectShop() {
-  showEffectStoreModal(EFFECT_CATALOG_STATIC.map((e) => ({ ...e, owned: false, expiresAt: null })), 'catalog');
-  if (!socket) return;
-  socket.emit('request_effect_catalog');
+  pushSubScreen('Effect Shop', (box) => renderEffectShop(box, 'shop'));
+}
+
+async function renderEffectShop(box, tab) {
+  // Render the static catalog INSTANTLY with the tabs already in place (same
+  // "don't sit blank waiting on the server" idea as the old modal), then
+  // swap in the real owned/expiry data once /api/effects answers.
+  box.innerHTML = '';
+  box.appendChild(effectShopTabs(box, tab, null));
+  const grid = document.createElement('div');
+  grid.className = 'effect-shop-grid';
+  grid.innerHTML = '<div class="empty-note">Loading…</div>';
+  box.appendChild(grid);
+
+  try {
+    const { catalog, myEffects } = await api('/effects');
+    box.innerHTML = '';
+    box.appendChild(effectShopTabs(box, tab, myEffects.length));
+    box.appendChild(effectShopGrid(box, tab === 'my' ? myEffects : catalog, tab));
+  } catch (err) {
+    box.innerHTML = '';
+    box.appendChild(effectShopTabs(box, tab, null));
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = err.message || 'Could not load the Effect Shop.';
+    box.appendChild(note);
+  }
+}
+
+function effectShopTabs(box, activeTab, ownedCount) {
+  const tabs = document.createElement('div');
+  tabs.className = 'effect-shop-tabs';
+  const shopTab = document.createElement('button');
+  shopTab.type = 'button';
+  shopTab.className = 'effect-shop-tab' + (activeTab === 'shop' ? ' active' : '');
+  shopTab.textContent = 'Shop';
+  shopTab.addEventListener('click', () => renderEffectShop(box, 'shop'));
+  const myTab = document.createElement('button');
+  myTab.type = 'button';
+  myTab.className = 'effect-shop-tab' + (activeTab === 'my' ? ' active' : '');
+  myTab.textContent = `My effects${ownedCount != null ? ` (${ownedCount})` : ''}`;
+  myTab.addEventListener('click', () => renderEffectShop(box, 'my'));
+  tabs.appendChild(shopTab);
+  tabs.appendChild(myTab);
+  return tabs;
+}
+
+function effectShopGrid(box, effects, tab) {
+  const grid = document.createElement('div');
+  grid.className = 'effect-shop-grid';
+  if (!effects.length) {
+    grid.innerHTML = `<div class="empty-note">${tab === 'my' ? "You don't own any effects yet — grab one from the Shop tab." : 'Nothing on sale right now.'}</div>`;
+    return grid;
+  }
+  effects.forEach((e) => {
+    const canAfford = currentUser.coins >= e.price;
+    const daysLeft = e.expiresAt
+      ? Math.max(0, Math.ceil((new Date(e.expiresAt.replace(' ', 'T') + 'Z').getTime() - Date.now()) / 86400000))
+      : null;
+    const card = document.createElement('div');
+    card.className = 'effect-card';
+    card.innerHTML = `
+      <div class="effect-card-preview">${e.emoji}</div>
+      ${e.owned ? '<div class="effect-card-owned-tag">OWNED</div>' : ''}
+      <div class="effect-card-name">${escapeHtml(e.label)}</div>
+      <div class="effect-card-slug">/${e.key}</div>
+      <div class="effect-card-meta">${e.owned && daysLeft != null
+        ? `⏱ ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+        : `${e.price.toLocaleString()} coins · ${e.days} days`}</div>
+      <button class="effect-card-buy-btn" ${e.owned || canAfford ? '' : 'disabled'}>
+        ${e.owned ? 'Extend' : canAfford ? 'Buy' : '🔒 Need more'}
+      </button>
+    `;
+    card.querySelector('.effect-card-buy-btn').addEventListener('click', async () => {
+      if (!e.owned && !canAfford) return;
+      try {
+        const res = await api(`/effects/${e.key}/buy`, { method: 'POST' });
+        currentUser = res.user;
+        updateUserBar();
+        toast(`${e.emoji} /${e.key} ${e.owned ? 'extended' : 'purchased'}!`);
+        renderEffectShop(box, tab);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    grid.appendChild(card);
+  });
+  return grid;
 }
 
 // ---------- EXPLORE HUB ----------
