@@ -476,6 +476,25 @@ body::after {
 .level-milestone-tile:not(.current) .level-milestone-label { color: var(--text-dim); }
 .level-milestone-icon { font-size: 20px; margin: 8px 0 4px; }
 .level-milestone-name { font-size: 11px; color: var(--text-dim); line-height: 1.3; }
+
+/* Dragon Growth strip (Level screen) — same tile shell as the roadmap
+   strip above, but the dragon emoji is the whole point of this row, so it
+   gets a much bigger, clearly-showable size instead of the roadmap's small
+   reward icons. */
+.dragon-growth-tile {
+  flex: 0 0 auto; width: 96px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 8px 10px; text-align: center; position: relative;
+}
+.dragon-growth-tile.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.dragon-growth-tile.locked { opacity: 0.5; }
+.dragon-growth-you {
+  position: absolute; top: 6px; right: 6px; background: var(--accent); color: #fff;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.5px; padding: 2px 7px; border-radius: 999px;
+}
+.dragon-growth-icon { font-size: 38px; line-height: 1; margin: 6px 0 8px; }
+.dragon-growth-range { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: 0.3px; }
+.dragon-growth-tile.locked .dragon-growth-range { color: var(--text-dim); }
+.dragon-growth-name { font-size: 11px; color: var(--text-dim); margin-top: 2px; line-height: 1.3; }
 .level-next-reward-card {
   display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 14px; margin-top: 18px;
