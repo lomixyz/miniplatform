@@ -1550,6 +1550,26 @@ function attachSocket(io, sessionMiddleware) {
       if (typeof ack === 'function') ack({ ok: true, user: publicUser(updated) });
     });
 
+    // Profile cover/banner photo upload (My Profile hero card) — same
+    // binary-over-socket pattern as upload_avatar_photo above, writing to
+    // its own column so a cover photo and a profile photo are independent.
+    on('upload_cover_photo', ({ mime, data }, ack) => {
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); else socket.emit('error_message', error); };
+      const ext = MEDIA_EXT.image && MEDIA_EXT.image[mime];
+      if (!ext) return fail('Unsupported file type — use PNG, JPEG, GIF, or WEBP');
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (!buf.length) return fail('Empty file');
+      if (buf.length > MEDIA_MAX_BYTES) return fail(`File too large — max ${Math.floor(MEDIA_MAX_BYTES / 1024 / 1024)}MB`);
+
+      const filename = `cover-${user.id}-${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      const url = `/uploads/${filename}`;
+      db.prepare('UPDATE users SET cover_photo_url = ? WHERE id = ?').run(url, user.id);
+      const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      refreshUserPresence(user.id);
+      if (typeof ack === 'function') ack({ ok: true, user: publicUser(updated) });
+    });
+
     // Explore -> Effect Shop card — the same catalog "/purchase effect"
     // shows in chat, just reachable without needing to be in a room first
     // (listing effects doesn't need one; only actually buying/firing one

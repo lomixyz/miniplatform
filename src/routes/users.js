@@ -45,6 +45,8 @@ function publicProfileCard(row) {
     avatar_frame_color: row.avatar_frame_color || null,
     avatar_pet: row.avatar_pet || null,
     avatar_scene: row.avatar_scene || null,
+    avatar_photo_url: row.avatar_photo_url || null,
+    cover_photo_url: row.cover_photo_url || null,
     country: row.country || null,
     gender: row.gender || null,
     created_at: row.created_at || null,

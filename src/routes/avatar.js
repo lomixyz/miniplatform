@@ -19,7 +19,7 @@ router.get('/options', requireLogin, (req, res) => {
 });
 
 router.post('/', requireLogin, (req, res) => {
-  const { frameColor, pet, scene, removePhoto } = req.body || {};
+  const { frameColor, pet, scene, removePhoto, removeCover } = req.body || {};
   if (frameColor !== undefined && frameColor !== null && !FRAME_COLORS.includes(frameColor)) {
     return res.status(400).json({ error: 'Invalid frame color' });
   }
@@ -36,11 +36,14 @@ router.post('/', requireLogin, (req, res) => {
   const nextPet = pet === undefined ? current.avatar_pet : pet;
   const nextScene = scene === undefined ? current.avatar_scene : scene;
 
-  // The photo itself is uploaded over the socket (upload_avatar_photo, see
-  // socket.js) since it's binary — this route only handles clearing it back
-  // to the colored-initial look.
+  // The photo/cover itself is uploaded over the socket (upload_avatar_photo /
+  // upload_cover_photo, see socket.js) since it's binary — this route only
+  // handles clearing either one back to its default look.
   if (removePhoto) {
     db.prepare('UPDATE users SET avatar_photo_url = NULL WHERE id = ?').run(userId);
+  }
+  if (removeCover) {
+    db.prepare('UPDATE users SET cover_photo_url = NULL WHERE id = ?').run(userId);
   }
 
   db.prepare('UPDATE users SET avatar_frame_color = ?, avatar_pet = ?, avatar_scene = ? WHERE id = ?')

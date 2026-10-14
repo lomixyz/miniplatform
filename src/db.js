@@ -450,6 +450,7 @@ const newUserColumns = [
   ['avatar_photo_url', 'TEXT'], // Avatar Maker: an uploaded profile photo ("/uploads/<file>"), shown instead of the colored-initial avatar everywhere avatarPreviewHtml() renders. NULL = no photo uploaded, falls back to the initial/pet/scene avatar.
   ['xp_daily_date', 'TEXT'], // Sudan-calendar-day (YYYY-MM-DD, Africa/Khartoum) this user last EARNED xp on — see src/xp.js DAILY_XP_CAP. NULL until they first earn any xp under the cap.
   ['xp_daily_earned', 'INTEGER NOT NULL DEFAULT 0'], // how much xp this user has earned so far on xp_daily_date — reset to 0 whenever that date rolls over. Only counts xp earned through awardXp (chat/gifts/games); an admin's direct setXp/setLevel never touches this.
+  ['cover_photo_url', 'TEXT'], // Profile hero banner: an uploaded cover photo ("/uploads/<file>"), shown behind the avatar in place of the plain gradient banner. NULL = no cover uploaded, falls back to the gradient.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {

@@ -1188,6 +1188,12 @@ function connectSocket() {
   socket.on('status_state', ({ status }) => {
     currentUser.status = status;
     updateUserBar();
+    // Keep My Profile's hero status dot live if it's the one open right now
+    // (same pattern as xp_update's Level-screen refresh below).
+    const topSub = subScreenStack[subScreenStack.length - 1];
+    if (topSub && topSub.render === renderMyProfile && !$('#subScreenOverlay').classList.contains('hidden')) {
+      renderMyProfile($('#subScreenContent'));
+    }
   });
 
   // Room silence (/silence, /unsilence — see socket.js). The system_message
@@ -5505,6 +5511,115 @@ async function renderBadgePanel(box) {
   box.appendChild(grid);
 }
 
+// ---------- BADGES POPUP (tap the Badges stat tile on My Profile) ----------
+// A single popup combining what Badge Store + Badge Panel show — the ring,
+// an All/Owned/Locked filter, and each badge's real state (owned+equip, or
+// locked+cost) — so "see my badges" doesn't require leaving the profile.
+// Same data (/api/badges), just presented as an overlay instead of a
+// full-screen sub-screen.
+let badgesModalFilter = 'all';
+async function renderBadgesModalBody() {
+  const body = $('#badgesModalBody');
+  body.innerHTML = '<div class="empty-note">Loading…</div>';
+  let data;
+  try {
+    data = await api('/badges');
+  } catch (err) {
+    body.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  const ownedCount = data.catalog.filter((b) => b.owned).length;
+  body.innerHTML = `<h2 style="margin-top:0;">🎖️ Badges</h2>` + badgeRingCardHtml(ownedCount, data.catalog.length, 'Badge Collection', `${ownedCount} of ${data.catalog.length} badges owned`);
+
+  const tabs = document.createElement('div');
+  tabs.className = 'badge-filter-tabs';
+  [['all', 'All'], ['owned', 'Owned'], ['locked', 'Locked']].forEach(([key, label]) => {
+    const btn = document.createElement('button');
+    btn.className = 'badge-filter-btn' + (badgesModalFilter === key ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => { badgesModalFilter = key; renderBadgesModalBody(); });
+    tabs.appendChild(btn);
+  });
+  body.appendChild(tabs);
+
+  const grid = document.createElement('div');
+  grid.className = 'explore-grid';
+  data.catalog
+    .filter((b) => badgesModalFilter === 'all' || (badgesModalFilter === 'owned' ? b.owned : !b.owned))
+    .forEach((b) => {
+      const equipped = data.equippedBadgeId === b.id;
+      const card = exploreCard({
+        icon: b.emoji, iconBg: b.owned ? (equipped ? '#22c55e' : '#64748b') : '#a855f7',
+        title: b.name,
+        subtitle: b.owned ? (equipped ? 'Equipped — shown on your profile' : 'Tap to equip') : `${b.cost.toLocaleString()} coins`,
+        linkLabel: b.owned ? (equipped ? 'UNEQUIP' : 'EQUIP') : 'BUY',
+        onClick: async () => {
+          try {
+            if (b.owned) {
+              const { user } = await api('/badges/equip', { method: 'POST', body: JSON.stringify({ badgeId: equipped ? null : b.id }) });
+              currentUser = user;
+            } else {
+              await api(`/badges/${b.id}/buy`, { method: 'POST' });
+              toast(`Bought ${b.name}!`);
+            }
+            renderBadgesModalBody();
+          } catch (err) { toast(err.message); }
+        },
+      });
+      grid.appendChild(card);
+    });
+  body.appendChild(grid);
+}
+function openBadgesModal() {
+  $('#badgesModal').classList.remove('hidden');
+  renderBadgesModalBody();
+}
+function closeBadgesModal() { $('#badgesModal').classList.add('hidden'); }
+$('#closeBadgesModalBtn').addEventListener('click', closeBadgesModal);
+$('#badgesModal').addEventListener('click', (e) => { if (e.target.id === 'badgesModal') closeBadgesModal(); });
+
+// ---------- VIEWS POPUP (tap the Views stat tile on My Profile) ----------
+// Same /users/me/footprint data as the full-screen "Profile Visitors"
+// sub-screen (renderFootprintScreen) — just as a quick popup from the tile.
+async function renderViewsModalBody() {
+  const body = $('#viewsModalBody');
+  body.innerHTML = '<div class="empty-note">Loading…</div>';
+  let visitors;
+  try {
+    ({ visitors } = await api('/users/me/footprint'));
+  } catch (e) {
+    body.innerHTML = '<div class="empty-note">Couldn\'t load your visitors.</div>';
+    return;
+  }
+  body.innerHTML = '';
+  if (!visitors.length) {
+    body.innerHTML = '<div class="empty-note">No one has viewed your profile yet.</div>';
+    return;
+  }
+  visitors.forEach((v) => {
+    const row = document.createElement('div');
+    row.className = 'list-row view-profile-row';
+    const nameStyle = usernameStyleAttr(v);
+    row.innerHTML = `
+      <div class="avatar-circle small" style="background:${colorFor(v.username)}">${escapeHtml(v.username.charAt(0).toUpperCase())}</div>
+      <div class="list-row-body">
+        <div class="list-row-title"><span class="${roleClass(v)}"${nameStyle}>${escapeHtml(v.username)}</span>${roleIcon(v)} <span class="status-dot ${statusDotClass(v.status)}" title="${STATUS_LABELS[v.status] || 'Offline'}"></span></div>
+        <div class="list-row-subtitle">Lv.${v.level}${v.country ? ` · ${countryFlag(v.country)} ${escapeHtml(v.country)}` : ''}</div>
+      </div>
+      <div class="visitor-row-time">${escapeHtml(formatAlertTime(v.visited_at).relative)}</div>
+    `;
+    row.addEventListener('click', () => { closeViewsModal(); openUserProfile(v.username); });
+    body.appendChild(row);
+  });
+}
+function openViewsModal() {
+  $('#viewsModal').classList.remove('hidden');
+  renderViewsModalBody();
+}
+function closeViewsModal() { $('#viewsModal').classList.add('hidden'); }
+$('#closeViewsModalBtn').addEventListener('click', closeViewsModal);
+$('#viewsModal').addEventListener('click', (e) => { if (e.target.id === 'viewsModal') closeViewsModal(); });
+
 // ---------- STICKER STORE (Explore -> Sticker Store) ----------
 async function renderStickerStore(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
@@ -5853,9 +5968,10 @@ function daysSince(dateStr) {
 // One stat-grid cell — a small real-data tile (count + icon + label), never
 // a fabricated metric. Used by both My Profile and someone else's profile,
 // each passing only the tiles backed by data that endpoint actually returns.
-function profileStatTile(icon, value, label) {
+function profileStatTile(icon, value, label, opts) {
+  const o = opts || {};
   return `
-    <div class="profile-stat-tile">
+    <div class="profile-stat-tile profile-stat-tile-${o.color || 'slate'}"${o.id ? ` id="${o.id}"` : ''}${o.clickable ? ' role="button" tabindex="0"' : ''}>
       <div class="profile-stat-icon">${icon}</div>
       <div class="profile-stat-value">${escapeHtml(String(value))}</div>
       <div class="profile-stat-label">${escapeHtml(label)}</div>
@@ -5869,17 +5985,27 @@ function profileStatTile(icon, value, label) {
 // already use — so it can never show a role the user doesn't actually hold.
 // xpIntoLevel/xpForNextLevel are present on both the full (My Profile) and
 // public (someone else's) user shapes, so the progress bar works for both.
-function profileHeroHtml(u) {
+// editable=true only on My Profile — adds the cover/avatar camera buttons
+// and makes the status dot tappable (openStatusPicker, the same picker the
+// Home screen's own status dot already uses). Someone else's profile never
+// gets editable=true, so their photos/status can't be touched from here.
+function profileHeroHtml(u, editable) {
   const active = !u.is_staff ? resolveActiveColor(u) : null;
   const roleLabel = u.is_staff ? '👑 Staff' : active ? `${active.icon ? active.icon + ' ' : ''}${escapeHtml(active.name)}` : null;
   const pct = u.xpForNextLevel ? Math.min(100, Math.round((u.xpIntoLevel / u.xpForNextLevel) * 100)) : 0;
   const genderLine = u.gender === 'male' ? '♂ Male' : u.gender === 'female' ? '♀ Female' : null;
+  const bannerStyle = u.cover_photo_url ? ` style="background-image:url('${escapeHtml(u.cover_photo_url)}')"` : '';
   return `
     <div class="profile-hero">
-      <div class="profile-hero-banner"></div>
-      <div class="profile-hero-avatar">${avatarPreviewHtml(u)}</div>
+      <div class="profile-hero-banner${u.cover_photo_url ? ' has-photo' : ''}"${bannerStyle}>
+        ${editable ? '<button type="button" class="profile-hero-cover-edit-btn" id="profileCoverEditBtn" title="Change cover photo">📷 Cover</button>' : ''}
+      </div>
+      <div class="profile-hero-avatar">
+        ${avatarPreviewHtml(u)}
+        ${editable ? '<button type="button" class="profile-hero-avatar-edit-btn" id="profileAvatarEditBtn" title="Change profile picture">📷</button>' : ''}
+      </div>
       <div class="profile-hero-topline">
-        <div class="profile-hero-name">${usernameHtml(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
+        <div class="profile-hero-name">${usernameHtml(u)} <span class="status-dot ${statusDotClass(u.status)}${editable ? ' own' : ''}" id="${editable ? 'profileHeroStatusDot' : ''}" title="${STATUS_LABELS[u.status] || 'Offline'}${editable ? ' — tap to change' : ''}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
         ${roleLabel ? `<div class="profile-hero-role">${roleLabel}</div>` : ''}
         <div class="profile-hero-meta">
           <span>Level ${u.level}</span>
@@ -5896,18 +6022,60 @@ function profileHeroHtml(u) {
   `;
 }
 
+// Wires the cover/avatar camera buttons + status dot inside profileHeroHtml
+// when it was rendered with editable=true. Kept as its own function since
+// both come from hidden <input type=file> elements appended once to body,
+// re-used across re-renders instead of leaking a new one each time.
+let profilePhotoInputs = null;
+function wireProfileHeroEditing(box) {
+  if (!profilePhotoInputs) {
+    const avatarInput = document.createElement('input');
+    avatarInput.type = 'file'; avatarInput.accept = 'image/png,image/jpeg,image/gif,image/webp'; avatarInput.className = 'hidden';
+    const coverInput = document.createElement('input');
+    coverInput.type = 'file'; coverInput.accept = 'image/png,image/jpeg,image/gif,image/webp'; coverInput.className = 'hidden';
+    document.body.appendChild(avatarInput);
+    document.body.appendChild(coverInput);
+    const handleUpload = (input, event, label) => {
+      input.addEventListener('change', async () => {
+        const file = input.files && input.files[0];
+        input.value = '';
+        if (!file) return;
+        if (file.size > 6 * 1024 * 1024) return toast('File too large — max 6MB');
+        const buf = await file.arrayBuffer();
+        socket.emit(event, { mime: file.type, data: buf }, (res) => {
+          if (!res || !res.ok) return toast((res && res.error) || 'Upload failed');
+          currentUser = res.user;
+          updateUserBar();
+          toast(`${label} updated!`);
+          if (profilePhotoInputs.currentBox) renderMyProfile(profilePhotoInputs.currentBox);
+        });
+      });
+    };
+    handleUpload(avatarInput, 'upload_avatar_photo', 'Profile picture');
+    handleUpload(coverInput, 'upload_cover_photo', 'Cover photo');
+    profilePhotoInputs = { avatarInput, coverInput, currentBox: null };
+  }
+  profilePhotoInputs.currentBox = box;
+  const avatarBtn = box.querySelector('#profileAvatarEditBtn');
+  if (avatarBtn) avatarBtn.addEventListener('click', () => profilePhotoInputs.avatarInput.click());
+  const coverBtn = box.querySelector('#profileCoverEditBtn');
+  if (coverBtn) coverBtn.addEventListener('click', () => profilePhotoInputs.coverInput.click());
+  const statusDot = box.querySelector('#profileHeroStatusDot');
+  if (statusDot) statusDot.addEventListener('click', (e) => { e.stopPropagation(); openStatusPicker(e.currentTarget); });
+}
+
 async function renderMyProfile(box) {
   const u = currentUser;
   const days = daysSince(u.created_at);
   box.innerHTML = `
-    ${profileHeroHtml(u)}
+    ${profileHeroHtml(u, true)}
     <div class="profile-edit-row"><button type="button" id="editProfileBtn" class="secondary profile-edit-btn">✎ Edit Profile</button></div>
     <div class="profile-stat-grid" id="profileStatGrid">
-      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts sent')}
-      ${profileStatTile('🎖️', '…', 'Badges')}
-      ${profileStatTile('🤝', '…', 'Friends')}
-      ${profileStatTile('👣', '…', 'Views')}
-      ${days != null ? profileStatTile('📅', days, 'Days here') : ''}
+      ${profileStatTile('🤝', '…', 'Friends', { color: 'blue' })}
+      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts', { color: 'pink' })}
+      ${profileStatTile('🎖️', '…', 'Badges', { color: 'orange', id: 'profileBadgesTile', clickable: true })}
+      ${profileStatTile('👣', '…', 'Views', { color: 'green', id: 'profileViewsTile', clickable: true })}
+      ${days != null ? profileStatTile('📅', days, 'Days here', { color: 'indigo' }) : ''}
     </div>
     ${!u.country ? `
       <div class="list-row"><div class="list-row-body">
@@ -5952,6 +6120,9 @@ async function renderMyProfile(box) {
       toast(err.message);
     }
   });
+  wireProfileHeroEditing(box);
+  box.querySelector('#profileBadgesTile').addEventListener('click', openBadgesModal);
+  box.querySelector('#profileViewsTile').addEventListener('click', openViewsModal);
 
   // Stat tiles that need a round trip — filled in once each loads, so the
   // hero/bio render instantly and these just pop in a moment later.
@@ -6059,10 +6230,10 @@ async function renderUserProfile(box, username) {
   }
   const days = daysSince(u.created_at);
   box.innerHTML = `
-    ${profileHeroHtml(u)}
+    ${profileHeroHtml(u, false)}
     <div class="profile-stat-grid">
-      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts sent')}
-      ${days != null ? profileStatTile('📅', days, 'Days here') : ''}
+      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts', { color: 'pink' })}
+      ${days != null ? profileStatTile('📅', days, 'Days here', { color: 'indigo' }) : ''}
     </div>
     ${u.created_at ? `<div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">Member since ${escapeHtml(formatAlertTime(u.created_at).exact)}</div></div></div>` : ''}
   `;

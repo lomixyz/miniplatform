@@ -83,6 +83,7 @@ function publicUser(row) {
     equipped_badge: equippedBadge || null,
     active_color_key: row.active_color_key || null,
     avatar_photo_url: row.avatar_photo_url || null,
+    cover_photo_url: row.cover_photo_url || null,
     dailyXp: dailyXpStatus(row), // { cap, earnedToday, remainingToday, resetsAt } — Sudan-day xp-earn limit, shown on the Level screen
   };
 }
