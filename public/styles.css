@@ -1956,3 +1956,73 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 /* Viewing another user's profile (Participants panel / chat username tap) —
    same visual language as My Profile's own card. */
 .view-profile-row { cursor: pointer; }
+
+/* Profile hero card (My Profile + someone else's profile) — a branded
+   gradient banner with the existing avatar-maker-preview overlapping its
+   bottom edge, name/role/level underneath, then a bio quote strip. Uses the
+   app's own accent gradient, not any third-party app's branding. */
+.profile-hero {
+  position: relative; margin: 10px 10px 0; padding: 0 16px 16px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
+  overflow: hidden;
+}
+.profile-hero-banner {
+  height: 86px; margin: 0 -16px; background: linear-gradient(120deg, var(--accent), var(--accent-light) 55%, var(--pink));
+}
+.profile-hero-avatar { margin-top: -54px; }
+.profile-hero-avatar .avatar-maker-preview { width: 96px; height: 96px; margin: 0 0 0 2px; border-width: 4px; }
+.profile-hero-avatar .avatar-maker-preview .avatar-circle { width: 64px; height: 64px; font-size: 26px; }
+.profile-hero-topline { margin-top: 10px; }
+.profile-hero-name { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.profile-hero-role { font-size: 12.5px; font-weight: 700; color: var(--accent-light); margin-top: 3px; }
+.profile-hero-meta { color: var(--text-dim); font-size: 13px; margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.profile-hero-xp-row { margin-top: 10px; max-width: 320px; }
+.profile-hero-xp-label { display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim); }
+.profile-hero-bio {
+  margin-top: 14px; padding: 12px 14px; background: var(--panel-alt); border: 1px solid var(--border);
+  border-radius: 12px; font-size: 13.5px; color: var(--text); font-style: italic; line-height: 1.5;
+}
+
+.profile-edit-row { display: flex; justify-content: flex-end; margin: 8px 10px 0; }
+.profile-edit-btn { font-size: 12.5px; padding: 6px 14px; }
+
+/* Stat tiles below the hero — only ever real, fetched numbers (see
+   profileStatTile()/renderMyProfile/renderUserProfile); a tile that view
+   can't honestly back (e.g. Friends count on someone ELSE's profile) is
+   simply left out rather than faked as zero. */
+.profile-stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px;
+  margin: 12px 10px;
+}
+.profile-stat-tile {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 6px; text-align: center;
+}
+.profile-stat-icon { font-size: 18px; }
+.profile-stat-value { font-weight: 800; font-size: 16px; margin-top: 4px; }
+.profile-stat-label { color: var(--text-dim); font-size: 10.5px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; }
+
+/* Badge Store / Badge Panel header ring — owned/total real count, no
+   fabricated per-category progress. */
+.badge-ring-card {
+  display: flex; align-items: center; gap: 16px; margin: 10px; padding: 16px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+}
+.badge-ring {
+  flex: none; width: 74px; height: 74px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.badge-ring-inner {
+  width: 58px; height: 58px; border-radius: 50%; background: var(--panel);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.badge-ring-pct { font-weight: 800; font-size: 14px; }
+.badge-ring-count { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+.badge-ring-body-title { font-weight: 800; font-size: 15px; }
+.badge-ring-body-sub { color: var(--text-dim); font-size: 12.5px; margin-top: 3px; }
+.badge-filter-tabs { display: flex; gap: 6px; margin: 0 10px 10px; flex-wrap: wrap; }
+.badge-filter-btn {
+  padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel);
+  color: var(--text-dim); font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.badge-filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }

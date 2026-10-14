@@ -46,6 +46,7 @@ function publicProfileCard(row) {
     avatar_pet: row.avatar_pet || null,
     avatar_scene: row.avatar_scene || null,
     country: row.country || null,
+    gender: row.gender || null,
     created_at: row.created_at || null,
     status: presence.effectiveStatus(row.id, row.status),
     equipped_badge: row.equipped_badge_id

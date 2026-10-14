@@ -5398,6 +5398,30 @@ async function renderGiftStore(box) {
   });
 }
 
+// A circular owned/total ring, shared by Badge Store and Badge Panel — the
+// one real "achievement" number this cosmetic badge system actually has.
+// Deliberately NOT per-category progress bars (no "messages sent" /
+// "friends added" counters exist anywhere in the backend to back those).
+function badgeRingCardHtml(owned, total, title, sub) {
+  const pct = total > 0 ? Math.round((owned / total) * 100) : 0;
+  const deg = Math.round(pct * 3.6);
+  return `
+    <div class="badge-ring-card">
+      <div class="badge-ring" style="background:conic-gradient(var(--accent) ${deg}deg, var(--panel-alt) ${deg}deg)">
+        <div class="badge-ring-inner">
+          <div class="badge-ring-pct">${pct}%</div>
+          <div class="badge-ring-count">${owned}/${total}</div>
+        </div>
+      </div>
+      <div>
+        <div class="badge-ring-body-title">${escapeHtml(title)}</div>
+        <div class="badge-ring-body-sub">${escapeHtml(sub)}</div>
+      </div>
+    </div>
+  `;
+}
+
+let badgeStoreFilter = 'all';
 // ---------- BADGE STORE (Explore -> Badge Store) ----------
 async function renderBadgeStore(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
@@ -5408,26 +5432,41 @@ async function renderBadgeStore(box) {
     box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     return;
   }
-  box.innerHTML = '';
+  const ownedCount = data.catalog.filter((b) => b.owned).length;
+  box.innerHTML = badgeRingCardHtml(ownedCount, data.catalog.length, 'Badge Collection', `${ownedCount} of ${data.catalog.length} badges owned`);
+
+  const tabs = document.createElement('div');
+  tabs.className = 'badge-filter-tabs';
+  [['all', 'All'], ['owned', 'Owned'], ['locked', 'Locked']].forEach(([key, label]) => {
+    const btn = document.createElement('button');
+    btn.className = 'badge-filter-btn' + (badgeStoreFilter === key ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => { badgeStoreFilter = key; renderBadgeStore(box); });
+    tabs.appendChild(btn);
+  });
+  box.appendChild(tabs);
+
   const grid = document.createElement('div');
   grid.className = 'explore-grid';
-  data.catalog.forEach((b) => {
-    const card = exploreCard({
-      icon: b.emoji, iconBg: '#a855f7',
-      title: b.name,
-      subtitle: b.owned ? 'Owned — manage it in Badge Panel' : `${b.cost.toLocaleString()} coins`,
-      linkLabel: b.owned ? 'OWNED' : 'BUY',
-      onClick: b.owned ? null : async () => {
-        try {
-          await api(`/badges/${b.id}/buy`, { method: 'POST' });
-          toast(`Bought ${b.name}!`);
-          renderBadgeStore(box);
-        } catch (err) { toast(err.message); }
-      },
+  data.catalog
+    .filter((b) => badgeStoreFilter === 'all' || (badgeStoreFilter === 'owned' ? b.owned : !b.owned))
+    .forEach((b) => {
+      const card = exploreCard({
+        icon: b.emoji, iconBg: '#a855f7',
+        title: b.name,
+        subtitle: b.owned ? 'Owned — manage it in Badge Panel' : `${b.cost.toLocaleString()} coins`,
+        linkLabel: b.owned ? 'OWNED' : 'BUY',
+        onClick: b.owned ? null : async () => {
+          try {
+            await api(`/badges/${b.id}/buy`, { method: 'POST' });
+            toast(`Bought ${b.name}!`);
+            renderBadgeStore(box);
+          } catch (err) { toast(err.message); }
+        },
+      });
+      if (b.owned) card.style.opacity = '0.6';
+      grid.appendChild(card);
     });
-    if (b.owned) card.style.opacity = '0.6';
-    grid.appendChild(card);
-  });
   box.appendChild(grid);
 }
 
@@ -5442,11 +5481,8 @@ async function renderBadgePanel(box) {
     return;
   }
   const owned = data.catalog.filter((b) => b.owned);
-  box.innerHTML = '';
-  if (!owned.length) {
-    box.innerHTML = '<div class="empty-note">You don\'t own any badges yet — check out the Badge Store.</div>';
-    return;
-  }
+  box.innerHTML = badgeRingCardHtml(owned.length, data.catalog.length, 'Your Badges', owned.length ? 'Tap one to equip it on your profile' : "You don't own any badges yet — check out the Badge Store.");
+  if (!owned.length) return;
   const grid = document.createElement('div');
   grid.className = 'explore-grid';
   owned.forEach((b) => {
@@ -5804,29 +5840,89 @@ async function renderGiftStoreAdmin(box) {
 }
 
 // ---------- MY PROFILE / MY ACCOUNT / SETTINGS / GAME LIST ----------
+// A whole-number "days since" a stored timestamp — used for "Member since" /
+// the Days-here stat tile. Returns null when the date is missing/unparsable
+// so callers can skip the tile rather than show a wrong "0".
+function daysSince(dateStr) {
+  if (!dateStr) return null;
+  const then = new Date(dateStr.replace(' ', 'T') + 'Z').getTime();
+  if (!Number.isFinite(then)) return null;
+  return Math.max(0, Math.floor((Date.now() - then) / 86400000));
+}
+
+// One stat-grid cell — a small real-data tile (count + icon + label), never
+// a fabricated metric. Used by both My Profile and someone else's profile,
+// each passing only the tiles backed by data that endpoint actually returns.
+function profileStatTile(icon, value, label) {
+  return `
+    <div class="profile-stat-tile">
+      <div class="profile-stat-icon">${icon}</div>
+      <div class="profile-stat-value">${escapeHtml(String(value))}</div>
+      <div class="profile-stat-label">${escapeHtml(label)}</div>
+    </div>
+  `;
+}
+
+// The banner + overlapping-avatar "hero" card shared by My Profile and
+// someone else's profile. The role label under the name comes straight from
+// resolveActiveColor() — the same resolver chat/participants/leaderboards
+// already use — so it can never show a role the user doesn't actually hold.
+// xpIntoLevel/xpForNextLevel are present on both the full (My Profile) and
+// public (someone else's) user shapes, so the progress bar works for both.
+function profileHeroHtml(u) {
+  const active = !u.is_staff ? resolveActiveColor(u) : null;
+  const roleLabel = u.is_staff ? '👑 Staff' : active ? `${active.icon ? active.icon + ' ' : ''}${escapeHtml(active.name)}` : null;
+  const pct = u.xpForNextLevel ? Math.min(100, Math.round((u.xpIntoLevel / u.xpForNextLevel) * 100)) : 0;
+  const genderLine = u.gender === 'male' ? '♂ Male' : u.gender === 'female' ? '♀ Female' : null;
+  return `
+    <div class="profile-hero">
+      <div class="profile-hero-banner"></div>
+      <div class="profile-hero-avatar">${avatarPreviewHtml(u)}</div>
+      <div class="profile-hero-topline">
+        <div class="profile-hero-name">${usernameHtml(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
+        ${roleLabel ? `<div class="profile-hero-role">${roleLabel}</div>` : ''}
+        <div class="profile-hero-meta">
+          <span>Level ${u.level}</span>
+          ${genderLine ? `<span>· ${genderLine}</span>` : ''}
+          ${u.country ? `<span>· ${countryFlag(u.country)} ${escapeHtml(u.country)}</span>` : ''}
+        </div>
+        <div class="profile-hero-xp-row">
+          <div class="level-progress-track"><div class="level-progress-fill" style="width:${pct}%"></div></div>
+          <span class="profile-hero-xp-label">${u.xpIntoLevel}/${u.xpForNextLevel} XP to next level</span>
+        </div>
+      </div>
+      <div class="profile-hero-bio">💬 ${u.bio ? escapeHtml(u.bio) : 'No bio yet.'}</div>
+    </div>
+  `;
+}
+
 async function renderMyProfile(box) {
   const u = currentUser;
+  const days = daysSince(u.created_at);
   box.innerHTML = `
-    ${avatarPreviewHtml(u)}
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${usernameHtml(u)}${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div><div class="list-row-subtitle">Level ${u.level} · ${u.xp} XP</div></div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">🪙 ${u.coins} coins</div></div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
-    <div class="list-row footprint-row" id="footprintRow"><div class="list-row-body"><div class="list-row-title">👣 Footprint</div><div class="list-row-subtitle">Who's seen your profile</div></div><div class="list-row-trailing"><span class="footprint-count-badge" id="footprintCountBadge">…</span></div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.bio || 'No bio yet.'}</div></div></div>
-    <div class="list-row"><div class="list-row-body">
-      ${u.country
-        ? `<div class="list-row-title">${countryFlag(u.country)} ${escapeHtml(u.country)}</div><div class="list-row-subtitle">Country is set and locked — only Staff can change it now.</div>`
-        : `<div class="list-row-title">Choose your country</div>
-           <div class="list-row-subtitle">You can only pick this once, so choose carefully.</div>
-           <div style="display:flex; gap:6px; margin-top:6px;">
-             <select id="myCountrySelect" style="flex:1;">
-               <option value="">Select a country…</option>
-               ${COUNTRIES.map(([flag, name]) => `<option value="${escapeHtml(name)}">${flag} ${escapeHtml(name)}</option>`).join('')}
-             </select>
-             <button type="button" id="myCountrySetBtn">Save</button>
-           </div>`}
-    </div></div>
+    ${profileHeroHtml(u)}
+    <div class="profile-edit-row"><button type="button" id="editProfileBtn" class="secondary profile-edit-btn">✎ Edit Profile</button></div>
+    <div class="profile-stat-grid" id="profileStatGrid">
+      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts sent')}
+      ${profileStatTile('🎖️', '…', 'Badges')}
+      ${profileStatTile('🤝', '…', 'Friends')}
+      ${profileStatTile('👣', '…', 'Views')}
+      ${days != null ? profileStatTile('📅', days, 'Days here') : ''}
+    </div>
+    ${!u.country ? `
+      <div class="list-row"><div class="list-row-body">
+        <div class="list-row-title">Choose your country</div>
+        <div class="list-row-subtitle">You can only pick this once, so choose carefully.</div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <select id="myCountrySelect" style="flex:1;">
+            <option value="">Select a country…</option>
+            ${COUNTRIES.map(([flag, name]) => `<option value="${escapeHtml(name)}">${flag} ${escapeHtml(name)}</option>`).join('')}
+          </select>
+          <button type="button" id="myCountrySetBtn">Save</button>
+        </div>
+      </div></div>` : ''}
     ${u.created_at ? `<div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">Member since ${escapeHtml(formatAlertTime(u.created_at).exact)}</div></div></div>` : ''}
+    <div id="profileGiftHistorySection"></div>
   `;
   const setBtn = box.querySelector('#myCountrySetBtn');
   if (setBtn) {
@@ -5844,12 +5940,61 @@ async function renderMyProfile(box) {
       }
     });
   }
-  box.querySelector('#footprintRow').addEventListener('click', () => pushSubScreen('Profile Visitors', renderFootprintScreen));
-  try {
-    const { count } = await api('/users/me/footprint');
-    const badge = box.querySelector('#footprintCountBadge');
-    if (badge) badge.textContent = String(count);
-  } catch (e) {}
+  box.querySelector('#editProfileBtn').addEventListener('click', async () => {
+    const next = prompt('Update your bio (max 140 chars):', currentUser.bio || '');
+    if (next === null) return;
+    try {
+      const { user } = await api('/auth/bio', { method: 'POST', body: JSON.stringify({ bio: next.slice(0, 140) }) });
+      currentUser = user;
+      updateUserBar();
+      renderMyProfile(box);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  // Stat tiles that need a round trip — filled in once each loads, so the
+  // hero/bio render instantly and these just pop in a moment later.
+  const grid = box.querySelector('#profileStatGrid');
+  const setTile = (label, value) => {
+    const tiles = grid ? grid.querySelectorAll('.profile-stat-tile') : [];
+    tiles.forEach((t) => {
+      if (t.querySelector('.profile-stat-label').textContent === label) {
+        t.querySelector('.profile-stat-value').textContent = value;
+      }
+    });
+  };
+  api('/badges').then(({ catalog }) => setTile('Badges', catalog.filter((b) => b.owned).length)).catch(() => setTile('Badges', '—'));
+  api('/friends').then(({ friends }) => setTile('Friends', friends.length)).catch(() => setTile('Friends', '—'));
+  api('/users/me/footprint').then(({ count }) => setTile('Views', count)).catch(() => setTile('Views', '—'));
+
+  // A real "Gift History" section — the same ledger data My Balance's
+  // Gifts filter already shows, just surfaced here too since it's part of
+  // "what this profile has done", not fabricated.
+  api('/coins/activity?category=gifts').then(({ activity }) => {
+    const section = box.querySelector('#profileGiftHistorySection');
+    if (!section) return;
+    if (!activity.length) {
+      section.innerHTML = '';
+      return;
+    }
+    section.appendChild(sectionLabel('GIFT HISTORY'));
+    activity.slice(0, 20).forEach((tx) => {
+      const { relative, exact } = formatAlertTime(tx.created_at);
+      const positive = tx.delta > 0;
+      const row = document.createElement('div');
+      row.className = 'notif-row';
+      row.innerHTML = `
+        <div class="notif-icon" style="background:${positive ? '#16a34a' : '#dc2626'}">🎁</div>
+        <div class="notif-body">
+          <div class="notif-title-line">${escapeHtml(tx.description)}</div>
+          <div class="notif-relative">${escapeHtml(relative)} · ${escapeHtml(exact)}</div>
+        </div>
+        <div class="balance-tx-amount ${positive ? 'positive' : 'negative'}">${positive ? '+' : ''}${tx.delta.toLocaleString()}</div>
+      `;
+      section.appendChild(row);
+    });
+  }).catch(() => {});
 }
 function openDrawerMyProfile() { openSubScreenFromDrawer('My Profile', renderMyProfile); }
 function openDrawerMyBalance() { openSubScreenFromDrawer('My Balance', renderMyBalance); }
@@ -5898,6 +6043,11 @@ function openUserProfile(username) {
   pushSubScreen(username, (box) => renderUserProfile(box, username));
 }
 
+// Viewing someone else's profile only ever gets the narrower
+// publicProfileCard shape (routes/users.js) — no coins, no friends list, no
+// footprint, no total owned-badge count, since those are account-private.
+// So the stat grid here is deliberately smaller than My Profile's: real
+// data only, never a fake zero for a stat this view can't actually see.
 async function renderUserProfile(box, username) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   let u;
@@ -5907,16 +6057,13 @@ async function renderUserProfile(box, username) {
     box.innerHTML = '<div class="empty-note">User not found.</div>';
     return;
   }
-  const nameStyle = usernameStyleAttr(u);
+  const days = daysSince(u.created_at);
   box.innerHTML = `
-    ${avatarPreviewHtml(u)}
-    <div class="list-row"><div class="list-row-body">
-      <div class="list-row-title"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)} <span class="status-dot ${statusDotClass(u.status)}" title="${STATUS_LABELS[u.status] || 'Offline'}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
-      <div class="list-row-subtitle">Level ${u.level} · ${STATUS_LABELS[u.status] || 'Offline'}</div>
-    </div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">🎁 ${u.gifts_sent_count || 0} gifts sent</div></div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.bio ? escapeHtml(u.bio) : 'No bio yet.'}</div></div></div>
-    <div class="list-row"><div class="list-row-body"><div class="list-row-title">${u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : 'No country set'}</div></div></div>
+    ${profileHeroHtml(u)}
+    <div class="profile-stat-grid">
+      ${profileStatTile('🎁', u.gifts_sent_count || 0, 'Gifts sent')}
+      ${days != null ? profileStatTile('📅', days, 'Days here') : ''}
+    </div>
     ${u.created_at ? `<div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">Member since ${escapeHtml(formatAlertTime(u.created_at).exact)}</div></div></div>` : ''}
   `;
 }
