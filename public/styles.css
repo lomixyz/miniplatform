@@ -713,12 +713,33 @@ body::after {
 .legendary-badge.legendary-countdown { background: rgba(255,255,255,0.22); }
 .legendary-badge.legendary-countdown.idle { font-weight: 600; opacity: 0.8; }
 .legendary-badge.legendary-bet-summary { background: #fff; color: #3b0764; }
+.legendary-badge.legendary-start-btn {
+  cursor: pointer; border: none; font: inherit; font-weight: 800; color: #3b0764; background: #fde047;
+  animation: legendaryStartPulse 1.4s ease-in-out infinite;
+}
+.legendary-badge.legendary-start-btn:hover { background: #fef08a; }
+@keyframes legendaryStartPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(253,224,71,0.6); } 50% { box-shadow: 0 0 0 5px rgba(253,224,71,0); } }
 .legendary-icon-btn {
   background: rgba(255,255,255,0.16); border: none; color: #fff; cursor: pointer;
   width: 26px; height: 26px; border-radius: 50%; font-size: 13px; line-height: 1;
   display: flex; align-items: center; justify-content: center; flex: none;
 }
 .legendary-icon-btn:hover { background: rgba(255,255,255,0.3); }
+.legendary-icon-btn.active { background: #fff; color: #3b0764; }
+
+/* Capped + internally scrollable, same fix pattern as the room banner above
+   #legendaryGamePanel: this list must never be allowed to grow the panel's
+   own height, or it re-creates the exact "icons pushed off-screen" bug in
+   the floating desktop chat window that the member-list banner fix solved. */
+.legendary-bets-list {
+  max-height: 86px; overflow-y: auto; margin-top: 10px;
+  background: rgba(0,0,0,0.18); border-radius: 8px; padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.legendary-bet-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
+.legendary-bet-user { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legendary-bet-amounts { white-space: nowrap; opacity: 0.9; }
+.legendary-bets-empty { font-size: 11px; opacity: 0.75; text-align: center; padding: 4px 0; }
 
 .legendary-animal-row { display: flex; gap: 6px; margin-top: 12px; overflow-x: auto; justify-content: space-between; }
 .legendary-animal-item { display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; flex: none; width: 52px; }

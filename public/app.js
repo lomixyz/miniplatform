@@ -1004,7 +1004,18 @@ function connectSocket() {
   socket.on('coins_update', ({ coins }) => { currentUser.coins = coins; updateUserBar(); });
   socket.on('legendary_state', (state) => {
     legendaryState = state;
-    if (isInLegendaryRoom()) renderLegendaryPanel();
+    // A new round clears last round's bets server-side — drop our stale copy
+    // so the 👁 view doesn't keep showing a previous round's bettors.
+    if (state.phase === 'betting' && legendaryBetsList) legendaryBetsList = null;
+    if (isInLegendaryRoom()) {
+      renderLegendaryPanel();
+      if (legendaryShowBets) {
+        socket.emit('legendary_get_bets', {}, (res) => {
+          legendaryBetsList = (res && res.bettors) || [];
+          if (isInLegendaryRoom() && legendaryShowBets) renderLegendaryPanel();
+        });
+      }
+    }
   });
   if (!legendaryCountdownTimer) {
     legendaryCountdownTimer = setInterval(() => {
@@ -1572,6 +1583,8 @@ function enterRoom(id, name) {
   legendarySelectedAnimal = null;
   legendaryMinimized = false;
   legendaryHidden = false;
+  legendaryShowBets = false;
+  legendaryBetsList = null;
   if (isInLegendaryRoom()) {
     socket.emit('legendary_get_state', {}, (state) => { if (state) { legendaryState = state; renderLegendaryPanel(); } });
   } else {
@@ -2225,6 +2238,11 @@ let legendaryCountdownTimer = null;
 // just "I don't want to look at this right now" toggles, not a preference.
 let legendaryMinimized = false;
 let legendaryHidden = false;
+// 👁 toggle: shows what everyone else (including the bots now playing too)
+// has bet on this round, fetched on demand from the server so it's always
+// current. null = not fetched yet for this toggle-on.
+let legendaryShowBets = false;
+let legendaryBetsList = null;
 
 function isInLegendaryRoom() { return currentRoomName === LEGENDARY_ROOM_NAME; }
 
@@ -2281,6 +2299,7 @@ function renderLegendaryPanel() {
 
   const secondsLeft = legendaryState.phase === 'betting' ? Math.max(0, Math.ceil((legendaryState.endsAt - Date.now()) / 1000)) : 0;
   const selectedAnimalObj = LEGENDARY_ANIMALS.find((a) => a.key === legendarySelectedAnimal);
+  const isIdle = legendaryState.phase !== 'betting' && legendaryState.phase !== 'resolving';
 
   panel.innerHTML = `
     <div class="legendary-header">
@@ -2288,22 +2307,59 @@ function renderLegendaryPanel() {
       <span class="legendary-title">Legendary</span>
       ${legendaryState.phase === 'betting'
         ? `<span class="legendary-badge legendary-countdown">${secondsLeft}s</span>`
-        : `<span class="legendary-badge legendary-countdown idle">waiting for !start</span>`}
+        : legendaryState.phase === 'resolving'
+          ? `<span class="legendary-badge legendary-countdown idle">rolling dice…</span>`
+          : `<button type="button" class="legendary-badge legendary-start-btn" id="legendaryStartBtn">▶ Start round</button>`}
       ${selectedAnimalObj ? `<span class="legendary-badge legendary-bet-summary">${selectedAnimalObj.label} · ${formatBetAmount(legendarySelectedAmount)}</span>` : ''}
       <span class="legendary-header-spacer"></span>
-      <button type="button" class="legendary-icon-btn" id="legendaryHideBtn" title="Hide">👁</button>
+      <button type="button" class="legendary-icon-btn${legendaryShowBets ? ' active' : ''}" id="legendaryEyeBtn" title="See everyone's bets">👁</button>
       <button type="button" class="legendary-icon-btn" id="legendaryMinBtn" title="${legendaryMinimized ? 'Expand' : 'Minimize'}">${legendaryMinimized ? '+' : '−'}</button>
+      <button type="button" class="legendary-icon-btn" id="legendaryHideBtn" title="Hide">✕</button>
     </div>
     ${legendaryMinimized ? '' : `
+      ${legendaryShowBets ? '<div class="legendary-bets-list"></div>' : ''}
       <div class="legendary-animal-row"></div>
       <div class="legendary-amount-row"></div>
     `}
   `;
 
+  if (isIdle) {
+    panel.querySelector('#legendaryStartBtn').addEventListener('click', () => {
+      socket.emit('legendary_start', {}, (ack) => {
+        if (ack && !ack.ok) toast(ack.error || 'Could not start a round');
+      });
+    });
+  }
+  panel.querySelector('#legendaryEyeBtn').addEventListener('click', () => {
+    legendaryShowBets = !legendaryShowBets;
+    if (legendaryShowBets) {
+      socket.emit('legendary_get_bets', {}, (res) => {
+        legendaryBetsList = (res && res.bettors) || [];
+        renderLegendaryPanel();
+      });
+    }
+    renderLegendaryPanel();
+  });
   panel.querySelector('#legendaryHideBtn').addEventListener('click', () => { legendaryHidden = true; renderLegendaryPanel(); });
   panel.querySelector('#legendaryMinBtn').addEventListener('click', () => { legendaryMinimized = !legendaryMinimized; renderLegendaryPanel(); });
 
   if (legendaryMinimized) return;
+
+  if (legendaryShowBets) {
+    const betsBox = panel.querySelector('.legendary-bets-list');
+    if (!legendaryBetsList) {
+      betsBox.innerHTML = `<div class="legendary-bets-empty">Loading bets…</div>`;
+    } else if (!legendaryBetsList.length) {
+      betsBox.innerHTML = `<div class="legendary-bets-empty">No one has placed a bet yet this round.</div>`;
+    } else {
+      betsBox.innerHTML = legendaryBetsList.map((b) => `
+        <div class="legendary-bet-row">
+          <span class="legendary-bet-user">${b.isBot ? '🤖 ' : ''}${escapeHtml(b.username)}</span>
+          <span class="legendary-bet-amounts">${b.bets.map((x) => `${x.emoji} ${formatBetAmount(x.amount)}`).join('  ')}</span>
+        </div>
+      `).join('');
+    }
+  }
 
   const row = panel.querySelector('.legendary-animal-row');
   LEGENDARY_ANIMALS.forEach((a) => {
@@ -4248,7 +4304,21 @@ function renderRoomInfoBanner() {
   // Participants panel is the place that still lists offline/logged-out
   // members (with an offline dot) since room membership itself is
   // persistent; this line is not, so it only counts online members.
-  const memberNames = (lastRoomMembers || []).filter((m) => m.status !== 'offline').map((m) => m.username);
+  const allMemberNames = (lastRoomMembers || []).filter((m) => m.status !== 'offline').map((m) => m.username);
+  // Capped display — a busy official/bot room (Legendary Bot Official,
+  // Lobby, ...) can easily have 60+ names here, which with no limit made
+  // this banner grow tall enough to push the game bar below it (Legendary's
+  // bet icons, Cricket's bar) out of view — on desktop it's an actual hard
+  // clip, since the floating chat window (#chatScreen.floating) is a fixed
+  // height with overflow:hidden, so anything pushed past its bottom edge is
+  // simply unreachable until the banner collapses on its own after a few
+  // messages (see ROOM_BANNER_COLLAPSE_AFTER) — exactly the window where a
+  // player most wants to see the bet icons, right after joining. Capping the
+  // list here (with a "+N more" tail) keeps the banner's height bounded
+  // regardless of room population, so nothing below it ever gets pushed out.
+  const ROOM_BANNER_MEMBER_CAP = 12;
+  const memberNames = allMemberNames.slice(0, ROOM_BANNER_MEMBER_CAP);
+  const extraMemberCount = allMemberNames.length - memberNames.length;
   const flag = countryFlag(room.name);
   const hasFlag = flag && flag !== '🌐';
   // Room Settings' free-text Room Description, when the owner/Staff has set
@@ -4283,7 +4353,7 @@ function renderRoomInfoBanner() {
     </div>
     <div class="room-banner-row">
       <span class="room-banner-icon">👥</span>
-      <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}</span>
+      <span class="room-banner-text"><b>Currently in this room:</b> ${memberNames.length ? memberNames.map((n) => `<span class="room-banner-link">${escapeHtml(n)}</span>`).join(', ') : '<span class="room-banner-sub" style="display:inline">no one yet</span>'}${extraMemberCount > 0 ? ` <span class="room-banner-sub" style="display:inline">+${extraMemberCount} more</span>` : ''}</span>
     </div>
   `;
 }

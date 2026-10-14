@@ -448,6 +448,8 @@ const newUserColumns = [
   ['equipped_badge_id', 'INTEGER'], // Badge Store (Explore -> Badge Store to buy, Badge Panel to equip/unequip) — the one owned badge (badges_catalog.id, or NULL for none) currently showcased on this user's profile card.
   ['active_color_key', 'TEXT'], // Color Shop (new tiered redesign) — which ONE owned color is currently toggled on: either a color_catalog id (a purchased tier) or a role key ('merchant','elite','mentor','exec_board','country_rep','global_admin'). NULL = automatic default (the old behavior: highest-priority held role, or legacy username_color, or nothing). Staff is excluded — their gradient always wins regardless of this.
   ['avatar_photo_url', 'TEXT'], // Avatar Maker: an uploaded profile photo ("/uploads/<file>"), shown instead of the colored-initial avatar everywhere avatarPreviewHtml() renders. NULL = no photo uploaded, falls back to the initial/pet/scene avatar.
+  ['xp_daily_date', 'TEXT'], // Sudan-calendar-day (YYYY-MM-DD, Africa/Khartoum) this user last EARNED xp on — see src/xp.js DAILY_XP_CAP. NULL until they first earn any xp under the cap.
+  ['xp_daily_earned', 'INTEGER NOT NULL DEFAULT 0'], // how much xp this user has earned so far on xp_daily_date — reset to 0 whenever that date rolls over. Only counts xp earned through awardXp (chat/gifts/games); an admin's direct setXp/setLevel never touches this.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {

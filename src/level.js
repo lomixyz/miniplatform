@@ -32,6 +32,10 @@ const XP_REWARDS = {
   GIFT_SENT: 5,
   GIFT_RECEIVED: 5,
   GIFT_SHOWER: 10,
+  // Playing a bot game (Legendary Bot, LowCard, Cricket) earns a lot more xp
+  // than ordinary chatting — capped by the daily 5000xp ceiling in src/xp.js.
+  GAME_PLAY: 60,
+  GAME_WIN: 150,
 };
 
 module.exports = { levelFromXp, xpForLevel, XP_REWARDS };

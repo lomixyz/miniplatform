@@ -769,6 +769,36 @@ function attachSocket(io, sessionMiddleware) {
     });
   }
 
+  // Makes the room feel alive even when no real player has placed a bet yet
+  // — a handful of the room's own bot members place small, randomly-timed
+  // bets during the betting window, through the exact same placeLegendaryBet
+  // path a real player uses (coins really move, same payout odds apply).
+  // Capped to a small sample (not all 200+ members) so this never floods the
+  // room with bot chat lines or hammers the DB every round.
+  const LEGENDARY_BOT_PLAYERS_PER_ROUND = 6;
+  function scheduleLegendaryBotBets() {
+    const roomId = getLegendaryRoomId();
+    if (roomId < 0) return;
+    const bots = db.prepare(`
+      SELECT u.id, u.username, u.coins FROM room_memberships rm
+      JOIN users u ON u.id = rm.user_id
+      WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
+      ORDER BY RANDOM() LIMIT ?
+    `).all(roomId, LEGENDARY_BOT_PLAYERS_PER_ROUND);
+    for (const bot of bots) {
+      const delay = 2_000 + Math.random() * Math.max(1000, LEGENDARY_BETTING_MS - 8_000);
+      const t = setTimeout(() => {
+        if (legendaryPhase !== 'betting') return;
+        const affordable = LEGENDARY_BET_AMOUNTS.filter((a) => a <= bot.coins);
+        if (!affordable.length) return;
+        const animal = LEGENDARY_ANIMALS[Math.floor(Math.random() * LEGENDARY_ANIMALS.length)];
+        const amount = affordable[Math.floor(Math.random() * affordable.length)];
+        placeLegendaryBet({ id: bot.id, username: bot.username, is_bot: 1 }, animal.key, amount);
+      }, delay);
+      t.unref?.();
+    }
+  }
+
   function startLegendaryBettingRound() {
     const roomId = getLegendaryRoomId();
     if (roomId < 0) return; // room not seeded yet (very old DB mid-migration) — skip quietly
@@ -779,6 +809,7 @@ function attachSocket(io, sessionMiddleware) {
     legendaryEndsAt = Date.now() + LEGENDARY_BETTING_MS;
     legendaryBotMessage(`🎲 Round in progress — ${Math.round(LEGENDARY_BETTING_MS / 1000)}s left to bid!`);
     broadcastLegendaryState();
+    scheduleLegendaryBotBets();
     legendaryTimer = setTimeout(resolveLegendaryRound, LEGENDARY_BETTING_MS);
     legendaryTimer.unref?.();
   }
@@ -815,6 +846,7 @@ function attachSocket(io, sessionMiddleware) {
           emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
           const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
           legendaryBotMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${animal.label} ${animal.emoji}`);
+          if (!entry.isBot) awardXp(userId, XP_REWARDS.GAME_WIN);
           anyWinner = true;
         }
       }
@@ -858,7 +890,7 @@ function attachSocket(io, sessionMiddleware) {
     db.logCoinTx(user.id, -amount, 'games', 'Legendary Bot bet');
     emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
 
-    if (!legendaryBets.has(user.id)) legendaryBets.set(user.id, { username: user.username, byAnimal: new Map() });
+    if (!legendaryBets.has(user.id)) legendaryBets.set(user.id, { username: user.username, isBot: !!user.is_bot, byAnimal: new Map() });
     const entry = legendaryBets.get(user.id);
     entry.byAnimal.set(animalKey, (entry.byAnimal.get(animalKey) || 0) + amount);
     legendaryAnimalTotals.set(animalKey, (legendaryAnimalTotals.get(animalKey) || 0) + amount);
@@ -866,6 +898,7 @@ function attachSocket(io, sessionMiddleware) {
     const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
     legendaryBotMessage(`${user.username} placed ${amount} coins on ${animal.label} ${animal.emoji}\nBets: ${animal.label} ${animal.emoji} ${legendaryAnimalTotals.get(animalKey)}`);
     broadcastLegendaryState();
+    if (!user.is_bot) awardXp(user.id, XP_REWARDS.GAME_PLAY);
     return { ok: true };
   }
 
@@ -968,6 +1001,7 @@ function attachSocket(io, sessionMiddleware) {
       totalJoined = players.size;
       botMessage(`${user.username} joined! (${players.size} player${players.size === 1 ? '' : 's'} in, pot: ${pot} coins)`);
       broadcastState();
+      awardXp(user.id, XP_REWARDS.GAME_PLAY);
     }
 
     function afterJoinWindow() {
@@ -1030,7 +1064,7 @@ function attachSocket(io, sessionMiddleware) {
         // Everyone still in was eliminated together (a full tie/sweep) — split the pot evenly rather than losing it.
         const names = [...players.values()];
         const share = Math.floor(pot / players.size);
-        for (const userId of players.keys()) creditCoins(userId, share, `${botName} split pot`);
+        for (const userId of players.keys()) { creditCoins(userId, share, `${botName} split pot`); awardXp(userId, XP_REWARDS.GAME_WIN); }
         botMessage(`Everyone was eliminated at once — the pot (${pot} coins) is split evenly between ${names.join(', ')} (${share} each)!`);
         endGame();
         return;
@@ -1038,6 +1072,7 @@ function attachSocket(io, sessionMiddleware) {
       if (survivors.size === 1) {
         const [[winnerId, winnerName]] = survivors;
         creditCoins(winnerId, pot, `${botName} win`);
+        awardXp(winnerId, XP_REWARDS.GAME_WIN);
         botMessage(`🏆 ${winnerName} wins the pot of ${pot} coins! Type !start to play again.`);
         endGame();
         return;
@@ -2367,6 +2402,28 @@ function attachSocket(io, sessionMiddleware) {
       const totals = {};
       for (const [k, v] of legendaryAnimalTotals) totals[k] = v;
       if (typeof ack === 'function') ack({ phase: legendaryPhase, endsAt: legendaryEndsAt, animalTotals: totals });
+    });
+    // "👁 View bets" — what everyone else (including bots) has placed this
+    // round, so a player can see the other side of the board before betting.
+    on('legendary_get_bets', (data, ack) => {
+      if (typeof ack !== 'function') return;
+      const bettors = [];
+      for (const [, entry] of legendaryBets) {
+        const bets = [...entry.byAnimal].map(([key, amt]) => {
+          const a = LEGENDARY_ANIMAL_BY_KEY.get(key);
+          return { animal: key, label: a ? a.label : key, emoji: a ? a.emoji : '', amount: amt };
+        });
+        bettors.push({ username: entry.username, isBot: !!entry.isBot, bets });
+      }
+      ack({ phase: legendaryPhase, bettors });
+    });
+    // Manual "Start" — same effect as typing !start in the room, exposed as a
+    // button so a player doesn't need to know the chat command to kick the
+    // next round off once the previous one has finished (phase === 'idle').
+    on('legendary_start', (data, ack) => {
+      const started = tryStartLegendaryRound();
+      if (typeof ack === 'function') ack({ ok: started, error: started ? null : 'A round is already in progress.' });
+      else if (!started) socket.emit('error_message', 'A round is already in progress.');
     });
 
     // ---- LowCard / Cricket status bar — initial state on room entry, same

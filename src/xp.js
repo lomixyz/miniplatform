@@ -5,6 +5,17 @@
 const db = require('./db');
 const { levelFromXp, xpForLevel } = require('./level');
 
+// Daily cap on EARNED xp (awardXp only — never applies to an admin's direct
+// setXp/setLevel). Sudan has used a fixed UTC+2 offset with no DST since
+// 2017, so computing "today" via the Africa/Khartoum IANA zone is always
+// correct without any manual offset math.
+const DAILY_XP_CAP = 5000;
+function sudanDateString(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Khartoum', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d); // en-CA formats as YYYY-MM-DD
+}
+
 function pushXpUpdate(io, userId, xp, level, xpIntoLevel, xpForNextLevel) {
   if (!io) return;
   for (const [, s] of io.sockets.sockets) {
@@ -23,15 +34,25 @@ function notifyLevelUp(userId, newLevel) {
 }
 
 function awardXp(io, userId, amount) {
-  const before = db.prepare('SELECT xp FROM users WHERE id = ?').get(userId);
-  const levelBefore = before ? levelFromXp(before.xp || 0).level : 1;
+  const before = db.prepare('SELECT xp, xp_daily_date, xp_daily_earned FROM users WHERE id = ?').get(userId);
+  if (!before) return { xp: 0, level: 1, awarded: 0 };
+  const levelBefore = levelFromXp(before.xp || 0).level;
 
-  db.prepare('UPDATE users SET xp = xp + ? WHERE id = ?').run(amount, userId);
+  // Daily earn-cap (5000/day, Sudan calendar day) — a new day quietly resets
+  // the counter to 0 since we only ever compare against today's stored date.
+  const today = sudanDateString();
+  const earnedToday = before.xp_daily_date === today ? (before.xp_daily_earned || 0) : 0;
+  const award = Math.max(0, Math.min(amount, DAILY_XP_CAP - earnedToday));
+
+  if (award > 0) {
+    db.prepare('UPDATE users SET xp = xp + ?, xp_daily_date = ?, xp_daily_earned = ? WHERE id = ?')
+      .run(award, today, earnedToday + award, userId);
+  }
   const row = db.prepare('SELECT xp FROM users WHERE id = ?').get(userId);
   const { level, xpIntoLevel, xpForNextLevel } = levelFromXp(row.xp);
   if (level > levelBefore) notifyLevelUp(userId, level);
-  pushXpUpdate(io, userId, row.xp, level, xpIntoLevel, xpForNextLevel);
-  return { xp: row.xp, level };
+  if (award > 0) pushXpUpdate(io, userId, row.xp, level, xpIntoLevel, xpForNextLevel);
+  return { xp: row.xp, level, awarded: award, capped: award < amount };
 }
 
 function setXp(io, userId, xp) {
