@@ -597,6 +597,40 @@ function dragonStageIndex(level) {
   return DRAGON_STAGES.findIndex((s) => level >= s.min && level <= s.max);
 }
 
+// Daily xp-earn cap (Sudan calendar day — see src/xp.js) rendered as its own
+// card on the Level screen. currentUser.dailyXp is sent by /api/auth/me and
+// refreshed live over 'xp_update' (see the socket handler above), so this
+// always reflects the server's real counter, never a client-side guess.
+function formatLevelCountdown(resetsAtIso) {
+  const ms = Math.max(0, new Date(resetsAtIso).getTime() - Date.now());
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return `${h}h ${m}m`;
+}
+function renderLevelDailyXpCard() {
+  const d = currentUser.dailyXp || { cap: 5000, earnedToday: 0, remainingToday: 5000, resetsAt: new Date().toISOString() };
+  const pct = Math.max(0, Math.min(100, Math.round((d.earnedToday / d.cap) * 100)));
+  const atCap = d.remainingToday <= 0;
+  return `
+    <div class="level-daily-xp-card" id="levelDailyXpCard">
+      <div class="level-daily-xp-head">
+        <span class="level-daily-xp-title">⚡ Daily XP limit</span>
+        <span class="level-daily-xp-count">${d.earnedToday.toLocaleString()} <span class="level-daily-xp-cap">/ ${d.cap.toLocaleString()}</span></span>
+      </div>
+      <div class="level-daily-xp-track">
+        <div class="level-daily-xp-fill${atCap ? ' maxed' : ''}" style="width:${pct}%"></div>
+      </div>
+      <div class="level-daily-xp-foot">
+        ${atCap
+          ? `<span class="level-daily-xp-maxed-label">🔒 Today's limit reached</span>`
+          : `<span>${d.remainingToday.toLocaleString()} XP left today</span>`}
+        <span class="level-daily-xp-resets">Resets in ${formatLevelCountdown(d.resetsAt)} · 00:00 Sudan time</span>
+      </div>
+    </div>
+  `;
+}
+
+let levelScreenCountdownTimer = null;
 function renderLevelScreen(box) {
   const level = currentUser.level;
   const into = currentUser.xpIntoLevel || 0;
@@ -614,51 +648,79 @@ function renderLevelScreen(box) {
   const offset = circumference * (1 - pct / 100);
 
   box.innerHTML = `
-    <div class="level-ring-wrap">
-      <div class="level-ring">
-        <svg width="180" height="180" viewBox="0 0 180 180">
-          <circle cx="90" cy="90" r="${radius}" fill="none" stroke="var(--panel-alt)" stroke-width="10" />
-          <circle cx="90" cy="90" r="${radius}" fill="none" stroke="#f59e0b" stroke-width="10" stroke-linecap="round"
-            stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
-        </svg>
-        <div class="level-ring-center">
-          <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
-          <div class="level-ring-number">${level}</div>
-          <div class="level-ring-label">Level</div>
+    <div class="level-screen-container">
+      <div class="level-hero-card">
+        <div class="level-ring-wrap">
+          <div class="level-ring">
+            <svg width="180" height="180" viewBox="0 0 180 180">
+              <defs>
+                <linearGradient id="levelRingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#fbbf24" />
+                  <stop offset="100%" stop-color="#f97316" />
+                </linearGradient>
+              </defs>
+              <circle cx="90" cy="90" r="${radius}" fill="none" stroke="var(--panel-alt)" stroke-width="10" />
+              <circle cx="90" cy="90" r="${radius}" fill="none" stroke="url(#levelRingGradient)" stroke-width="10" stroke-linecap="round"
+                stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
+            </svg>
+            <div class="level-ring-center">
+              <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
+              <div class="level-ring-number">${level}</div>
+              <div class="level-ring-label">Level</div>
+            </div>
+          </div>
+        </div>
+        <div class="level-stage-pills">
+          <div class="level-stage-badge">${escapeHtml(stage.name.toUpperCase())}</div>
+          <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
+        </div>
+        <div class="level-progress-row">
+          <div class="level-progress-track"><div class="level-progress-fill" style="width:${pct}%"></div></div>
+          <div class="level-progress-stats">
+            <span class="level-progress-pct">${pct}%</span>
+            <span class="level-progress-caption">Progress to level ${level + 1} · ${100 - pct}% to go</span>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="level-stage-pills">
-      <div class="level-stage-badge">${escapeHtml(stage.name.toUpperCase())}</div>
-      <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
-    </div>
-    <div class="level-progress-row">
-      <span class="level-progress-pct">${pct}%</span>
-      <span style="color:var(--text-dim); font-size:13px;"> · ${100 - pct}% to go</span>
-      <div class="level-progress-caption">Progress to level ${level + 1}</div>
-    </div>
-    ${nextStage ? `
-      <div class="level-next-dragon-card">
-        <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
+
+      ${renderLevelDailyXpCard()}
+
+      ${nextStage ? `
+        <div class="level-next-dragon-card">
+          <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
+          <div>
+            <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
+            <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
+          </div>
+        </div>
+      ` : ''}
+      <div class="level-roadmap-title">Dragon growth</div>
+      <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
+      <div class="level-roadmap-title">Level roadmap</div>
+      <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
+      <div class="level-next-reward-card">
+        <div class="level-next-reward-icon">${nextTile.icon}</div>
         <div>
-          <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
-          <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
+          <div class="level-next-reward-title">${escapeHtml(nextTile.name)}</div>
+          <div class="level-next-reward-sub">${escapeHtml(nextTile.desc || `Unlocks at level ${nextTile.level}`)}</div>
         </div>
+        <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
       </div>
-    ` : ''}
-    <div class="level-roadmap-title">Dragon growth</div>
-    <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
-    <div class="level-roadmap-title">Level roadmap</div>
-    <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
-    <div class="level-next-reward-card">
-      <div class="level-next-reward-icon">${nextTile.icon}</div>
-      <div>
-        <div class="level-next-reward-title">${escapeHtml(nextTile.name)}</div>
-        <div class="level-next-reward-sub">${escapeHtml(nextTile.desc || `Unlocks at level ${nextTile.level}`)}</div>
-      </div>
-      <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
     </div>
   `;
+
+  // Keeps the "Resets in Xh Ym" line accurate while this screen stays open,
+  // without needing a fresh xp event — cheap no-op once the screen is closed.
+  if (levelScreenCountdownTimer) clearInterval(levelScreenCountdownTimer);
+  levelScreenCountdownTimer = setInterval(() => {
+    const top = subScreenStack[subScreenStack.length - 1];
+    const el = document.querySelector('#levelDailyXpCard .level-daily-xp-resets');
+    if (!el || !currentUser.dailyXp || !top || top.render !== renderLevelScreen) {
+      clearInterval(levelScreenCountdownTimer);
+      return;
+    }
+    el.textContent = `Resets in ${formatLevelCountdown(currentUser.dailyXp.resetsAt)} · 00:00 Sudan time`;
+  }, 60_000);
 
   const dragonScroll = box.querySelector('#dragonGrowthScroll');
   DRAGON_STAGES.forEach((s, i) => {
@@ -1035,14 +1097,20 @@ function connectSocket() {
   // Picking a voucher is private — a toast to the picker only, never posted
   // to the room chat for everyone else to see.
   socket.on('voucher_won', ({ amount }) => toast(`🎉 You picked the voucher and won ${amount} coins!`));
-  socket.on('xp_update', ({ xp, level, xpIntoLevel, xpForNextLevel }) => {
+  socket.on('xp_update', ({ xp, level, xpIntoLevel, xpForNextLevel, dailyXp }) => {
     const leveledUp = currentUser.level && level > currentUser.level;
     currentUser.xp = xp;
     currentUser.level = level;
     if (xpIntoLevel != null) currentUser.xpIntoLevel = xpIntoLevel;
     if (xpForNextLevel != null) currentUser.xpForNextLevel = xpForNextLevel;
+    if (dailyXp) currentUser.dailyXp = dailyXp;
     updateUserBar();
     if (leveledUp) toast(`⭐ Level up! You're now Lv.${level}`);
+    // Keep the Level screen's daily-XP meter live if it's the one open right now.
+    const topSub = subScreenStack[subScreenStack.length - 1];
+    if (topSub && topSub.render === renderLevelScreen && !$('#subScreenOverlay').classList.contains('hidden')) {
+      renderLevelScreen($('#subScreenContent'));
+    }
   });
   socket.on('gift_shower', (data) => playGiftShower(data));
   // "/purchase effect" store (see effectsCatalog.js on the server) — catalog
@@ -3143,7 +3211,6 @@ function closeAdminPanel() {
   $('#adminSearchEmpty').classList.remove('hidden');
 }
 $('#closeAdminBtn').addEventListener('click', closeAdminPanel);
-$('#adminModal').addEventListener('click', (e) => { if (e.target.id === 'adminModal') closeAdminPanel(); });
 
 let lastAdminSearch = '';
 

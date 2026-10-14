@@ -16,11 +16,34 @@ function sudanDateString(d = new Date()) {
   }).format(d); // en-CA formats as YYYY-MM-DD
 }
 
-function pushXpUpdate(io, userId, xp, level, xpIntoLevel, xpForNextLevel) {
+// The next Sudan local midnight (start of the next Sudan calendar day),
+// returned as a UTC instant — Khartoum is a fixed UTC+2 with no DST, so
+// "tomorrow's Sudan midnight" is always today's Sudan date + 1 day, 00:00,
+// shifted back 2 hours to express that same instant in UTC.
+function nextSudanResetUtc(d = new Date()) {
+  const [y, m, day] = sudanDateString(d).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, day + 1, 0, 0, 0) - 2 * 3600 * 1000);
+}
+
+// Read-only snapshot of a user's daily xp-earn progress, straight from a
+// users row (needs xp_daily_date/xp_daily_earned selected) — used both to
+// hand the client a live status and to recompute it fresh after any award.
+function dailyXpStatus(row) {
+  const today = sudanDateString();
+  const earnedToday = row && row.xp_daily_date === today ? (row.xp_daily_earned || 0) : 0;
+  return {
+    cap: DAILY_XP_CAP,
+    earnedToday,
+    remainingToday: Math.max(0, DAILY_XP_CAP - earnedToday),
+    resetsAt: nextSudanResetUtc().toISOString(),
+  };
+}
+
+function pushXpUpdate(io, userId, xp, level, xpIntoLevel, xpForNextLevel, dailyXp) {
   if (!io) return;
   for (const [, s] of io.sockets.sockets) {
     if (s.data.user && s.data.user.id === userId) {
-      s.emit('xp_update', { xp, level, xpIntoLevel, xpForNextLevel });
+      s.emit('xp_update', { xp, level, xpIntoLevel, xpForNextLevel, dailyXp });
     }
   }
 }
@@ -48,10 +71,10 @@ function awardXp(io, userId, amount) {
     db.prepare('UPDATE users SET xp = xp + ?, xp_daily_date = ?, xp_daily_earned = ? WHERE id = ?')
       .run(award, today, earnedToday + award, userId);
   }
-  const row = db.prepare('SELECT xp FROM users WHERE id = ?').get(userId);
+  const row = db.prepare('SELECT xp, xp_daily_date, xp_daily_earned FROM users WHERE id = ?').get(userId);
   const { level, xpIntoLevel, xpForNextLevel } = levelFromXp(row.xp);
   if (level > levelBefore) notifyLevelUp(userId, level);
-  if (award > 0) pushXpUpdate(io, userId, row.xp, level, xpIntoLevel, xpForNextLevel);
+  if (award > 0) pushXpUpdate(io, userId, row.xp, level, xpIntoLevel, xpForNextLevel, dailyXpStatus(row));
   return { xp: row.xp, level, awarded: award, capped: award < amount };
 }
 
@@ -61,9 +84,10 @@ function setXp(io, userId, xp) {
   const levelBefore = before ? levelFromXp(before.xp || 0).level : 1;
 
   db.prepare('UPDATE users SET xp = ? WHERE id = ?').run(xp, userId);
+  const row = db.prepare('SELECT xp, xp_daily_date, xp_daily_earned FROM users WHERE id = ?').get(userId);
   const { level, xpIntoLevel, xpForNextLevel } = levelFromXp(xp);
   if (level > levelBefore) notifyLevelUp(userId, level);
-  pushXpUpdate(io, userId, xp, level, xpIntoLevel, xpForNextLevel);
+  pushXpUpdate(io, userId, xp, level, xpIntoLevel, xpForNextLevel, dailyXpStatus(row));
   return { xp, level };
 }
 
@@ -71,4 +95,4 @@ function setLevel(io, userId, level) {
   return setXp(io, userId, xpForLevel(level));
 }
 
-module.exports = { awardXp, setXp, setLevel };
+module.exports = { awardXp, setXp, setLevel, dailyXpStatus, DAILY_XP_CAP };
