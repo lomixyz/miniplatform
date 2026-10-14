@@ -397,6 +397,17 @@ function attachSocket(io, sessionMiddleware) {
     return xpStore.awardXp(io, userId, amount);
   }
 
+  // Real, persistent game-win counter — feeds the honest "Game Winner"
+  // Achievements tile (src/achievements.js). Always called alongside the
+  // existing awardXp(..., XP_REWARDS.GAME_WIN) at every win payout site
+  // (Legendary Bot, LowCard/Cricket split-pot and single-winner), never
+  // standalone, so it can't drift out of sync with "did this user actually
+  // win a round". Starts at 0 for every existing account — only counts wins
+  // from here forward, same honest-going-forward approach as xp_daily_earned.
+  function recordGameWin(userId) {
+    db.prepare('UPDATE users SET games_won_count = games_won_count + 1 WHERE id = ?').run(userId);
+  }
+
   // Persist a "X sent you a gift!" notification (shown in the Notifications
   // list, not just the live room chat/toast) for whoever receives a gift,
   // whether from a direct send or a room-wide shower.
@@ -846,7 +857,7 @@ function attachSocket(io, sessionMiddleware) {
           emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
           const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
           legendaryBotMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${animal.label} ${animal.emoji}`);
-          if (!entry.isBot) awardXp(userId, XP_REWARDS.GAME_WIN);
+          if (!entry.isBot) { awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
           anyWinner = true;
         }
       }
@@ -1064,7 +1075,7 @@ function attachSocket(io, sessionMiddleware) {
         // Everyone still in was eliminated together (a full tie/sweep) — split the pot evenly rather than losing it.
         const names = [...players.values()];
         const share = Math.floor(pot / players.size);
-        for (const userId of players.keys()) { creditCoins(userId, share, `${botName} split pot`); awardXp(userId, XP_REWARDS.GAME_WIN); }
+        for (const userId of players.keys()) { creditCoins(userId, share, `${botName} split pot`); awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
         botMessage(`Everyone was eliminated at once — the pot (${pot} coins) is split evenly between ${names.join(', ')} (${share} each)!`);
         endGame();
         return;
@@ -1073,6 +1084,7 @@ function attachSocket(io, sessionMiddleware) {
         const [[winnerId, winnerName]] = survivors;
         creditCoins(winnerId, pot, `${botName} win`);
         awardXp(winnerId, XP_REWARDS.GAME_WIN);
+        recordGameWin(winnerId);
         botMessage(`🏆 ${winnerName} wins the pot of ${pot} coins! Type !start to play again.`);
         endGame();
         return;

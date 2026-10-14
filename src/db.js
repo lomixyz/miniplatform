@@ -451,6 +451,7 @@ const newUserColumns = [
   ['xp_daily_date', 'TEXT'], // Sudan-calendar-day (YYYY-MM-DD, Africa/Khartoum) this user last EARNED xp on — see src/xp.js DAILY_XP_CAP. NULL until they first earn any xp under the cap.
   ['xp_daily_earned', 'INTEGER NOT NULL DEFAULT 0'], // how much xp this user has earned so far on xp_daily_date — reset to 0 whenever that date rolls over. Only counts xp earned through awardXp (chat/gifts/games); an admin's direct setXp/setLevel never touches this.
   ['cover_photo_url', 'TEXT'], // Profile hero banner: an uploaded cover photo ("/uploads/<file>"), shown behind the avatar in place of the plain gradient banner. NULL = no cover uploaded, falls back to the gradient.
+  ['games_won_count', 'INTEGER NOT NULL DEFAULT 0'], // Real, persistent win counter for the Achievements "Game Winner" tile (src/achievements.js) — incremented in src/socket.js alongside every awardXp(..., GAME_WIN) payout (Legendary Bot, LowCard/Cricket). Starts at 0 for existing accounts; only counts wins from here forward.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {

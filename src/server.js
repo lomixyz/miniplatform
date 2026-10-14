@@ -25,6 +25,7 @@ const userRoutes = require('./routes/users');
 const merchantRoutes = require('./routes/merchant');
 const globalAdminRoutes = require('./routes/globalAdmin');
 const badgeRoutes = require('./routes/badges');
+const achievementsRoutes = require('./routes/achievements');
 const stickerRoutes = require('./routes/stickers');
 const emojiPackRoutes = require('./routes/emojiPacks');
 const { attachSocket } = require('./socket');
@@ -72,6 +73,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/merchant', merchantRoutes);
 app.use('/api/global-admin', globalAdminRoutes);
 app.use('/api/badges', badgeRoutes);
+app.use('/api/achievements', achievementsRoutes);
 app.use('/api/stickers', stickerRoutes);
 app.use('/api/emoji-packs', emojiPackRoutes);
 

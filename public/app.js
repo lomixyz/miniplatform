@@ -5511,68 +5511,115 @@ async function renderBadgePanel(box) {
   box.appendChild(grid);
 }
 
-// ---------- BADGES POPUP (tap the Badges stat tile on My Profile) ----------
-// A single popup combining what Badge Store + Badge Panel show — the ring,
-// an All/Owned/Locked filter, and each badge's real state (owned+equip, or
-// locked+cost) — so "see my badges" doesn't require leaving the profile.
-// Same data (/api/badges), just presented as an overlay instead of a
-// full-screen sub-screen.
-let badgesModalFilter = 'all';
-async function renderBadgesModalBody() {
+// ---------- ACHIEVEMENTS POPUP (tap the Badges stat tile on My Profile) ----------
+// Real progress toward real milestones (src/achievements.js /
+// /api/achievements) — messages sent, friends, rooms joined, profile views,
+// gifts sent/received, coins spent on gifts, game wins, level, account age,
+// and role unlocks. Deliberately NOT the coins-for-cosmetics Badge Store —
+// that's still its own thing under Explore, untouched. Every number here is
+// real; a metric this app has no way to track (Followers, Following, Votes,
+// seasonal Events) is never shown with a placeholder value — the "Events"
+// tab stays visible but honestly empty rather than being faked or hidden.
+let achievementsModalCategory = 'all';
+function achievementTierPipsHtml(item) {
+  if (item.special) return '';
+  return `<div class="achv-tier-pips">${item.tierThresholds.map((t, i) => `<span class="achv-tier-pip${i < item.unlockedTiers ? ' filled' : ''}"></span>`).join('')}</div>`;
+}
+function achievementCardHtml(item) {
+  const lockedIcon = item.unlockedTiers > 0 ? item.icon : '🔒';
+  const ringClass = item.maxed ? 'achv-icon-ring maxed' : item.unlockedTiers > 0 ? 'achv-icon-ring active' : 'achv-icon-ring locked';
+  const bottomLabel = item.special ? '' : formatCompactNum(item.target);
+  return `
+    <div class="achv-card${item.maxed ? ' maxed' : ''}">
+      <div class="${ringClass}">
+        <span class="achv-icon-emoji">${lockedIcon}</span>
+        ${bottomLabel ? `<span class="achv-icon-label">${escapeHtml(bottomLabel)}</span>` : ''}
+      </div>
+      <div class="achv-card-body">
+        <div class="achv-card-title">${escapeHtml(item.name)}${item.maxed ? ' <span class="achv-max-pill">MAX</span>' : ''}</div>
+        <div class="achv-card-desc">${escapeHtml(item.special ? item.desc : item.desc)}</div>
+        ${item.special
+          ? ''
+          : `<div class="achv-progress-track"><div class="achv-progress-fill" style="width:${item.pct}%"></div></div>
+             <div class="achv-progress-row"><span></span><span class="achv-progress-value">${formatCompactNum(item.value)}/${formatCompactNum(item.target)}</span></div>
+             ${achievementTierPipsHtml(item)}`
+        }
+      </div>
+    </div>
+  `;
+}
+function formatCompactNum(n) {
+  if (n >= 1000000) return (n % 1000000 === 0 ? n / 1000000 : (n / 1000000).toFixed(1)) + 'M';
+  if (n >= 1000) return (n % 1000 === 0 ? n / 1000 : (n / 1000).toFixed(1)) + 'K';
+  return String(n);
+}
+async function renderAchievementsModalBody() {
   const body = $('#badgesModalBody');
   body.innerHTML = '<div class="empty-note">Loading…</div>';
   let data;
   try {
-    data = await api('/badges');
+    data = await api('/achievements');
   } catch (err) {
     body.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     return;
   }
-  const ownedCount = data.catalog.filter((b) => b.owned).length;
-  body.innerHTML = `<h2 style="margin-top:0;">🎖️ Badges</h2>` + badgeRingCardHtml(ownedCount, data.catalog.length, 'Badge Collection', `${ownedCount} of ${data.catalog.length} badges owned`);
-
+  const pct = data.totalBadges > 0 ? Math.round((data.totalUnlocked / data.totalBadges) * 100) : 0;
+  body.innerHTML = `
+    <div class="achv-header">
+      <div class="achv-ring" style="background:conic-gradient(#ec4899 ${Math.round(pct * 3.6)}deg, rgba(255,255,255,0.15) ${Math.round(pct * 3.6)}deg)">
+        <div class="achv-ring-inner"><span class="achv-ring-trophy">🏆</span><span class="achv-ring-pct">${pct}%</span></div>
+      </div>
+      <div class="achv-header-body">
+        <div class="achv-header-label">ACHIEVEMENTS</div>
+        <div class="achv-header-count">${data.totalUnlocked}</div>
+        <div class="achv-header-sub">of ${data.totalBadges} badges unlocked</div>
+      </div>
+    </div>
+  `;
   const tabs = document.createElement('div');
-  tabs.className = 'badge-filter-tabs';
-  [['all', 'All'], ['owned', 'Owned'], ['locked', 'Locked']].forEach(([key, label]) => {
+  tabs.className = 'achv-tabs';
+  const allBtn = document.createElement('button');
+  allBtn.className = 'achv-tab' + (achievementsModalCategory === 'all' ? ' active' : '');
+  allBtn.innerHTML = `✦ All <span class="achv-tab-count">${data.totalUnlocked}</span>`;
+  allBtn.addEventListener('click', () => { achievementsModalCategory = 'all'; renderAchievementsModalBody(); });
+  tabs.appendChild(allBtn);
+  data.categories.forEach((cat) => {
     const btn = document.createElement('button');
-    btn.className = 'badge-filter-btn' + (badgesModalFilter === key ? ' active' : '');
-    btn.textContent = label;
-    btn.addEventListener('click', () => { badgesModalFilter = key; renderBadgesModalBody(); });
+    btn.className = 'achv-tab' + (achievementsModalCategory === cat.key ? ' active' : '');
+    btn.innerHTML = `${cat.icon} ${escapeHtml(cat.label)} <span class="achv-tab-count">${cat.unlocked}/${cat.total}</span>`;
+    btn.addEventListener('click', () => { achievementsModalCategory = cat.key; renderAchievementsModalBody(); });
     tabs.appendChild(btn);
   });
   body.appendChild(tabs);
 
-  const grid = document.createElement('div');
-  grid.className = 'explore-grid';
-  data.catalog
-    .filter((b) => badgesModalFilter === 'all' || (badgesModalFilter === 'owned' ? b.owned : !b.owned))
-    .forEach((b) => {
-      const equipped = data.equippedBadgeId === b.id;
-      const card = exploreCard({
-        icon: b.emoji, iconBg: b.owned ? (equipped ? '#22c55e' : '#64748b') : '#a855f7',
-        title: b.name,
-        subtitle: b.owned ? (equipped ? 'Equipped — shown on your profile' : 'Tap to equip') : `${b.cost.toLocaleString()} coins`,
-        linkLabel: b.owned ? (equipped ? 'UNEQUIP' : 'EQUIP') : 'BUY',
-        onClick: async () => {
-          try {
-            if (b.owned) {
-              const { user } = await api('/badges/equip', { method: 'POST', body: JSON.stringify({ badgeId: equipped ? null : b.id }) });
-              currentUser = user;
-            } else {
-              await api(`/badges/${b.id}/buy`, { method: 'POST' });
-              toast(`Bought ${b.name}!`);
-            }
-            renderBadgesModalBody();
-          } catch (err) { toast(err.message); }
-        },
-      });
-      grid.appendChild(card);
+  const list = document.createElement('div');
+  list.className = 'achv-list';
+  const cats = achievementsModalCategory === 'all' ? data.categories : data.categories.filter((c) => c.key === achievementsModalCategory);
+  cats.forEach((cat) => {
+    if (achievementsModalCategory === 'all') {
+      const label = document.createElement('div');
+      label.className = 'achv-section-label';
+      label.innerHTML = `${cat.icon} <span>${escapeHtml(cat.label.toUpperCase())}</span><span class="achv-section-count">${cat.unlocked}/${cat.total}</span>`;
+      list.appendChild(label);
+    }
+    if (!cat.items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-note';
+      empty.textContent = cat.key === 'events' ? 'No events running right now.' : 'Nothing here yet.';
+      list.appendChild(empty);
+      return;
+    }
+    cat.items.forEach((item) => {
+      const card = document.createElement('div');
+      card.innerHTML = achievementCardHtml(item);
+      list.appendChild(card.firstElementChild);
     });
-  body.appendChild(grid);
+  });
+  body.appendChild(list);
 }
 function openBadgesModal() {
   $('#badgesModal').classList.remove('hidden');
-  renderBadgesModalBody();
+  renderAchievementsModalBody();
 }
 function closeBadgesModal() { $('#badgesModal').classList.add('hidden'); }
 $('#closeBadgesModalBtn').addEventListener('click', closeBadgesModal);
@@ -6135,7 +6182,7 @@ async function renderMyProfile(box) {
       }
     });
   };
-  api('/badges').then(({ catalog }) => setTile('Badges', catalog.filter((b) => b.owned).length)).catch(() => setTile('Badges', '—'));
+  api('/achievements').then(({ totalUnlocked }) => setTile('Badges', totalUnlocked)).catch(() => setTile('Badges', '—'));
   api('/friends').then(({ friends }) => setTile('Friends', friends.length)).catch(() => setTile('Friends', '—'));
   api('/users/me/footprint').then(({ count }) => setTile('Views', count)).catch(() => setTile('Views', '—'));
 
