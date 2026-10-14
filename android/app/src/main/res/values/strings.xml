@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MiniPlatform</string>
+    <string name="title_activity_main">MiniPlatform</string>
+    <string name="package_name">com.miniplatform.app</string>
+    <string name="custom_url_scheme">com.miniplatform.app</string>
+</resources>
