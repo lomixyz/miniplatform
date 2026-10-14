@@ -649,62 +649,67 @@ function renderLevelScreen(box) {
 
   box.innerHTML = `
     <div class="level-screen-container">
-      <div class="level-hero-card">
-        <div class="level-ring-wrap">
-          <div class="level-ring">
-            <svg width="180" height="180" viewBox="0 0 180 180">
-              <defs>
-                <linearGradient id="levelRingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#fbbf24" />
-                  <stop offset="100%" stop-color="#f97316" />
-                </linearGradient>
-              </defs>
-              <circle cx="90" cy="90" r="${radius}" fill="none" stroke="var(--panel-alt)" stroke-width="10" />
-              <circle cx="90" cy="90" r="${radius}" fill="none" stroke="url(#levelRingGradient)" stroke-width="10" stroke-linecap="round"
-                stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
-            </svg>
-            <div class="level-ring-center">
-              <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
-              <div class="level-ring-number">${level}</div>
-              <div class="level-ring-label">Level</div>
+      <div class="level-col-left">
+        <div class="level-hero-card">
+          <div class="level-ring-wrap">
+            <div class="level-ring">
+              <svg width="180" height="180" viewBox="0 0 180 180">
+                <defs>
+                  <linearGradient id="levelRingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#fbbf24" />
+                    <stop offset="100%" stop-color="#f97316" />
+                  </linearGradient>
+                </defs>
+                <circle cx="90" cy="90" r="${radius}" fill="none" stroke="var(--panel-alt)" stroke-width="10" />
+                <circle cx="90" cy="90" r="${radius}" fill="none" stroke="url(#levelRingGradient)" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
+              </svg>
+              <div class="level-ring-center">
+                <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
+                <div class="level-ring-number">${level}</div>
+                <div class="level-ring-label">Level</div>
+              </div>
+            </div>
+          </div>
+          <div class="level-stage-pills">
+            <div class="level-stage-badge">${escapeHtml(stage.name.toUpperCase())}</div>
+            <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
+          </div>
+          <div class="level-progress-row">
+            <div class="level-progress-track"><div class="level-progress-fill" style="width:${pct}%"></div></div>
+            <div class="level-progress-stats">
+              <span class="level-progress-pct">${pct}%</span>
+              <span class="level-progress-caption">Progress to level ${level + 1} · ${100 - pct}% to go</span>
             </div>
           </div>
         </div>
-        <div class="level-stage-pills">
-          <div class="level-stage-badge">${escapeHtml(stage.name.toUpperCase())}</div>
-          <div class="level-tier-badge">⭐ ${escapeHtml(tier.name.toUpperCase())} TIER</div>
-        </div>
-        <div class="level-progress-row">
-          <div class="level-progress-track"><div class="level-progress-fill" style="width:${pct}%"></div></div>
-          <div class="level-progress-stats">
-            <span class="level-progress-pct">${pct}%</span>
-            <span class="level-progress-caption">Progress to level ${level + 1} · ${100 - pct}% to go</span>
+
+        ${renderLevelDailyXpCard()}
+
+        ${nextStage ? `
+          <div class="level-next-dragon-card">
+            <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
+            <div>
+              <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
+              <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
+            </div>
           </div>
+        ` : ''}
+        <div class="level-next-reward-card">
+          <div class="level-next-reward-icon">${nextTile.icon}</div>
+          <div>
+            <div class="level-next-reward-title">${escapeHtml(nextTile.name)}</div>
+            <div class="level-next-reward-sub">${escapeHtml(nextTile.desc || `Unlocks at level ${nextTile.level}`)}</div>
+          </div>
+          <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
         </div>
       </div>
 
-      ${renderLevelDailyXpCard()}
-
-      ${nextStage ? `
-        <div class="level-next-dragon-card">
-          <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
-          <div>
-            <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
-            <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
-          </div>
-        </div>
-      ` : ''}
-      <div class="level-roadmap-title">Dragon growth</div>
-      <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
-      <div class="level-roadmap-title">Level roadmap</div>
-      <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
-      <div class="level-next-reward-card">
-        <div class="level-next-reward-icon">${nextTile.icon}</div>
-        <div>
-          <div class="level-next-reward-title">${escapeHtml(nextTile.name)}</div>
-          <div class="level-next-reward-sub">${escapeHtml(nextTile.desc || `Unlocks at level ${nextTile.level}`)}</div>
-        </div>
-        <div class="level-next-reward-badge">Lv ${nextTile.level}</div>
+      <div class="level-col-right">
+        <div class="level-roadmap-title">Dragon growth</div>
+        <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
+        <div class="level-roadmap-title">Level roadmap</div>
+        <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
       </div>
     </div>
   `;
@@ -3437,8 +3442,9 @@ async function runAdminSearch() {
     }
     empty.classList.add('hidden');
     users.forEach((u) => {
-      const tr = document.createElement('tr');
-      const canPromote = !u.is_global_admin;
+      const card = document.createElement('div');
+      card.className = 'staff-user-card';
+
       let rolesHtml = '';
       if (u.is_global_admin) rolesHtml += `<span class="badge global_admin">global admin</span> `;
       if (u.is_staff) rolesHtml += `<span class="badge staff">staff</span> `;
@@ -3450,29 +3456,20 @@ async function runAdminSearch() {
       if (!u.is_global_admin && !u.is_staff && !u.is_mentor && !u.is_merchant && !u.is_exec_board && !u.is_country_rep && !u.is_elite) rolesHtml = `<span class="badge user">user</span>`;
 
       const staffLocked = u.username === 'admin' || u.username === 'miniplatform';
-      let actionHtml = canPromote ? `<button data-id="${u.id}" class="promote-btn">Promote to Global Admin</button>` : '';
-      actionHtml += `
-        <label style="display:block; font-size:12px; margin-top:4px;" title="${staffLocked ? 'This account is always Staff and this can\'t be changed' : ''}">
-          <input type="checkbox" class="staff-toggle" data-id="${u.id}" ${u.is_staff ? 'checked' : ''} ${staffLocked ? 'checked disabled' : ''}/> Staff${staffLocked ? ' 🔒' : ''}
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="admin-toggle" data-id="${u.id}" ${u.is_global_admin ? 'checked' : ''}/> Global Admin
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="execboard-toggle" data-id="${u.id}" ${u.is_exec_board ? 'checked' : ''}/> Executive Board
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="countryrep-toggle" data-id="${u.id}" ${u.is_country_rep ? 'checked' : ''}/> Country Rep
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="elite-toggle" data-id="${u.id}" ${u.is_elite ? 'checked' : ''}/> Elite User
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="mentor-toggle" data-id="${u.id}" ${u.is_mentor ? 'checked' : ''}/> Mentor
-        </label>
-        <label style="display:block; font-size:12px;">
-          <input type="checkbox" class="merchant-toggle" data-id="${u.id}" ${u.is_merchant ? 'checked' : ''}/> Merchant
+      const roleChip = (cls, checked, label, opts = {}) => `
+        <label class="staff-role-chip${checked ? ' checked' : ''}${opts.disabled ? ' disabled' : ''}" title="${opts.title || ''}">
+          <input type="checkbox" class="${cls}" data-id="${u.id}" ${checked ? 'checked' : ''} ${opts.disabled ? 'disabled' : ''}/>
+          <span>${label}${opts.disabled ? ' 🔒' : ''}</span>
         </label>`;
+      const rolesGridHtml = [
+        roleChip('staff-toggle', u.is_staff || staffLocked, 'Staff', staffLocked ? { disabled: true, title: "This account is always Staff and this can't be changed" } : {}),
+        roleChip('admin-toggle', u.is_global_admin, 'Global Admin'),
+        roleChip('execboard-toggle', u.is_exec_board, 'Executive Board'),
+        roleChip('countryrep-toggle', u.is_country_rep, 'Country Rep'),
+        roleChip('elite-toggle', u.is_elite, 'Elite User'),
+        roleChip('mentor-toggle', u.is_mentor, 'Mentor'),
+        roleChip('merchant-toggle', u.is_merchant, 'Merchant'),
+      ].join('');
 
       const levelControl = `
         <div class="level-control">
@@ -3491,27 +3488,29 @@ async function runAdminSearch() {
           <button type="button" class="country-set-btn" data-id="${u.id}">Set</button>
         </div>`;
 
-      tr.innerHTML = `
-        <td>${u.id}</td>
-        <td>${usernameHtml(u)}</td>
-        <td>${levelControl}</td>
-        <td>${countryControl}</td>
-        <td>${rolesHtml}</td>
-        <td>${u.coins}</td>
-        <td>${actionHtml || '—'}</td>
+      card.innerHTML = `
+        <div class="staff-user-head">
+          <div class="staff-user-id">#${u.id}</div>
+          <div class="staff-user-name">${usernameHtml(u)}</div>
+          <div class="staff-user-roles-summary">${rolesHtml}</div>
+          <div class="staff-user-coins">🪙 ${Number(u.coins).toLocaleString()}</div>
+        </div>
+        <div class="staff-user-body">
+          <div class="staff-control-group">
+            <div class="staff-control-label">Level</div>
+            ${levelControl}
+          </div>
+          <div class="staff-control-group">
+            <div class="staff-control-label">Country</div>
+            ${countryControl}
+          </div>
+        </div>
+        <div class="staff-roles-section">
+          <div class="staff-control-label">Roles</div>
+          <div class="staff-roles-grid">${rolesGridHtml}</div>
+        </div>
       `;
-      tbody.appendChild(tr);
-    });
-    $$('.promote-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        try {
-          await api(`/admin/users/${btn.dataset.id}/promote-to-admin`, { method: 'POST' });
-          toast('User promoted to Global Administrator');
-          runAdminSearch();
-        } catch (err) {
-          toast(err.message);
-        }
-      });
+      tbody.appendChild(card);
     });
     $$('.staff-toggle, .admin-toggle, .mentor-toggle, .merchant-toggle, .execboard-toggle, .countryrep-toggle, .elite-toggle').forEach((box) => {
       box.addEventListener('change', async () => {

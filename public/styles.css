@@ -453,6 +453,20 @@ body::after {
    sparse on a wide desktop viewport (the shared .notif-list shell it sits in
    has no max-width of its own, since other sub-screens want the full width). */
 .level-screen-container { max-width: 520px; margin: 0 auto; }
+.level-col-left { display: flex; flex-direction: column; } /* each card already carries its own margin-top, so no extra gap here */
+.level-col-right { display: flex; flex-direction: column; gap: 4px; margin-top: 14px; }
+/* On a wide viewport, a single narrow centered column leaves huge empty
+   gutters on both sides — switch to a two-column dashboard layout that
+   actually uses the space: summary/progress on the left, the growth +
+   roadmap strips (now wrapping grids, not a single scrolling row) on the
+   right. Below the breakpoint it collapses back to one stacked column. */
+@media (min-width: 860px) {
+  .level-screen-container {
+    max-width: 1080px; display: grid; grid-template-columns: 360px 1fr;
+    align-items: start; gap: 20px;
+  }
+  .level-col-right { margin-top: 0; }
+}
 .level-hero-card {
   background: linear-gradient(180deg, var(--panel) 0%, var(--panel-alt) 100%);
   border: 1px solid var(--border); border-radius: 18px; padding: 22px 18px 18px;
@@ -467,6 +481,10 @@ body::after {
 .level-ring-number { font-size: 40px; font-weight: 800; line-height: 1; color: var(--text); }
 .level-ring-label { font-size: 11px; letter-spacing: 1.5px; color: var(--text-dim); text-transform: uppercase; }
 .level-stage-pills { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
+.level-stage-badge {
+  background: var(--panel-alt); color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+}
 .level-tier-badge {
   background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid #f59e0b;
   border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
@@ -509,7 +527,16 @@ body::after {
 .level-daily-xp-resets { white-space: nowrap; }
 
 .level-roadmap-title { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--text-dim); text-transform: uppercase; margin: 18px 2px 10px; }
+.level-col-right .level-roadmap-title:first-child { margin-top: 2px; }
 .level-roadmap-scroll { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
+/* Wide viewport: wrap into a filling grid instead of one horizontally
+   scrolling row — there's room to just show every tile at once, so the
+   strip should spread across the right column rather than leave it mostly
+   empty gray space with a thin scrollable sliver of content. */
+@media (min-width: 860px) {
+  .level-roadmap-scroll { flex-wrap: wrap; overflow-x: visible; padding-bottom: 0; }
+  .level-milestone-tile, .dragon-growth-tile { flex: 1 1 100px; max-width: 120px; }
+}
 .level-milestone-tile {
   flex: 0 0 auto; width: 92px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 12px 8px; text-align: center;
@@ -1035,10 +1062,44 @@ body::after {
 .staff-page-body { flex: 1; overflow-y: auto; padding: 16px; }
 .staff-page-container { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 .staff-section-desc { color: var(--text-dim); font-size: 13px; margin: 2px 0 12px; line-height: 1.45; }
-.staff-table-scroll { overflow-x: auto; }
 .staff-form-col { display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
 .staff-form-row { display: flex; gap: 8px; }
 .staff-form-row select { flex: 1; }
+
+/* Manage-users search results — one card per matched user, split into clear
+   sections (identity/roles-summary, level+country controls, a filterable
+   roles grid) instead of a single cramped table row whose "Action" cell had
+   to stack a button plus seven checkboxes as a tall skinny list. */
+.staff-user-list { display: flex; flex-direction: column; gap: 12px; }
+.staff-user-card {
+  background: var(--panel-alt); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+}
+.staff-user-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 12px;
+  margin-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.staff-user-id { font-size: 12px; color: var(--text-dim); font-weight: 700; }
+.staff-user-name { font-weight: 700; font-size: 14px; }
+.staff-user-roles-summary { display: flex; flex-wrap: wrap; gap: 4px; }
+.staff-user-coins { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.staff-user-body { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 14px; }
+.staff-control-group { display: flex; flex-direction: column; gap: 6px; }
+.staff-control-label {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-dim);
+}
+.staff-roles-section { border-top: 1px solid var(--border); padding-top: 12px; }
+.staff-roles-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.staff-role-chip {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--border); font-size: 12px; font-weight: 600;
+  color: var(--text-dim); cursor: pointer; user-select: none;
+}
+.staff-role-chip input { margin: 0; }
+.staff-role-chip:hover { border-color: var(--accent); }
+.staff-role-chip.checked {
+  background: rgba(37, 99, 235, 0.12); border-color: var(--accent); color: var(--text); font-weight: 700;
+}
+.staff-role-chip.disabled { opacity: 0.7; cursor: not-allowed; }
 
 /* Room Info popup (read-only) — matches iNwe's card: a colored header bar
    with the room name + close, then a plain list of info rows. */
