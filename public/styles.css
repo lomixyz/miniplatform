@@ -1061,6 +1061,20 @@ body::after {
 .staff-page-header-spacer { flex: 1; }
 .staff-page-body { flex: 1; overflow-y: auto; padding: 16px; }
 .staff-page-container { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.staff-col-left, .staff-col-right { display: flex; flex-direction: column; gap: 14px; }
+/* Same reasoning as .level-screen-container: a single narrow centered
+   column wastes the two side gutters on a wide viewport. Manage Users
+   (search results can run long and benefit from width) gets the wider
+   column; the three compact forms (Create user / Room settings / Emoji
+   store) stack in a fixed-width column alongside it. Below the
+   breakpoint everything collapses back to one stacked column in source
+   order, so Manage Users still comes first on mobile. */
+@media (min-width: 860px) {
+  .staff-page-container {
+    max-width: 1100px; display: grid; grid-template-columns: 1fr 380px;
+    align-items: start; gap: 20px;
+  }
+}
 .staff-section-desc { color: var(--text-dim); font-size: 13px; margin: 2px 0 12px; line-height: 1.45; }
 .staff-form-col { display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
 .staff-form-row { display: flex; gap: 8px; }
