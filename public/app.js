@@ -3934,21 +3934,41 @@ function renderExplore(box) {
 }
 function openDrawerExplore() { openSubScreenFromDrawer('Explore', renderExplore); }
 
-// ---------- MEMBERS ----------
+// ---------- MEMBERS / COMMUNITY ----------
 const MEMBER_GROUP_META = {
-  exec_board: { icon: '🎖️', bg: '#6366f1' },
-  global_admin: { icon: '🛡️', bg: '#facc15' },
-  country_rep: { icon: '🌐', bg: '#b45309' },
-  staff: { icon: '👑', bg: '#22c55e' },
-  elite: { icon: '🏅', bg: '#14b8a6' },
-  mentor: { icon: '🧭', bg: '#3b82f6' },
-  merchant: { icon: '💼', bg: '#ec4899' },
-  top_level: { icon: '⭐', bg: '#f97316' },
+  exec_board: { icon: '🏅', color: '#6366f1', subtitle: 'FOUNDER • Owner • Executive' },
+  global_admin: { icon: '🛡️', color: '#eab308', subtitle: 'Admin IDs' },
+  country_rep: { icon: '🌐', color: '#64748b', subtitle: 'Country representatives' },
+  staff: { icon: '🪪', color: '#10b981', subtitle: 'Staff IDs' },
+  elite: { icon: '🛡️', color: '#0ea5e9', subtitle: 'Elite members' },
+  mentor: { icon: '💼', color: '#ef4444', subtitle: 'Mentors' },
+  merchant: { icon: '🏪', color: '#a855f7', subtitle: 'Verified merchants' },
+  top_level: { icon: '🏆', color: '#f59e0b', subtitle: 'Highest level users' },
 };
 
-// The "Family" role directory (Executive Board, Country Representative,
-// Staff, Mentor, Merchant, Elite, Top Level...) — same underlying /members
-// grouping as before, rendered as iNwe-style cards instead of list rows.
+// A horizontal, color-themed category card (icon + title/subtitle + a
+// matching-color chevron bubble) — used only for the Community directory,
+// where each category gets its own identity color; exploreCard() (the
+// vertical icon-on-top tile) stays the default for Badge Store/Panel etc.
+function communityCard({ icon, color, title, subtitle, onClick }) {
+  const card = document.createElement('div');
+  card.className = 'community-card';
+  card.style.setProperty('--card-color', color || '#3b82f6');
+  card.innerHTML = `
+    <div class="community-card-icon">${icon || '•'}</div>
+    <div class="community-card-body">
+      <div class="community-card-title">${escapeHtml(title)}</div>
+      ${subtitle ? `<div class="community-card-subtitle">${escapeHtml(subtitle)}</div>` : ''}
+    </div>
+    <div class="community-card-chevron">›</div>
+  `;
+  if (onClick) card.addEventListener('click', onClick);
+  return card;
+}
+
+// The "Community" role directory (Executive Board, Admin, Country Rep,
+// Staff, Elite under "Management"; Mentor, Merchant, Top Level under
+// "Community") — same underlying /members grouping as before.
 async function renderMembersGroups(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   try {
@@ -3964,10 +3984,9 @@ async function renderMembersGroups(box) {
         box.appendChild(grid);
         lastSection = g.section;
       }
-      const meta = MEMBER_GROUP_META[g.key] || { icon: '👤', bg: '#64748b' };
-      grid.appendChild(exploreCard({
-        icon: meta.icon, iconBg: meta.bg, title: g.label, subtitle: `${g.count} member${g.count === 1 ? '' : 's'}`,
-        linkLabel: 'VIEW MEMBERS',
+      const meta = MEMBER_GROUP_META[g.key] || { icon: '👤', color: '#64748b', subtitle: `${g.count} member${g.count === 1 ? '' : 's'}` };
+      grid.appendChild(communityCard({
+        icon: meta.icon, color: meta.color, title: g.label, subtitle: meta.subtitle,
         onClick: () => pushSubScreen(g.label, renderMembersList(g.key, g.label)),
       }));
     });
@@ -3982,19 +4001,27 @@ function renderMembersList(key, label) {
     try {
       const { users } = await api(`/members/${key}`);
       box.innerHTML = '';
-      if (!users.length) { box.innerHTML = `<div class="empty-note">No ${escapeHtml(label)} yet.</div>`; return; }
+      if (!users.length) { box.innerHTML = `<div class="empty-note">No ${escapeHtml(label)} yet.</div>`; }
       users.forEach((u) => {
         const row = document.createElement('div');
-        row.className = 'list-row';
+        row.className = 'member-row';
         row.innerHTML = `
-          <div class="avatar-circle small" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
-          <div class="list-row-body">
-            <div class="list-row-title">${usernameHtml(u)}</div>
-            <div class="list-row-subtitle">Level ${u.level} · ${u.coins} 🪙</div>
+          ${avatarPreviewHtml(u).replace('avatar-maker-preview', 'avatar-maker-preview member-row-avatar')}
+          <div class="member-row-body">
+            <div class="member-row-name">${usernameHtml(u)}</div>
+            <div class="member-row-sub">Level ${u.level}${u.country ? ` · ${escapeHtml(u.country)}` : ''}</div>
           </div>
+          ${u.country ? `<div class="member-row-pill">${countryFlag(u.country)} ${escapeHtml(u.country)}</div>` : ''}
+          <div class="list-chevron">›</div>
         `;
+        row.addEventListener('click', () => openUserProfile(u.username));
         box.appendChild(row);
       });
+      const back = document.createElement('div');
+      back.className = 'member-list-back-btn';
+      back.textContent = '← All categories';
+      back.addEventListener('click', () => subScreenBack());
+      box.appendChild(back);
     } catch (err) {
       box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     }

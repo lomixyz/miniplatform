@@ -13,11 +13,11 @@ const router = express.Router();
 // leaderboard, listed alongside the real roles because that's where the
 // reference design puts it.
 const ROLE_GROUPS = [
-  { key: 'exec_board', label: 'Executive Board', column: 'is_exec_board', section: 'Staff & Admin' },
-  { key: 'global_admin', label: 'Admin', column: 'is_global_admin', section: 'Staff & Admin' },
-  { key: 'country_rep', label: 'Country Representative', column: 'is_country_rep', section: 'Staff & Admin' },
-  { key: 'staff', label: 'Staff', column: 'is_staff', section: 'Staff & Admin' },
-  { key: 'elite', label: 'Elite User', column: 'is_elite', section: 'Staff & Admin' },
+  { key: 'exec_board', label: 'Executive Board', column: 'is_exec_board', section: 'Management' },
+  { key: 'global_admin', label: 'Admin', column: 'is_global_admin', section: 'Management' },
+  { key: 'country_rep', label: 'Country Representative', column: 'is_country_rep', section: 'Management' },
+  { key: 'staff', label: 'Staff', column: 'is_staff', section: 'Management' },
+  { key: 'elite', label: 'Elite User', column: 'is_elite', section: 'Management' },
   { key: 'mentor', label: 'Mentor', column: 'is_mentor', section: 'Community' },
   { key: 'merchant', label: 'Merchant', column: 'is_merchant', section: 'Community' },
   { key: 'top_level', label: 'Top Level Users', column: null, section: 'Community' },
