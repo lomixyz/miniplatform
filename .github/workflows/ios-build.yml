@@ -1,0 +1,109 @@
+name: Build iOS App
+
+# Validates (and, once you add signing secrets, archives) the MiniPlatform
+# iOS app — a Capacitor WebView shell pointed at the live server, same as
+# the Android app (see capacitor.config.ts). Must run on a macOS runner:
+# Xcode only exists on macOS, which is why this can't be built in a Linux
+# sandbox. Dependency resolution uses Swift Package Manager (ios/App/CapApp-SPM),
+# so no CocoaPods step is needed.
+#
+# By default this job only *builds* for the iOS Simulator — that proves the
+# project compiles on every push, but a simulator build cannot be installed
+# on a real iPhone or submitted anywhere. To get an actual .ipa you can
+# install on a device or upload to TestFlight/App Store, you need an Apple
+# Developer Program account ($99/year) and must add signing secrets — see
+# the commented-out archive job below.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'public/**'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build-simulator:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Sync Capacitor iOS project
+        run: npx cap sync ios
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build for iOS Simulator (unsigned, validates the project compiles)
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -sdk iphonesimulator -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Upload simulator .app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniplatform-ios-simulator-app
+          path: ios/App/build/Build/Products/Debug-iphonesimulator/App.app
+          retention-days: 30
+
+  # --- Real-device / TestFlight / App Store archive (disabled until you have an Apple Developer account) ---
+  # Once you have an Apple Developer Program membership ($99/year):
+  #   1. In Xcode (on a Mac) or via the Apple Developer portal, create an App ID
+  #      matching capacitor.config.ts's appId (com.miniplatform.app), a
+  #      distribution certificate, and a provisioning profile for it.
+  #   2. Export the certificate as a .p12 and add these GitHub repo secrets
+  #      (Settings -> Secrets and variables -> Actions):
+  #        IOS_CERTIFICATE_BASE64 (base64 of the .p12), IOS_CERTIFICATE_PASSWORD,
+  #        IOS_PROVISIONING_PROFILE_BASE64 (base64 of the .mobileprovision),
+  #        APPLE_TEAM_ID
+  #   3. Uncomment this job.
+  # archive-and-export:
+  #   runs-on: macos-latest
+  #   needs: build-simulator
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: '22', cache: 'npm' }
+  #     - run: npm install
+  #     - run: npx cap sync ios
+  #     - name: Import signing certificate & provisioning profile
+  #       env:
+  #         IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+  #         IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+  #         IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+  #       run: |
+  #         KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+  #         security create-keychain -p "" "$KEYCHAIN_PATH"
+  #         security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+  #         security unlock-keychain -p "" "$KEYCHAIN_PATH"
+  #         echo "$IOS_CERTIFICATE_BASE64" | base64 -d > $RUNNER_TEMP/cert.p12
+  #         security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+  #         security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+  #         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+  #         echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+  #     - name: Archive and export .ipa
+  #       working-directory: ios/App
+  #       run: |
+  #         xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+  #           -archivePath build/App.xcarchive archive \
+  #           DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }}
+  #         xcodebuild -exportArchive -archivePath build/App.xcarchive \
+  #           -exportOptionsPlist ../../ExportOptions.plist -exportPath build/ipa
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: miniplatform-ios-release-ipa
+  #         path: ios/App/build/ipa/*.ipa

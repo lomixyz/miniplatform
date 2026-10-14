@@ -1,0 +1,93 @@
+name: Build Android APK
+
+# Builds the MiniPlatform Android app (a Capacitor WebView shell pointed at
+# the live server — see capacitor.config.ts) into an installable .apk on
+# every push, and on manual trigger. Runs entirely on GitHub's own servers,
+# which can reach dl.google.com for the Android SDK (the Claude cloud
+# sandbox used to develop this app cannot, hence doing the actual build
+# here instead).
+#
+# Produces a DEBUG-signed APK: installs on any Android phone with "install
+# from unknown sources" allowed, but is NOT suitable for Play Store
+# submission (that needs a release keystore — see the commented-out
+# release job below once you have one).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'public/**'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniplatform-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+  # --- Play Store release build (disabled until you have a release keystore) ---
+  # To enable: generate a keystore once with
+  #   keytool -genkeypair -v -keystore release.jks -alias miniplatform -keyalg RSA -keysize 2048 -validity 10000
+  # then add these as GitHub repo secrets (Settings -> Secrets and variables -> Actions):
+  #   ANDROID_KEYSTORE_BASE64 (base64 of release.jks), ANDROID_KEYSTORE_PASSWORD,
+  #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+  # then uncomment this job and the signingConfig block noted in android/app/build.gradle.
+  #
+  # build-release-aab:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-java@v4
+  #       with: { distribution: temurin, java-version: '21' }
+  #     - uses: android-actions/setup-android@v3
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: '22', cache: 'npm' }
+  #     - run: npm install
+  #     - run: npx cap sync android
+  #     - name: Decode keystore
+  #       working-directory: android
+  #       run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > release.jks
+  #     - name: Build release AAB
+  #       working-directory: android
+  #       env:
+  #         ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  #         ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+  #         ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+  #       run: ./gradlew bundleRelease --no-daemon
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: miniplatform-release-aab
+  #         path: android/app/build/outputs/bundle/release/app-release.aab
