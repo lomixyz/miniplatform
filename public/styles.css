@@ -1488,6 +1488,51 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 .list-row-subtitle { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
 .list-row-trailing { flex: none; font-weight: 700; color: var(--accent-light); font-size: 13px; }
 
+/* Leaderboard: #1 gets a big featured card up top (gold ring avatar, rank
+   badge, name + country flag, score) instead of sitting flush in the list
+   with everyone else; ranks 2+ stay as compact rows below it, each with its
+   own medal/number, avatar and country flag next to the name. */
+.leaderboard-top-card {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 6px; padding: 22px 16px 18px;
+  background: linear-gradient(160deg, #fde68a, #fbbf24 55%, #f59e0b);
+  border: 1px solid #f59e0b; border-radius: 16px; margin-bottom: 16px;
+}
+:root[data-theme="dark"] .leaderboard-top-card {
+  background: linear-gradient(160deg, #3a2e0f, #5a4315 55%, #7a5a16);
+  border-color: #92680f;
+}
+:root[data-theme="dark"] .leaderboard-top-rank { color: #fde68a; }
+:root[data-theme="dark"] .leaderboard-top-name { color: #fff7e6; }
+:root[data-theme="dark"] .leaderboard-top-meta { color: #fcd34d; }
+:root[data-theme="dark"] .leaderboard-top-score { color: #fff7e6; }
+.leaderboard-top-avatar-wrap { position: relative; margin-bottom: 4px; }
+.leaderboard-top-avatar {
+  width: 84px; height: 84px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 800; color: #fff;
+  border: 4px solid #fff; box-shadow: 0 0 0 3px #f59e0b;
+}
+.leaderboard-top-flag {
+  position: absolute; right: -4px; bottom: -2px; font-size: 22px;
+  background: var(--panel); border-radius: 50%; padding: 2px;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.leaderboard-top-rank {
+  font-size: 12px; font-weight: 800; letter-spacing: 0.4px; color: #7c2d12;
+  display: flex; align-items: center; gap: 4px;
+}
+.leaderboard-top-name { font-size: 18px; font-weight: 800; color: #1a1203; }
+.leaderboard-top-meta { font-size: 12px; color: #5c4209; font-weight: 600; }
+.leaderboard-top-score { font-size: 22px; font-weight: 800; color: #1a1203; margin-top: 2px; }
+
+.list-row-flag { flex: none; font-size: 15px; margin-right: 2px; }
+.list-row-rank-num {
+  flex: none; width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 13px; background: var(--panel-alt); color: var(--text-dim);
+}
+
 /* Community hub category tiles (Explore -> Community) — a horizontal
    card per role group, color-themed via the --card-color custom property
    set in JS (communityCard()), reusing the existing .explore-grid 2-col

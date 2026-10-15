@@ -4551,17 +4551,38 @@ function renderLeaderboardScreen(board) {
       box.innerHTML = '';
       box.appendChild(sectionLabel(subtitle || label));
       if (!entries.length) { box.innerHTML += '<div class="empty-note">No rankings yet — be the first!</div>'; return; }
-      const medals = ['🥇', '🥈', '🥉'];
-      entries.forEach((u, i) => {
+
+      // #1 gets a big featured card (gold ring avatar + country flag badge,
+      // name, score) instead of sitting flush in the list with everyone
+      // else; ranks 2+ render as the regular compact rows underneath.
+      const top = entries[0];
+      const topCard = document.createElement('div');
+      topCard.className = 'leaderboard-top-card';
+      topCard.innerHTML = `
+        <div class="leaderboard-top-avatar-wrap">
+          <div class="leaderboard-top-avatar" style="background:${colorFor(top.username)}">${(top.username || '?').charAt(0).toUpperCase()}</div>
+          ${top.country ? `<span class="leaderboard-top-flag">${countryFlag(top.country)}</span>` : ''}
+        </div>
+        <div class="leaderboard-top-rank">🥇 #1 ON THE ${escapeHtml((label || 'LEADER BOARD').toUpperCase())}</div>
+        <div class="leaderboard-top-name">${usernameHtml(top)}</div>
+        <div class="leaderboard-top-meta">${escapeHtml(top.country || '')}${top.country ? ' · ' : ''}Level ${top.level}</div>
+        <div class="leaderboard-top-score">${top.score.toLocaleString()}</div>
+      `;
+      box.appendChild(topCard);
+
+      const medals = ['', '🥈', '🥉'];
+      entries.slice(1).forEach((u, idx) => {
+        const i = idx + 1; // true rank index (0-based), rank 2 == i===1
         const row = document.createElement('div');
         row.className = 'list-row';
         row.innerHTML = `
-          <div class="avatar-circle small" style="background:${colorFor(u.username)}">${medals[i] || (i + 1)}</div>
+          <div class="list-row-rank-num">${medals[i] || (i + 1)}</div>
+          <div class="avatar-circle small" style="background:${colorFor(u.username)}">${(u.username || '?').charAt(0).toUpperCase()}</div>
           <div class="list-row-body">
-            <div class="list-row-title">${usernameHtml(u)}</div>
-            <div class="list-row-subtitle">Level ${u.level}</div>
+            <div class="list-row-title">${u.country ? `<span class="list-row-flag">${countryFlag(u.country)}</span>` : ''}${usernameHtml(u)}</div>
+            <div class="list-row-subtitle">${u.country ? `${escapeHtml(u.country)} · ` : ''}Level ${u.level}</div>
           </div>
-          <div class="list-row-trailing">${u.score}</div>
+          <div class="list-row-trailing">${u.score.toLocaleString()}</div>
         `;
         box.appendChild(row);
       });
