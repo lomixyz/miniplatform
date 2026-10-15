@@ -609,31 +609,30 @@ function levelRoadmapTiles(level) {
   return tiles;
 }
 
-// A companion dragon that visibly grows as you level up — shown in the
-// Level screen's ring (in place of a static icon) plus its own "Dragon
-// Growth" strip of stages, locked ones greyed out, like the "Dragon Growth"
-// reference layout. Only three base emoji exist for an egg/hatchling/dragon
-// progression, so later dragon stages are differentiated with a CSS
-// `filter` tint (hue-rotate/saturate/brightness) rather than real art —
-// same emoji-first visual language the rest of the app already uses.
-const DRAGON_STAGES = [
-  { min: 1, max: 5, name: 'Dragon Egg', icon: '🥚', filter: 'none' },
-  { min: 6, max: 10, name: 'Hatchling', icon: '🐣', filter: 'none' },
-  { min: 11, max: 20, name: 'Baby Dragon', icon: '🐲', filter: 'none' },
-  { min: 21, max: 30, name: 'Young Dragon', icon: '🐉', filter: 'hue-rotate(150deg) saturate(1.3)' },
-  { min: 31, max: 40, name: 'Swift Dragon', icon: '🐉', filter: 'hue-rotate(170deg) saturate(1.4) brightness(1.05)' },
-  { min: 41, max: 50, name: 'Fire Dragon', icon: '🐉', filter: 'none' },
-  { min: 51, max: 60, name: 'Flame Dragon', icon: '🐉', filter: 'hue-rotate(-20deg) saturate(1.6)' },
-  { min: 61, max: 70, name: 'War Dragon', icon: '🐉', filter: 'grayscale(0.55) brightness(0.75)' },
-  { min: 71, max: 80, name: 'Mystic Dragon', icon: '🐉', filter: 'hue-rotate(250deg) saturate(1.5)' },
-  { min: 81, max: 90, name: 'Storm Dragon', icon: '🐉', filter: 'hue-rotate(180deg) saturate(0.4) brightness(1.3)' },
-  { min: 91, max: Infinity, name: 'Inferno Dragon', icon: '🐉', filter: 'hue-rotate(-30deg) saturate(1.8) brightness(0.9)' },
+// A companion rank badge that visibly grows as you level up — shown in the
+// Level screen's ring (in place of a static icon) plus its own "Galaxy
+// Rank" strip of stages, locked ones greyed out. Each stage gets its own
+// gradient badge (rendered as a circular background behind the emoji)
+// instead of a CSS filter tint on a repeated icon, so every tier reads as
+// a visually distinct rank at a glance.
+const GROWTH_STAGES = [
+  { min: 1, max: 5, name: 'Meteor', icon: '☄️', grad: 'linear-gradient(135deg,#cbd5e1,#64748b)' },
+  { min: 6, max: 10, name: 'Comet', icon: '💫', grad: 'linear-gradient(135deg,#bae6fd,#0284c7)' },
+  { min: 11, max: 20, name: 'Satellite', icon: '🛰️', grad: 'linear-gradient(135deg,#e0e7ff,#4f46e5)' },
+  { min: 21, max: 30, name: 'Rocket', icon: '🚀', grad: 'linear-gradient(135deg,#fecaca,#dc2626)' },
+  { min: 31, max: 40, name: 'Star Cruiser', icon: '🛸', grad: 'linear-gradient(135deg,#99f6e4,#0d9488)' },
+  { min: 41, max: 50, name: 'Star', icon: '🌟', grad: 'linear-gradient(135deg,#fde68a,#f59e0b)' },
+  { min: 51, max: 60, name: 'Pulsar', icon: '⚡', grad: 'linear-gradient(135deg,#ddd6fe,#7c3aed)' },
+  { min: 61, max: 70, name: 'Supernova', icon: '💥', grad: 'linear-gradient(135deg,#fed7aa,#ea580c)' },
+  { min: 71, max: 80, name: 'Nebula', icon: '🌌', grad: 'linear-gradient(135deg,#e9d5ff,#9333ea)' },
+  { min: 81, max: 90, name: 'Black Hole', icon: '🕳️', grad: 'linear-gradient(135deg,#475569,#0f172a)' },
+  { min: 91, max: Infinity, name: 'Galaxy', icon: '🌠', grad: 'linear-gradient(135deg,#312e81,#6d28d9)' },
 ];
-function dragonStageForLevel(level) {
-  return DRAGON_STAGES.find((s) => level >= s.min && level <= s.max) || DRAGON_STAGES[DRAGON_STAGES.length - 1];
+function growthStageForLevel(level) {
+  return GROWTH_STAGES.find((s) => level >= s.min && level <= s.max) || GROWTH_STAGES[GROWTH_STAGES.length - 1];
 }
-function dragonStageIndex(level) {
-  return DRAGON_STAGES.findIndex((s) => level >= s.min && level <= s.max);
+function growthStageIndex(level) {
+  return GROWTH_STAGES.findIndex((s) => level >= s.min && level <= s.max);
 }
 
 // Daily xp-earn cap (Sudan calendar day — see src/xp.js) rendered as its own
@@ -678,9 +677,9 @@ function renderLevelScreen(box) {
   const tier = tierForLevel(level);
   const tiles = levelRoadmapTiles(level);
   const nextTile = tiles[1];
-  const stageIdx = dragonStageIndex(level);
-  const stage = DRAGON_STAGES[stageIdx];
-  const nextStage = DRAGON_STAGES[stageIdx + 1] || null;
+  const stageIdx = growthStageIndex(level);
+  const stage = GROWTH_STAGES[stageIdx];
+  const nextStage = GROWTH_STAGES[stageIdx + 1] || null;
 
   const radius = 80;
   const circumference = 2 * Math.PI * radius;
@@ -704,7 +703,7 @@ function renderLevelScreen(box) {
                   stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" transform="rotate(-90 90 90)" />
               </svg>
               <div class="level-ring-center">
-                <div class="level-ring-dragon" style="filter:${stage.filter}">${stage.icon}</div>
+                <div class="level-ring-badge" style="background:${stage.grad}">${stage.icon}</div>
                 <div class="level-ring-number">${level}</div>
                 <div class="level-ring-label">Level</div>
               </div>
@@ -726,11 +725,11 @@ function renderLevelScreen(box) {
         ${renderLevelDailyXpCard()}
 
         ${nextStage ? `
-          <div class="level-next-dragon-card">
-            <div class="level-next-dragon-icon" style="filter:${nextStage.filter}">${nextStage.icon}</div>
+          <div class="level-next-stage-card">
+            <div class="level-next-stage-icon" style="background:${nextStage.grad}">${nextStage.icon}</div>
             <div>
-              <div class="level-next-dragon-title">Next: ${escapeHtml(nextStage.name)}</div>
-              <div class="level-next-dragon-sub">Grows at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
+              <div class="level-next-stage-title">Next: ${escapeHtml(nextStage.name)}</div>
+              <div class="level-next-stage-sub">Ranks up at Lv ${nextStage.min} · ${nextStage.min - level} level${nextStage.min - level === 1 ? '' : 's'} to go</div>
             </div>
           </div>
         ` : ''}
@@ -745,8 +744,8 @@ function renderLevelScreen(box) {
       </div>
 
       <div class="level-col-right">
-        <div class="level-roadmap-title">Dragon growth</div>
-        <div class="level-roadmap-scroll" id="dragonGrowthScroll"></div>
+        <div class="level-roadmap-title">Galaxy rank</div>
+        <div class="level-roadmap-scroll" id="growthScroll"></div>
         <div class="level-roadmap-title">Level roadmap</div>
         <div class="level-roadmap-scroll" id="levelRoadmapScroll"></div>
       </div>
@@ -766,19 +765,19 @@ function renderLevelScreen(box) {
     el.textContent = `Resets in ${formatLevelCountdown(currentUser.dailyXp.resetsAt)} · 00:00 Sudan time`;
   }, 60_000);
 
-  const dragonScroll = box.querySelector('#dragonGrowthScroll');
-  DRAGON_STAGES.forEach((s, i) => {
+  const growthScroll = box.querySelector('#growthScroll');
+  GROWTH_STAGES.forEach((s, i) => {
     const reached = i <= stageIdx;
     const tile = document.createElement('div');
-    tile.className = 'dragon-growth-tile' + (i === stageIdx ? ' current' : '') + (reached ? '' : ' locked');
+    tile.className = 'growth-tile' + (i === stageIdx ? ' current' : '') + (reached ? '' : ' locked');
     const rangeLabel = s.max === Infinity ? `Lv ${s.min}+` : `Lv ${s.min}–${s.max}`;
     tile.innerHTML = `
-      ${i === stageIdx ? '<div class="dragon-growth-you">YOU</div>' : ''}
-      <div class="dragon-growth-icon" style="filter:${reached ? s.filter : 'none'}">${reached ? s.icon : '🔒'}</div>
-      <div class="dragon-growth-range">${rangeLabel}</div>
-      <div class="dragon-growth-name">${escapeHtml(s.name)}</div>
+      ${i === stageIdx ? '<div class="growth-you">YOU</div>' : ''}
+      <div class="growth-badge-icon" style="background:${reached ? s.grad : 'linear-gradient(135deg,#cbd5e1,#94a3b8)'}">${reached ? s.icon : '🔒'}</div>
+      <div class="growth-range">${rangeLabel}</div>
+      <div class="growth-name">${escapeHtml(s.name)}</div>
     `;
-    dragonScroll.appendChild(tile);
+    growthScroll.appendChild(tile);
   });
 
   const scroll = box.querySelector('#levelRoadmapScroll');

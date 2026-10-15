@@ -1423,9 +1423,6 @@ function attachSocket(io, sessionMiddleware) {
       socket.emit('announcement', announcement
         ? { roomId, text: announcement.text, by: announcement.by, live: false }
         : { roomId, text: null, live: false });
-      if (announcement) {
-        socket.emit('system_message', { roomId, text: `📢 Announcement from ${announcement.by}: ${announcement.text}` });
-      }
 
       // Let a client joining (or refreshing into) a room mid-silence disable
       // its chat input right away, instead of waiting for a room_silenced
@@ -2356,9 +2353,10 @@ function attachSocket(io, sessionMiddleware) {
     // ---- Per-room announcement (Staff/Global Admin only) ----
     // A mig66/mig33-style banner, scoped to whichever room the poster is
     // currently in: set once, shown immediately to everyone else in THAT
-    // room (as a system message + a dedicated 'announcement' event the
-    // client renders as a banner/toast), and shown again to anyone who
-    // enters that same room afterwards while it's still active — see the
+    // room via a dedicated 'announcement' event the client renders as its
+    // own banner (see renderAnnouncementBanner in app.js) — no duplicate
+    // line in the chat feed itself — and shown again to anyone who enters
+    // that same room afterwards while it's still active — see the
     // 'announcement' emit in join_room. Persisted on the room itself so a
     // restart doesn't silently drop it, and so it never leaks into other
     // rooms the way a single site-wide setting would.
@@ -2384,7 +2382,6 @@ function attachSocket(io, sessionMiddleware) {
       }
       db.setAnnouncement(roomId, text, user.username);
       io.to(`room:${roomId}`).emit('announcement', { roomId, text, by: user.username, live: true });
-      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `📢 Announcement from ${user.username}: ${text}` });
     }
 
     function tryClearAnnouncement(roomId) {
