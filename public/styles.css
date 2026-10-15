@@ -688,11 +688,13 @@ body::after {
 #chatView { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #messages { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
 
-/* Pinned room-info banners at the top of the chat — owner, welcome message,
-   and who's currently in the room — always visible, never scrolls away with
-   the chat log (see #roomInfoBanner's position as a sibling before #messages). */
-#roomInfoBanner { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 0; }
-#roomInfoBanner:empty { display: none; }
+/* Room-info banners (owner, welcome message, who's currently in the room) —
+   live as the first children of #messages (see ensureRoomBannerHost in
+   app.js), not pinned above it, so they're part of the normal scrollable
+   chat log and scroll away once enough messages come in, same as any other
+   chat content. */
+#roomInfoBanner { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+#roomInfoBanner:empty { display: none; margin-bottom: 0; }
 /* Dark-navy info cards (owner, welcome message, who's currently here) —
    deliberately fixed colors rather than the light/dark theme vars (like
    #announcementBanner below): this is the room's own "console" styling,
@@ -715,27 +717,14 @@ body::after {
 .msg .user { font-weight: 700; color: var(--accent-light); }
 .msg .clickable-username { cursor: pointer; }
 
-/* Plain chat-text bubbles — own messages float right in a dark-navy bubble
-   (no username, since it's obviously you), everyone else's float left in a
-   light bubble with their colored username inline. Long-press (or
-   right-click on desktop) either one for Reply/Copy/Report/Block +
-   reactions — see bindMessageLongPress/openMessageActionMenu in app.js. */
-.msg.msg-own, .msg.msg-other { display: flex; flex-direction: column; max-width: 82%; }
-.msg.msg-own { align-self: flex-end; align-items: flex-end; }
-.msg.msg-other { align-self: flex-start; align-items: flex-start; }
-.msg-bubble {
-  border-radius: 16px; padding: 8px 12px; cursor: pointer;
-  -webkit-user-select: none; user-select: none;
-}
-.msg-own .msg-bubble { background: #16234a; color: #f1f5f9; border-bottom-right-radius: 4px; }
-.msg-other .msg-bubble { background: var(--panel-alt); color: var(--text); border-bottom-left-radius: 4px; }
-.msg-bubble-text { white-space: pre-wrap; word-break: break-word; }
-.msg-bubble-meta {
-  display: block; font-size: 10.5px; opacity: 0.65; margin-top: 3px; text-align: right;
-}
-.msg-sent-check { opacity: 0.85; }
+/* Classic flat chat line (mig33/mig66 style) — "ColoredUsername: message
+   text", no bubble, no avatar; every message (yours or anyone else's)
+   renders the same way, distinguished only by each sender's own name color
+   (see usernameStyleAttr). Long-press (or right-click on desktop) a line
+   for Reply/Copy/Report/Block + reactions — see bindMessageLongPress/
+   openMessageActionMenu in app.js. */
 
-/* Reply quote card nested at the top of a reply bubble. */
+/* Reply quote card above a flat chat line. */
 .reply-quote {
   display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px;
   padding: 6px 8px; border-radius: 8px; border-left: 3px solid #0891B2;
@@ -1365,15 +1354,16 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   z-index: 995;
 }
 
-/* Persistent pinned Announcement banner (Staff/Global Admin "/announcement"
-   command) — shown at the top of the chat screen for as long as it's
-   active, same "you'll see this every time you enter a room" behavior as
-   the mig66/mig33 reference. Deliberately fixed cream/orange colors rather
-   than the theme palette, so it reads as an attention banner in both
-   light and dark mode. */
+/* Announcement banner (Staff/Global Admin "/announcement" command) — shown
+   once at the top of the chat log (as a child of #messages, alongside
+   #roomInfoBanner — see ensureRoomBannerHost), not pinned above it, so it
+   scrolls away with the rest of the conversation like any other chat
+   content instead of sitting fixed in place. Deliberately fixed cream/orange
+   colors rather than the theme palette, so it reads as an attention banner
+   in both light and dark mode. */
 #announcementBanner {
   background: #fff7e6; border-left: 4px solid #f97316; border-radius: 6px;
-  padding: 10px 14px; margin: 10px 12px;
+  padding: 10px 14px; margin: 0 0 8px;
 }
 #announcementBanner .announcement-label {
   display: block; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;

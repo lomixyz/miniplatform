@@ -66,16 +66,6 @@ const secondaryPanelEls = new Map();
 // panel's content is independent of whichever room is currently primary.
 const secondaryMsgSeen = new Map();
 
-// The "managed by / welcome / currently in this room" banner is useful the
-// moment you walk into a room, but once people are actively chatting it just
-// pushes the conversation down and stays there forever if left alone. So it
-// disappears automatically once a few messages have gone by — no tap, no way
-// to pin it back open — and comes back fresh the next time the room is
-// (re-)entered, via the reset in enterRoom.
-const ROOM_BANNER_COLLAPSE_AFTER = 6;
-const roomBannerCollapsed = new Map(); // roomId -> bool (true once auto-hidden)
-const roomBannerMsgCount = new Map(); // roomId -> number of messages seen since entering
-
 // The current site-wide announcement (Staff/Global Admin "/announcement"
 // command), or null when none is active — kept in sync by the 'announcement'
 // socket event (both the live broadcast and the replay on room join) and
@@ -1699,8 +1689,6 @@ function enterRoom(id, name) {
   $('#currentRoomName').textContent = name;
   saveCurrentRoom(id, name);
   lastRoomMembers = [];
-  roomBannerMsgCount.set(id, 0);
-  renderRoomInfoBanner();
 
   if (!openRoomTabs.find((r) => r.id === id)) openRoomTabs.push({ id, name });
   renderRoomTabs();
@@ -1724,6 +1712,11 @@ function enterRoom(id, name) {
   $('#messages').innerHTML = hadLocalCache ? roomMessageCache.get(id) : '';
   seenMsgIds.clear();
   collectMsgIds($('#messages'));
+  // Re-inserts the owner/welcome/who's-here banner as the first thing in the
+  // (just-reset) chat log — see ensureRoomBannerHost — without waiting on
+  // the join_room round trip below, which only needs to refresh it again
+  // once live membership data comes back.
+  renderRoomInfoBanner();
 
   // No local cache means this room hasn't been shown in this browser tab yet
   // — either a genuinely fresh entry, or the page was just reloaded (a
@@ -1859,23 +1852,15 @@ function buildMessageEl(msg) {
       : `<audio class="chat-voice-note" src="${escapeHtml(msg.content)}" controls></audio>`;
     div.innerHTML = `<div><span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span></div>${mediaHtml}`;
   } else {
+    // Classic flat chat line — "ColoredUsername: message text" — matching
+    // the mig33/mig66 reference exactly: no bubble, no avatar, every
+    // message (yours or anyone else's) renders the same way, distinguished
+    // only by each user's own name color. A reply still gets its quote card
+    // above the line so that context isn't lost without bubbles.
     const cls = roleClass(msg);
-    // No role badge? Fall back to a purchased Color Shop color, same as the
-    // Participants panel and Members/Leaderboard screens — a role color
-    // always wins, but a plain user's chosen color still shows in chat.
     const nameStyle = usernameStyleAttr(msg);
-    const isOwn = !!(currentUser && msg.username && msg.username.toLowerCase() === currentUser.username.toLowerCase());
-    div.classList.add(isOwn ? 'msg-own' : 'msg-other');
-    const nameHtml = isOwn ? '' : `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> `;
     const replyHtml = msg.replyTo ? buildReplyQuoteHtml(msg.replyTo) : '';
-    const metaHtml = `<span class="msg-bubble-meta">${escapeHtml(formatMsgTime(msg.created_at))}${isOwn ? ' <span class="msg-sent-check" title="Sent">✓</span>' : ''}</span>`;
-    div.innerHTML = `
-      <div class="msg-bubble">
-        ${replyHtml}
-        <span class="msg-bubble-text">${nameHtml}${escapeChatText(msg.content)}</span>
-        ${metaHtml}
-      </div>
-    `;
+    div.innerHTML = `${replyHtml}<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}</span>: ${escapeChatText(msg.content)}`;
   }
   // Every persisted message type (not just plain text) can carry reactions —
   // appended once here rather than duplicated in each branch above.
@@ -2130,18 +2115,6 @@ function appendMessage(msg) {
   const box = $('#messages');
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
-
-  // Count chat activity toward the auto-collapse threshold for the room-info
-  // banner (managed-by / welcome / who's-here) — see roomBannerCollapsed.
-  const rid = currentRoomId;
-  if (rid != null) {
-    const n = (roomBannerMsgCount.get(rid) || 0) + 1;
-    roomBannerMsgCount.set(rid, n);
-    if (n === ROOM_BANNER_COLLAPSE_AFTER && !roomBannerCollapsed.get(rid)) {
-      roomBannerCollapsed.set(rid, true);
-      renderRoomInfoBanner();
-    }
-  }
 }
 
 // ---------- SECONDARY FLOATING PANELS (desktop, "show all open rooms") ----------
@@ -3320,6 +3293,7 @@ $('#sheetSendGift').addEventListener('click', () => {
 $('#sheetClearChat').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
   $('#messages').innerHTML = '';
+  renderRoomInfoBanner(); // the banner lives inside #messages too — restore it after the wipe
 });
 $('#sheetLeaveRoom').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
@@ -4998,17 +4972,41 @@ function infoRow(icon, iconBg, title, subtitle) {
   return row;
 }
 
-// Pinned banners at the top of the chat itself — who manages the room, a
-// welcome message, and who's currently in it — always visible without
-// opening a menu, mirroring mig66's per-room chat header. Silence/moderator
-// management stays in the ⋮ → Room Info screen; this is just the always-on
-// summary view of the same data.
-// Pinned Announcement banner — shows/hides itself alongside the room-info
-// banner (same trigger points: entering a room, switching rooms, a live
-// membership update), so it's always in sync with whichever chat screen is
-// on view without needing its own separate set of call sites.
+// Banners at the top of the chat log itself — who manages the room, a
+// welcome message, and who's currently in it — shown without opening a menu,
+// mirroring mig66's per-room chat header. Silence/moderator management
+// stays in the ⋮ → Room Info screen; this is just the summary view of the
+// same data. They live as the first children of #messages (not pinned above
+// it) so they scroll away with the rest of the conversation like normal chat
+// content instead of sitting fixed in place forever — ensureRoomBannerHost()
+// (re)creates the two host elements there any time #messages gets wiped and
+// rebuilt (room switch, Clear Chat, ...).
+function ensureRoomBannerHost() {
+  const container = $('#messages');
+  if (!container) return null;
+  let banner = document.getElementById('roomInfoBanner');
+  if (!banner || !container.contains(banner)) {
+    banner = document.createElement('div');
+    banner.id = 'roomInfoBanner';
+    container.insertBefore(banner, container.firstChild);
+  }
+  let announcement = document.getElementById('announcementBanner');
+  if (!announcement || !container.contains(announcement)) {
+    announcement = document.createElement('div');
+    announcement.id = 'announcementBanner';
+    announcement.className = 'hidden';
+    banner.after(announcement);
+  }
+  return { banner, announcement };
+}
+
+// Announcement banner — shows/hides itself alongside the room-info banner
+// (same trigger points: entering a room, switching rooms, a live membership
+// update), so it's always in sync with whichever chat screen is on view
+// without needing its own separate set of call sites.
 function renderAnnouncementBanner() {
-  const el = $('#announcementBanner');
+  const host = ensureRoomBannerHost();
+  const el = host ? host.announcement : $('#announcementBanner');
   if (!el) return;
   if (!currentAnnouncement) {
     el.classList.add('hidden');
@@ -5040,7 +5038,8 @@ function showBroadcastBanner(by, text) {
 
 function renderRoomInfoBanner() {
   renderAnnouncementBanner();
-  const banner = $('#roomInfoBanner');
+  const host = ensureRoomBannerHost();
+  const banner = host ? host.banner : $('#roomInfoBanner');
   if (!banner) return;
   const room = allRoomsCache.find((r) => r.id === currentRoomId);
   if (!currentRoomId) { banner.innerHTML = ''; return; }
@@ -5066,16 +5065,13 @@ function renderRoomInfoBanner() {
   // persistent; this line is not, so it only counts online members.
   const allMemberNames = (lastRoomMembers || []).filter((m) => m.status !== 'offline').map((m) => m.username);
   // Capped display — a busy official/bot room (Legendary Bot Official,
-  // Lobby, ...) can easily have 60+ names here, which with no limit made
-  // this banner grow tall enough to push the game bar below it (Legendary's
-  // bet icons, Cricket's bar) out of view — on desktop it's an actual hard
-  // clip, since the floating chat window (#chatScreen.floating) is a fixed
-  // height with overflow:hidden, so anything pushed past its bottom edge is
-  // simply unreachable until the banner collapses on its own after a few
-  // messages (see ROOM_BANNER_COLLAPSE_AFTER) — exactly the window where a
-  // player most wants to see the bet icons, right after joining. Capping the
-  // list here (with a "+N more" tail) keeps the banner's height bounded
-  // regardless of room population, so nothing below it ever gets pushed out.
+  // Lobby, ...) can easily have 60+ names here, which with no limit would
+  // make a single banner entry unreasonably tall. Capping the list here
+  // (with a "+N more" tail) keeps it bounded regardless of room population;
+  // the banner itself now lives inside the scrollable chat log (see
+  // ensureRoomBannerHost) so it simply scrolls out of view like any other
+  // message once there's enough happening below it, instead of needing to
+  // collapse itself away.
   const ROOM_BANNER_MEMBER_CAP = 12;
   const memberNames = allMemberNames.slice(0, ROOM_BANNER_MEMBER_CAP);
   const extraMemberCount = allMemberNames.length - memberNames.length;
@@ -5090,17 +5086,6 @@ function renderRoomInfoBanner() {
   const descHtml = descLines.length > 1
     ? `${descLines[0]}<span class="room-banner-sub">${descLines.slice(1).join('<br>')}</span>`
     : descLines[0];
-
-  // Once the room is actively chatting, appendMessage() flips this to true
-  // (see ROOM_BANNER_COLLAPSE_AFTER) and the banner just disappears entirely
-  // — no tap-to-expand, nothing pinned in place — so it never sits fixed
-  // above a busy conversation. It comes back on its own next time the room
-  // is (re-)entered, via the reset in enterRoom.
-  const collapsed = !!roomBannerCollapsed.get(currentRoomId);
-  if (collapsed) {
-    banner.innerHTML = '';
-    return;
-  }
 
   banner.innerHTML = `
     <div class="room-banner-row">
