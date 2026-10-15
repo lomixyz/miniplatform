@@ -128,14 +128,20 @@ router.post('/forgot-password', (req, res) => {
 });
 
 router.post('/logout', (req, res) => {
-  // Logging out doesn't drop room membership (a persistent thing, per the
-  // "stay in the room until you leave/get removed/go idle" design) — but the
-  // NEXT time this person is back in any of those rooms, their chat view
-  // should start fresh rather than replaying everything posted while they
-  // were logged out. GET /rooms/:id/messages reads this per-room.
+  // Logging out leaves EVERY room this user is currently an active member
+  // of — no one, Staff/Global Admin included, stays "in" a room's chat once
+  // they've actually signed out (see io.leaveAllRoomsForUser in socket.js,
+  // which also stamps history_cleared_at per room so a later re-join starts
+  // fresh instead of replaying what was posted while they were out).
   const userId = req.session.user && req.session.user.id;
+  const username = req.session.user && req.session.user.username;
   if (userId) {
-    db.prepare("UPDATE room_memberships SET history_cleared_at = datetime('now') WHERE user_id = ?").run(userId);
+    const io = req.app.get('io');
+    if (io && io.leaveAllRoomsForUser) io.leaveAllRoomsForUser(userId, username);
+    // Belt-and-suspenders: covers any membership io.leaveAllRoomsForUser
+    // didn't touch (e.g. no io attached in some test/alt entrypoint), so
+    // logging out always at least resets what a future re-join would show.
+    db.prepare("UPDATE room_memberships SET active = 0, history_cleared_at = datetime('now') WHERE user_id = ?").run(userId);
   }
   req.session.destroy(() => res.json({ ok: true }));
 });

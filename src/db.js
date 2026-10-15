@@ -217,14 +217,22 @@ CREATE TABLE IF NOT EXISTS alerts (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Self-service "Become a Merchant" requests (Explore -> Become a Merchant).
--- One pending application per user at a time (enforced in the route, not
--- here, since SQLite partial-unique-index syntax varies by version). Staff
--- review these and approve/reject; approving just sets is_merchant = 1,
--- same as flipping the checkbox in the Admin Panel today.
+-- Self-service "Become a Merchant" requests (Explore -> Become a Merchant),
+-- AND merchant renewal requests (same table, type = 'renewal' — see
+-- routes/merchant.js). One pending application per user at a time (enforced
+-- in the route, not here, since SQLite partial-unique-index syntax varies by
+-- version). Every merchant belongs to exactly one Mentor (users.mentor_id)
+-- and every application is directed at a specific Mentor (mentor_id below),
+-- who reviews and approves/rejects it; Staff retain the ability to review
+-- any application too (oversight), but a Mentor only ever sees their own
+-- queue. Approving a 'new' application sets is_merchant = 1, mentor_id, and
+-- starts a trial (users.merchant_trial_expires_at); approving a 'renewal'
+-- extends that same trial — see MERCHANT_TRIAL_DAYS in routes/merchant.js.
 CREATE TABLE IF NOT EXISTS merchant_applications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
+  mentor_id INTEGER,
+  type TEXT NOT NULL DEFAULT 'new', -- 'new' | 'renewal'
   message TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
   reviewed_by TEXT,
@@ -340,6 +348,25 @@ CREATE TABLE IF NOT EXISTS coin_transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_coin_tx_user_time ON coin_transactions(user_id, created_at DESC);
 
+-- Timestamped log feeding the leaderboards' time-period tabs (Today / Last
+-- Day / Last Week / Last Month — see routes/leaderboard.js). The All Time
+-- view still reads straight off users.xp/total_spent/gifts_sent_count (those
+-- lifetime totals predate this table and can't be reconstructed from it),
+-- but any period tab needs a real timestamped event to sum over, which those
+-- running totals don't carry. board is one of 'wins' | 'spend' | 'gifts'
+-- (matching BOARDS keys in leaderboard.js); amount is the same increment
+-- that was just applied to that board's underlying column (xp awarded,
+-- coins spent on a gift, or number of gifts sent), always positive.
+CREATE TABLE IF NOT EXISTS leaderboard_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  board TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_leaderboard_events_board_time ON leaderboard_events(board, created_at);
+CREATE INDEX IF NOT EXISTS idx_leaderboard_events_user ON leaderboard_events(user_id);
+
 -- Reactions on a post (Blog: favorite/like/dislike). One row per
 -- user+post+kind; like and dislike are kept mutually exclusive by the route
 -- handler (inserting one deletes the other), favorite is independent so a
@@ -380,6 +407,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
   announcement_at TEXT
 );
 `);
+
+// Migrate older databases created before merchant_applications carried
+// mentor_id/type (merchant renewal requests, and scoping an application to
+// one specific Mentor — see routes/merchant.js).
+{
+  const merchantAppColumns = db.prepare('PRAGMA table_info(merchant_applications)').all().map((c) => c.name);
+  if (!merchantAppColumns.includes('mentor_id')) db.exec('ALTER TABLE merchant_applications ADD COLUMN mentor_id INTEGER');
+  if (!merchantAppColumns.includes('type')) db.exec("ALTER TABLE merchant_applications ADD COLUMN type TEXT NOT NULL DEFAULT 'new'");
+}
 
 // Migrate older databases created before Staff could gate room creation by
 // level. Reuses the otherwise-unused app_settings singleton row (id=1)
@@ -452,6 +488,9 @@ const newUserColumns = [
   ['xp_daily_earned', 'INTEGER NOT NULL DEFAULT 0'], // how much xp this user has earned so far on xp_daily_date — reset to 0 whenever that date rolls over. Only counts xp earned through awardXp (chat/gifts/games); an admin's direct setXp/setLevel never touches this.
   ['cover_photo_url', 'TEXT'], // Profile hero banner: an uploaded cover photo ("/uploads/<file>"), shown behind the avatar in place of the plain gradient banner. NULL = no cover uploaded, falls back to the gradient.
   ['games_won_count', 'INTEGER NOT NULL DEFAULT 0'], // Real, persistent win counter for the Achievements "Game Winner" tile (src/achievements.js) — incremented in src/socket.js alongside every awardXp(..., GAME_WIN) payout (Legendary Bot, LowCard/Cricket). Starts at 0 for existing accounts; only counts wins from here forward.
+  ['total_online_seconds', 'INTEGER NOT NULL DEFAULT 0'], // Cumulative lifetime seconds this account has had at least one open socket — accrued in whole-seconds chunks each time their LAST open socket disconnects (see presence.endOnlineSession, called from socket.js's disconnect handler). Feeds the Elite auto-grant eligibility check (db.checkEliteEligibility) alongside gifts_sent_count. A session still open when the server restarts doesn't get its in-progress time counted — same in-memory-presence trade-off as the rest of src/presence.js.
+  ['mentor_id', 'INTEGER'], // Merchant role only: which Mentor (users.id, is_mentor = 1) this merchant belongs to — see db.checkEliteEligibility's neighboring Mentor/Merchant helpers below and routes/merchant.js. NULL for a non-merchant, or a merchant whose mentor was removed/demoted.
+  ['merchant_trial_expires_at', 'TEXT'], // Merchant role only: when this merchant's current trial period runs out — set on approval, extended on every approved renewal request (see routes/merchant.js MERCHANT_TRIAL_DAYS). NULL for a non-merchant. Past this date, the Mentor Dashboard flags the merchant as "Trial expired" — renewal is a request/approval flow (like the original application), never automatic, and an expired trial does NOT by itself strip is_merchant.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
@@ -872,6 +911,28 @@ if (existingBotCount < BOT_TARGET_COUNT) {
   }
 }
 
+// Backfill: every account (bot or human) that doesn't have a country yet —
+// bots from before random country assignment existed, and any human account
+// that registered before country was required, or was admin-created without
+// one — gets a random country from the same list used everywhere else
+// (registration dropdown, bot creation above). A human's own choice (made at
+// registration, or their one-time self-service pick) is never touched since
+// this only ever targets rows where country IS NULL or empty; once set here
+// it's just their country like any other, editable the normal way (Staff, or
+// their own one-time change if they haven't used it yet — see POST
+// /auth/country) going forward.
+{
+  const countryNamesForBackfill = COUNTRY_GIFTS.map(([, name]) => name);
+  const usersMissingCountry = db.prepare("SELECT id FROM users WHERE country IS NULL OR country = ''").all();
+  if (usersMissingCountry.length) {
+    const setCountry = db.prepare('UPDATE users SET country = ? WHERE id = ?');
+    for (const { id } of usersMissingCountry) {
+      const country = countryNamesForBackfill[Math.floor(Math.random() * countryNamesForBackfill.length)];
+      setCountry.run(country, id);
+    }
+  }
+}
+
 // Give every room a live-feeling population from the moment the server
 // starts, instead of waiting for the (much slower) ambient room-drift
 // simulation in socket.js to organically spread 1000 bots across ~99 rooms
@@ -939,6 +1000,17 @@ db.logCoinTx = function logCoinTx(userId, delta, category, description) {
   insertCoinTx.run(userId, Math.round(delta), category, description);
 };
 
+// Records one line in the leaderboard event log — call this alongside every
+// place that increments xp / total_spent / gifts_sent_count, right after
+// that UPDATE, so the leaderboards' Today/Last Day/Last Week/Last Month tabs
+// (see routes/leaderboard.js) have real timestamped activity to sum over.
+// board must be one of 'wins' | 'spend' | 'gifts' (matches BOARDS keys).
+const insertLeaderboardEvent = db.prepare('INSERT INTO leaderboard_events (user_id, board, amount) VALUES (?, ?, ?)');
+db.logLeaderboardEvent = function logLeaderboardEvent(userId, board, amount) {
+  if (!userId || !amount || amount <= 0) return;
+  insertLeaderboardEvent.run(userId, board, Math.round(amount));
+};
+
 db.seedDefaultGiftFavorites = function seedDefaultGiftFavorites(userId) {
   const insertFavorite = db.prepare('INSERT OR IGNORE INTO gift_favorites (user_id, gift_id) VALUES (?, ?)');
   const findGiftId = db.prepare('SELECT id FROM gifts_catalog WHERE name = ?');
@@ -998,11 +1070,16 @@ for (const username of PROTECTED_ACCOUNTS) {
   }
 }
 
-// Of the protected accounts, only 'miniplatform' is always Staff + Global
-// Admin by design — it's how the very first role gets granted to anyone
-// else, so it must never lose those flags (the Admin Panel also locks its
-// Staff checkbox — see routes/admin.js). Enforced again here on every boot
-// so it self-heals even from a hand-edited or restored-from-backup DB.
+// Of the protected accounts, only 'miniplatform' is always Staff by design —
+// it's how the very first role gets granted to anyone else, so it must never
+// lose that flag (the Admin Panel also locks its Staff checkbox — see
+// routes/admin.js). Enforced again here on every boot so it self-heals even
+// from a hand-edited or restored-from-backup DB. It used to also be
+// permanently Global Admin, but that was removed on request (staff-only now)
+// — see the one-time miniplatform_admin_removed_at migration below, which
+// clears is_global_admin the first time this code runs on a given database.
+// Staff can freely re-grant Global Admin to it afterward like any other
+// account, without this undoing it on the next restart.
 // 'admin' and 'boss-3llam' used to be enforced the same way, but were
 // demoted to plain, no-privilege users on request — see the one-time
 // founders_demoted_at migration below, which clears whatever role flags they
@@ -1011,7 +1088,22 @@ for (const username of PROTECTED_ACCOUNTS) {
 // same as any other account, without this undoing it on the next restart).
 const STAFF_ENFORCED_ACCOUNTS = ['miniplatform'];
 for (const username of STAFF_ENFORCED_ACCOUNTS) {
-  db.prepare('UPDATE users SET is_staff = 1, is_global_admin = 1 WHERE username = ?').run(username);
+  db.prepare('UPDATE users SET is_staff = 1 WHERE username = ?').run(username);
+}
+
+// One-time: 'miniplatform' goes from permanently-enforced Staff + Global
+// Admin to Staff only (Global Admin flag cleared) — requested once, then
+// left alone, so this must only ever run once per database. Same
+// app_settings-singleton-column pattern as founders_demoted_at below.
+const appSettingsAdminCol = db.prepare('PRAGMA table_info(app_settings)').all().map((c) => c.name);
+if (!appSettingsAdminCol.includes('miniplatform_admin_removed_at')) {
+  db.exec('ALTER TABLE app_settings ADD COLUMN miniplatform_admin_removed_at TEXT');
+}
+db.exec('INSERT OR IGNORE INTO app_settings (id) VALUES (1)');
+const miniplatformAdminRemoved = db.prepare('SELECT miniplatform_admin_removed_at FROM app_settings WHERE id = 1').get();
+if (miniplatformAdminRemoved && !miniplatformAdminRemoved.miniplatform_admin_removed_at) {
+  db.prepare("UPDATE users SET is_global_admin = 0 WHERE username = 'miniplatform'").run();
+  db.prepare("UPDATE app_settings SET miniplatform_admin_removed_at = datetime('now') WHERE id = 1").run();
 }
 
 // One-time: 'admin' and 'boss-3llam' go from permanently-enforced Staff +
@@ -1032,6 +1124,21 @@ if (foundersDemoted && !foundersDemoted.founders_demoted_at) {
     WHERE username IN ('admin', 'boss-3llam')
   `).run();
   db.prepare("UPDATE app_settings SET founders_demoted_at = datetime('now') WHERE id = 1").run();
+}
+
+// Seed a specific Mentor account on request: love_city1990, Level 80, with
+// the Mentor role flag set. Created once if it doesn't already exist (not
+// re-enforced afterward the way the protected staff accounts above are —
+// staff can freely edit this account's level/roles from here on without it
+// being reset on the next boot).
+{
+  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get('love_city1990');
+  if (!exists) {
+    const hash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
+    const xp = xpForLevel(80);
+    db.prepare('INSERT INTO users (username, password_hash, is_mentor, coins, xp) VALUES (?, ?, 1, ?, ?)')
+      .run('love_city1990', hash, 10000, xp);
+  }
 }
 
 // ---- Per-room announcement (mig66/mig33-style "/announcement" command) ----
@@ -1067,20 +1174,38 @@ db.setMinRoomCreateLevel = function setMinRoomCreateLevel(level) {
 };
 
 // ---- Elite User auto-grant ----
-// Any active user who sends more than ELITE_GIFT_THRESHOLD gifts (lifetime —
-// gifts_sent_count, the same counter behind the Gift Contest leaderboard)
+// Any active user who BOTH sends more than ELITE_GIFT_THRESHOLD gifts
+// (lifetime — gifts_sent_count, the same counter behind the Gift Contest
+// leaderboard) AND has been online for at least ELITE_ONLINE_HOURS_THRESHOLD
+// cumulative hours (lifetime — total_online_seconds, accrued in
+// presence.endOnlineSession / this file's own online-seconds UPDATE below)
 // automatically receives the Elite User role, no Staff action needed. Call
 // this right after any UPDATE that bumps gifts_sent_count (see socket.js and
-// routes/giftstore.js) — it's a cheap no-op once someone is already Elite.
-const ELITE_GIFT_THRESHOLD = 5000;
+// routes/giftstore.js) AND right after any UPDATE that bumps
+// total_online_seconds (see socket.js's disconnect handler) — either one
+// could be the condition that was still missing, so both call sites matter.
+// Cheap no-op once someone is already Elite.
+const ELITE_GIFT_THRESHOLD = 500_000;
+const ELITE_ONLINE_HOURS_THRESHOLD = 208;
+const ELITE_ONLINE_SECONDS_THRESHOLD = ELITE_ONLINE_HOURS_THRESHOLD * 3600;
 db.checkEliteEligibility = function checkEliteEligibility(userId) {
-  const row = db.prepare('SELECT is_elite, gifts_sent_count, username FROM users WHERE id = ?').get(userId);
-  if (!row || row.is_elite || row.gifts_sent_count < ELITE_GIFT_THRESHOLD) return;
+  const row = db.prepare('SELECT is_elite, gifts_sent_count, total_online_seconds, username FROM users WHERE id = ?').get(userId);
+  if (!row || row.is_elite) return;
+  if (row.gifts_sent_count < ELITE_GIFT_THRESHOLD || row.total_online_seconds < ELITE_ONLINE_SECONDS_THRESHOLD) return;
   db.prepare('UPDATE users SET is_elite = 1 WHERE id = ?').run(userId);
   db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)').run(
     userId, 'system', 'You are now an Elite User! 🏅',
-    `You've sent over ${ELITE_GIFT_THRESHOLD.toLocaleString()} gifts — Elite User status has been granted automatically.`
+    `You've sent over ${ELITE_GIFT_THRESHOLD.toLocaleString()} gifts and been online ${ELITE_ONLINE_HOURS_THRESHOLD}+ hours — Elite User status has been granted automatically.`
   );
+};
+
+// Accrues online-time onto a user's lifetime total and re-checks Elite
+// eligibility (see above) — call this with the seconds returned by
+// presence.endOnlineSession(userId) once their last socket disconnects.
+db.addOnlineSeconds = function addOnlineSeconds(userId, seconds) {
+  if (!userId || !seconds || seconds <= 0) return;
+  db.prepare('UPDATE users SET total_online_seconds = total_online_seconds + ? WHERE id = ?').run(Math.round(seconds), userId);
+  db.checkEliteEligibility(userId);
 };
 
 // A purchased Color Shop tier is time-limited (user_colors.expires_at); once

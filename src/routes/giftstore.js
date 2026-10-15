@@ -31,6 +31,8 @@ router.post('/send', requireLogin, (req, res) => {
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
   db.logCoinTx(senderId, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
   db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);
+  db.logLeaderboardEvent(senderId, 'spend', gift.cost);
+  db.logLeaderboardEvent(senderId, 'gifts', 1);
 
   const io = req.app.get('io');
   const senderXp = xpStore.awardXp(io, senderId, XP_REWARDS.GIFT_SENT);

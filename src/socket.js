@@ -541,6 +541,42 @@ function attachSocket(io, sessionMiddleware) {
     }
   }
 
+  // Leaves EVERY room this user is currently an active member of, in one
+  // shot — same effect as them hand-triggering "Leave Room" in each one
+  // (leaveMembership + "has left" system message + a Participants refresh),
+  // plus detaching every one of their currently-connected sockets from each
+  // room's live channel so they stop receiving its messages immediately,
+  // not just on next reconnect. Used on logout (see POST /auth/logout) so
+  // nobody — including Staff/Global Admin, no special-cased exception —
+  // stays "in" a room's chat once they've actually signed out; re-entering
+  // any of those rooms afterward starts fresh, same as any other re-join.
+  // Exposed on `io` itself (io.leaveAllRoomsForUser) so HTTP routes, which
+  // only have access to the shared `io` instance via req.app.get('io'), can
+  // call it without needing a reference to this whole closure.
+  function leaveAllRoomsForUser(userId, username) {
+    const roomIds = activeRoomIdsForUser(userId);
+    if (!roomIds.length) return;
+    const level = currentLevel(userId);
+    for (const roomId of roomIds) {
+      const wasActive = leaveMembership(userId, roomId);
+      if (!wasActive) continue;
+      const badge = roleBadgeForRoom(userId, roomId);
+      const name = roomName(roomId);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${username} [${level}]${badge} has left` });
+      broadcastRoomMembers(roomId);
+    }
+    // Detach every live socket this user currently has from each room's
+    // channel (socket.io keeps it subscribed until the next disconnect
+    // otherwise), and clear the "last focused" pointer so nothing on this
+    // connection still thinks one of these rooms is open.
+    for (const [, s] of io.sockets.sockets) {
+      if (!s.data.user || s.data.user.id !== userId) continue;
+      for (const roomId of roomIds) s.leave(`room:${roomId}`);
+      if (roomIds.includes(s.data.roomId)) s.data.roomId = null;
+    }
+  }
+  io.leaveAllRoomsForUser = leaveAllRoomsForUser;
+
   function activeRoomIds() {
     const ids = new Set();
     for (const [, s] of io.sockets.sockets) {
@@ -656,7 +692,10 @@ function attachSocket(io, sessionMiddleware) {
       io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has left` });
       broadcastRoomMembers(roomId);
       const stillSomewhere = db.prepare('SELECT 1 FROM room_memberships WHERE user_id = ? AND active = 1').get(bot.id);
-      if (!stillSomewhere) presence.markOffline(bot.id);
+      if (!stillSomewhere) {
+        presence.markOffline(bot.id);
+        db.addOnlineSeconds(bot.id, presence.endOnlineSession(bot.id));
+      }
 
       // Walk straight back into the SAME room a few seconds later — "out"
       // is always momentary, never a real departure.
@@ -743,6 +782,8 @@ function attachSocket(io, sessionMiddleware) {
     db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
       .run(totalCost, totalCost, recipients.length, sender.id);
     db.checkEliteEligibility(sender.id);
+    db.logLeaderboardEvent(sender.id, 'spend', totalCost);
+    db.logLeaderboardEvent(sender.id, 'gifts', recipients.length);
     for (const r of recipients) {
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
       awardXp(r.id, XP_REWARDS.GIFT_RECEIVED);
@@ -2080,6 +2121,8 @@ function attachSocket(io, sessionMiddleware) {
         .run(totalCost, totalCost, recipients.length, sender.id);
       db.checkEliteEligibility(sender.id);
       db.logCoinTx(sender.id, -totalCost, 'gifts', `Gift shower: ${gift.name} to ${recipients.length} people`);
+      db.logLeaderboardEvent(sender.id, 'spend', totalCost);
+      db.logLeaderboardEvent(sender.id, 'gifts', recipients.length);
       for (const r of recipients) {
         db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
         db.logCoinTx(r.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username} (shower)`);
@@ -2178,6 +2221,8 @@ function attachSocket(io, sessionMiddleware) {
       db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
       db.logCoinTx(sender.id, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
       db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);
+      db.logLeaderboardEvent(sender.id, 'spend', gift.cost);
+      db.logLeaderboardEvent(sender.id, 'gifts', 1);
 
       // Award xp first so the levels shown in the message reflect this gift's own reward.
       const senderXp = awardXp(sender.id, XP_REWARDS.GIFT_SENT);
@@ -2682,6 +2727,7 @@ function attachSocket(io, sessionMiddleware) {
       }
       if (!stillConnected) {
         presence.markOffline(user.id);
+        db.addOnlineSeconds(user.id, presence.endOnlineSession(user.id));
         invisibleByUser.delete(user.id);
         // Push a live Participants/room-banner refresh to whoever's still in
         // any of this user's rooms — without this, everyone else keeps

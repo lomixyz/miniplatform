@@ -99,6 +99,10 @@ function awardXp(io, userId, amount) {
   if (award > 0) {
     db.prepare('UPDATE users SET xp = xp + ?, xp_daily_date = ?, xp_daily_earned = ? WHERE id = ?')
       .run(award, today, earnedToday + award, userId);
+    // Organic xp gain (chat/games/gifts) feeds the Leader Board's time-period
+    // tabs — an admin's direct setXp/setLevel below deliberately does NOT,
+    // since that's a correction/reward grant, not activity to rank by.
+    db.logLeaderboardEvent(userId, 'wins', award);
   }
   const row = db.prepare('SELECT xp, xp_daily_date, xp_daily_earned FROM users WHERE id = ?').get(userId);
   const { level, xpIntoLevel, xpForNextLevel } = levelFromXp(row.xp);

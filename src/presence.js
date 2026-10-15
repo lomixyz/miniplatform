@@ -4,6 +4,7 @@
 const roomCounts = new Map(); // roomId -> live connected member count
 const onlineUserIds = new Set(); // userIds with at least one open socket
 const lastOfflineAt = new Map(); // userId -> timestamp their last socket disconnected
+const sessionStartedAt = new Map(); // userId -> timestamp their CURRENT online stretch began (cleared once they go fully offline)
 
 function setRoomCount(roomId, count) {
   if (count > 0) roomCounts.set(roomId, count);
@@ -15,12 +16,31 @@ function getRoomCount(roomId) {
 }
 
 function markOnline(userId) {
+  // Only the transition into "has at least one socket" starts a fresh
+  // online-time stretch — a second tab/device connecting while the first is
+  // still open must not reset the clock (see endOnlineSession below, which
+  // measures from this timestamp once the user's LAST socket disconnects).
+  if (!onlineUserIds.has(userId)) sessionStartedAt.set(userId, Date.now());
   onlineUserIds.add(userId);
 }
 
 function markOffline(userId) {
   onlineUserIds.delete(userId);
   lastOfflineAt.set(userId, Date.now());
+}
+
+// Called once a user's LAST open socket disconnects (same "stillConnected"
+// check in socket.js that guards markOffline) — ends their current online
+// stretch and returns how many whole seconds it lasted, so the caller can
+// persist it onto users.total_online_seconds (see db.addOnlineSeconds and
+// db.checkEliteEligibility). Returns 0 if there was no tracked start (e.g.
+// a server restart mid-session — that stretch's time is simply not counted,
+// same trade-off as the rest of this in-memory presence module).
+function endOnlineSession(userId) {
+  const startedAt = sessionStartedAt.get(userId);
+  sessionStartedAt.delete(userId);
+  if (!startedAt) return 0;
+  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 }
 
 function isOnline(userId) {
@@ -47,4 +67,4 @@ function effectiveStatus(userId, chosenStatus) {
   return chosenStatus === 'away' || chosenStatus === 'busy' ? chosenStatus : 'online';
 }
 
-module.exports = { setRoomCount, getRoomCount, markOnline, markOffline, isOnline, wasOnlineRecently, effectiveStatus };
+module.exports = { setRoomCount, getRoomCount, markOnline, markOffline, endOnlineSession, isOnline, wasOnlineRecently, effectiveStatus };

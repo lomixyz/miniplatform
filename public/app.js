@@ -4424,11 +4424,20 @@ function renderExplore(box) {
   moreGrid.appendChild(listRow({ icon: '🧑‍🎨', iconBg: '#22c55e', title: 'Avatar Maker', subtitle: 'Build your character', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
   moreWrap.appendChild(moreGrid);
 
+  // MENTOR (only shown to Mentor accounts) — their own merchants + requests,
+  // scoped server-side to just this mentor (see GET /api/mentor/dashboard
+  // and GET /api/merchant/pending's mentor-only queue).
+  if (currentUser.is_mentor) {
+    const mentorWrap = sectionWrap('MENTOR');
+    mentorWrap.appendChild(listRow({ icon: '📊', iconBg: '#ef4444', title: 'Mentor Dashboard', subtitle: 'Your merchants, daily gain & trial status', onClick: () => pushSubScreen('Mentor Dashboard', renderMentorDashboard) }));
+    mentorWrap.appendChild(listRow({ icon: '📋', iconBg: '#ef4444', title: 'Merchant Requests', subtitle: 'Accept or reject your merchants’ requests', onClick: () => pushSubScreen('Merchant Requests', renderMerchantApplications) }));
+  }
+
   // STAFF (unchanged tools, just grouped into their own section)
   if (currentUser.is_staff) {
     const staffWrap = sectionWrap('STAFF');
     staffWrap.appendChild(listRow({ icon: '🛠️', iconBg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts', onClick: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) }));
-    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests', onClick: () => pushSubScreen('Merchant Applications', renderMerchantApplications) }));
+    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (all Mentors)', onClick: () => pushSubScreen('Merchant Applications', renderMerchantApplications) }));
     staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Administrator requests', onClick: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) }));
   }
 }
@@ -4529,54 +4538,92 @@ function renderMembersList(key, label) {
 }
 
 // ---------- LEADERBOARDS / CONTESTS ----------
-// "Contests" here are live, always-on rankings by lifetime totals — simplified
-// from the reference app's time-boxed events with periodic resets/prizes.
+// Each board (wins/spend/gifts) can be viewed over a few time windows — All
+// Time (the lifetime running total, same as before this feature existed),
+// Today, Last Day, Last Week, Last Month — via server-computed rankings (see
+// routes/leaderboard.js). Switching tabs re-fetches and re-renders just the
+// results list underneath; the tab bar itself stays put.
+const LEADERBOARD_PERIOD_ORDER = ['alltime', 'today', 'last_day', 'last_week', 'last_month'];
+const LEADERBOARD_PERIOD_LABELS = { alltime: 'All Time', today: 'Today', last_day: 'Last Day', last_week: 'Last Week', last_month: 'Last Month' };
+
 function renderLeaderboardScreen(board) {
   return async function (box) {
-    box.innerHTML = '<div class="empty-note">Loading…</div>';
-    try {
-      const { label, subtitle, entries } = await api(`/leaderboard/${board}`);
-      box.innerHTML = '';
-      box.appendChild(sectionLabel(subtitle || label));
-      if (!entries.length) { box.innerHTML += '<div class="empty-note">No rankings yet — be the first!</div>'; return; }
+    box.innerHTML = '';
+    let period = 'alltime';
 
-      // #1 gets a big featured card (gold ring avatar + country flag badge,
-      // name, score) instead of sitting flush in the list with everyone
-      // else; ranks 2+ render as the regular compact rows underneath.
-      const top = entries[0];
-      const topCard = document.createElement('div');
-      topCard.className = 'leaderboard-top-card';
-      topCard.innerHTML = `
-        <div class="leaderboard-top-avatar-wrap">
-          <div class="leaderboard-top-avatar" style="background:${colorFor(top.username)}">${(top.username || '?').charAt(0).toUpperCase()}</div>
-          ${top.country ? `<span class="leaderboard-top-flag">${countryFlag(top.country)}</span>` : ''}
-        </div>
-        <div class="leaderboard-top-rank">🥇 #1 ON THE ${escapeHtml((label || 'LEADER BOARD').toUpperCase())}</div>
-        <div class="leaderboard-top-name">${usernameHtml(top)}</div>
-        <div class="leaderboard-top-meta">${escapeHtml(top.country || '')}${top.country ? ' · ' : ''}Level ${top.level}</div>
-        <div class="leaderboard-top-score">${top.score.toLocaleString()}</div>
-      `;
-      box.appendChild(topCard);
-
-      const medals = ['', '🥈', '🥉'];
-      entries.slice(1).forEach((u, idx) => {
-        const i = idx + 1; // true rank index (0-based), rank 2 == i===1
-        const row = document.createElement('div');
-        row.className = 'list-row';
-        row.innerHTML = `
-          <div class="list-row-rank-num">${medals[i] || (i + 1)}</div>
-          <div class="avatar-circle small" style="background:${colorFor(u.username)}">${(u.username || '?').charAt(0).toUpperCase()}</div>
-          <div class="list-row-body">
-            <div class="list-row-title">${u.country ? `<span class="list-row-flag">${countryFlag(u.country)}</span>` : ''}${usernameHtml(u)}</div>
-            <div class="list-row-subtitle">${u.country ? `${escapeHtml(u.country)} · ` : ''}Level ${u.level}</div>
-          </div>
-          <div class="list-row-trailing">${u.score.toLocaleString()}</div>
-        `;
-        box.appendChild(row);
+    const tabBar = document.createElement('div');
+    tabBar.className = 'leaderboard-period-tabs';
+    LEADERBOARD_PERIOD_ORDER.forEach((p) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'leaderboard-period-tab' + (p === period ? ' active' : '');
+      tab.textContent = LEADERBOARD_PERIOD_LABELS[p];
+      tab.dataset.period = p;
+      tab.addEventListener('click', () => {
+        if (p === period) return;
+        period = p;
+        tabBar.querySelectorAll('.leaderboard-period-tab').forEach((t) => t.classList.toggle('active', t.dataset.period === period));
+        loadResults();
       });
-    } catch (err) {
-      box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+      tabBar.appendChild(tab);
+    });
+    box.appendChild(tabBar);
+
+    const resultsEl = document.createElement('div');
+    resultsEl.className = 'leaderboard-results';
+    box.appendChild(resultsEl);
+
+    async function loadResults() {
+      resultsEl.innerHTML = '<div class="empty-note">Loading…</div>';
+      try {
+        const { label, subtitle, entries } = await api(`/leaderboard/${board}?period=${period}`);
+        resultsEl.innerHTML = '';
+        resultsEl.appendChild(sectionLabel(subtitle || label));
+        if (!entries.length) {
+          resultsEl.innerHTML += `<div class="empty-note">No rankings yet for ${escapeHtml(LEADERBOARD_PERIOD_LABELS[period])} — be the first!</div>`;
+          return;
+        }
+
+        // #1 gets a big featured card (gold ring avatar + country flag badge,
+        // name, score) instead of sitting flush in the list with everyone
+        // else; ranks 2+ render as the regular compact rows underneath.
+        const top = entries[0];
+        const topCard = document.createElement('div');
+        topCard.className = 'leaderboard-top-card';
+        topCard.innerHTML = `
+          <div class="leaderboard-top-avatar-wrap">
+            <div class="leaderboard-top-avatar" style="background:${colorFor(top.username)}">${(top.username || '?').charAt(0).toUpperCase()}</div>
+            ${top.country ? `<span class="leaderboard-top-flag">${countryFlag(top.country)}</span>` : ''}
+          </div>
+          <div class="leaderboard-top-rank">🥇 #1 ON THE ${escapeHtml((label || 'LEADER BOARD').toUpperCase())}</div>
+          <div class="leaderboard-top-name">${usernameHtml(top)}</div>
+          <div class="leaderboard-top-meta">${escapeHtml(top.country || '')}${top.country ? ' · ' : ''}Level ${top.level}</div>
+          <div class="leaderboard-top-score">${top.score.toLocaleString()}</div>
+        `;
+        resultsEl.appendChild(topCard);
+
+        const medals = ['', '🥈', '🥉'];
+        entries.slice(1).forEach((u, idx) => {
+          const i = idx + 1; // true rank index (0-based), rank 2 == i===1
+          const row = document.createElement('div');
+          row.className = 'list-row';
+          row.innerHTML = `
+            <div class="list-row-rank-num">${medals[i] || (i + 1)}</div>
+            <div class="avatar-circle small" style="background:${colorFor(u.username)}">${(u.username || '?').charAt(0).toUpperCase()}</div>
+            <div class="list-row-body">
+              <div class="list-row-title">${u.country ? `<span class="list-row-flag">${countryFlag(u.country)}</span>` : ''}${usernameHtml(u)}</div>
+              <div class="list-row-subtitle">${u.country ? `${escapeHtml(u.country)} · ` : ''}Level ${u.level}</div>
+            </div>
+            <div class="list-row-trailing">${u.score.toLocaleString()}</div>
+          `;
+          resultsEl.appendChild(row);
+        });
+      } catch (err) {
+        resultsEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+      }
     }
+
+    loadResults();
   };
 }
 
@@ -6364,35 +6411,71 @@ async function renderMerchantApply(box) {
   box.innerHTML = '';
 
   if (status.isMerchant) {
-    box.innerHTML = '<div class="empty-note">💼 You\'re already a Merchant.</div>';
+    const pendingRenewal = status.application && status.application.status === 'pending' && status.application.type === 'renewal';
+    box.innerHTML = `
+      <div class="empty-note">💼 You're a Merchant, under Mentor <b>${escapeHtml(status.mentorUsername || '—')}</b>.</div>
+      <div class="list-row">
+        <div class="list-row-body">
+          <div class="list-row-title">${status.trialExpired ? '🔴 Trial expired' : '🟢 Trial active'}</div>
+          <div class="list-row-subtitle">${status.trialExpiresAt ? `${status.trialExpired ? 'Expired' : 'Renews/expires'} ${new Date(status.trialExpiresAt).toLocaleDateString()}` : 'No trial date on file'}</div>
+        </div>
+      </div>
+    `;
+    if (pendingRenewal) {
+      box.innerHTML += '<div class="empty-note">⏳ Your renewal request is pending review by your Mentor.</div>';
+    } else {
+      const renewBtn = document.createElement('button');
+      renewBtn.className = 'primary-btn';
+      renewBtn.style.marginTop = '10px';
+      renewBtn.textContent = status.trialExpired ? 'Request renewal from your Mentor' : 'Request early renewal';
+      renewBtn.addEventListener('click', async () => {
+        try { await api('/merchant/renew', { method: 'POST', body: JSON.stringify({}) }); toast('Renewal requested!'); renderMerchantApply(box); }
+        catch (err) { toast(err.message); }
+      });
+      box.appendChild(renewBtn);
+    }
     return;
   }
   if (status.application && status.application.status === 'pending') {
     box.innerHTML = `
-      <div class="empty-note">⏳ Your application is pending review by Staff.</div>
+      <div class="empty-note">⏳ Your application is pending review by your chosen Mentor.</div>
       <div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">"${escapeHtml(status.application.message || '')}"</div></div></div>
     `;
     return;
   }
 
+  let mentors = [];
+  try { ({ mentors } = await api('/merchant/mentors')); } catch (err) { /* fall through — box below still renders, just with an empty picker */ }
+
   const note = document.createElement('div');
   note.className = 'empty-note';
   note.textContent = status.application && status.application.status === 'rejected'
     ? 'Your last application was declined — you can apply again below.'
-    : 'Tell Staff why you\'d like to become a Merchant, then submit.';
+    : "Every Merchant belongs to a Mentor — choose one, tell them why you'd like to become a Merchant, then submit.";
   box.appendChild(note);
+
+  if (!mentors.length) {
+    box.innerHTML += '<div class="empty-note">No Mentors are available to apply under right now — check back later.</div>';
+    return;
+  }
 
   const composer = document.createElement('div');
   composer.className = 'post-composer';
   composer.innerHTML = `
+    <select id="merchantApplyMentor" style="width:100%; margin-bottom:8px;">
+      <option value="">Choose a Mentor…</option>
+      ${mentors.map((m) => `<option value="${m.id}">${escapeHtml(m.username)}</option>`).join('')}
+    </select>
     <textarea id="merchantApplyMessage" placeholder="Why should you become a Merchant?" maxlength="500" rows="4" style="width:100%;"></textarea>
     <button id="merchantApplySubmitBtn" class="primary-btn">Submit Application</button>
   `;
   box.appendChild(composer);
   $('#merchantApplySubmitBtn').addEventListener('click', async () => {
+    const mentorId = $('#merchantApplyMentor').value;
     const message = $('#merchantApplyMessage').value.trim();
+    if (!mentorId) return toast('Choose a Mentor first');
     try {
-      await api('/merchant/apply', { method: 'POST', body: JSON.stringify({ message }) });
+      await api('/merchant/apply', { method: 'POST', body: JSON.stringify({ mentorId: Number(mentorId), message }) });
       toast('Application submitted!');
       renderMerchantApply(box);
     } catch (err) {
@@ -6401,9 +6484,11 @@ async function renderMerchantApply(box) {
   });
 }
 
-// ---------- MERCHANT APPLICATIONS (Explore -> Merchant Applications, Staff only) ----------
+// ---------- MERCHANT APPLICATIONS (Explore -> Merchant Requests/Applications — Mentors see
+// only their own queue, Staff see every pending request across all Mentors; see
+// GET /api/merchant/pending) ----------
 async function renderMerchantApplications(box) {
-  if (!currentUser.is_staff) { box.innerHTML = '<div class="empty-note">Staff only.</div>'; return; }
+  if (!currentUser.is_staff && !currentUser.is_mentor) { box.innerHTML = '<div class="empty-note">Staff or Mentor only.</div>'; return; }
   box.innerHTML = '<div class="empty-note">Loading…</div>';
 
   const draw = async () => {
@@ -6416,7 +6501,7 @@ async function renderMerchantApplications(box) {
     }
     box.innerHTML = '';
     if (!applications.length) {
-      box.innerHTML = '<div class="empty-note">No pending applications.</div>';
+      box.innerHTML = '<div class="empty-note">No pending requests.</div>';
       return;
     }
     applications.forEach((a) => {
@@ -6425,25 +6510,86 @@ async function renderMerchantApplications(box) {
       row.style.flexDirection = 'column';
       row.style.alignItems = 'stretch';
       row.innerHTML = `
-        <div class="list-row-title">${escapeHtml(a.username)}</div>
+        <div class="list-row-title">${escapeHtml(a.username)} ${a.type === 'renewal' ? '<span class="count-chip">Renewal</span>' : '<span class="count-chip">New</span>'}</div>
         <div class="list-row-subtitle">"${escapeHtml(a.message || '(no message)')}"</div>
         <div style="display:flex; gap:8px; margin-top:8px;">
-          <button class="primary-btn merchant-approve-btn" data-id="${a.id}">Approve</button>
+          <button class="primary-btn merchant-approve-btn" data-id="${a.id}">Accept</button>
           <button class="secondary-btn merchant-reject-btn" data-id="${a.id}">Reject</button>
         </div>
       `;
       row.querySelector('.merchant-approve-btn').addEventListener('click', async () => {
-        try { await api(`/merchant/${a.id}/approve`, { method: 'POST' }); toast(`${a.username} is now a Merchant`); draw(); }
+        try { await api(`/merchant/${a.id}/approve`, { method: 'POST' }); toast(a.type === 'renewal' ? `${a.username}'s trial was renewed` : `${a.username} is now a Merchant`); draw(); }
         catch (err) { toast(err.message); }
       });
       row.querySelector('.merchant-reject-btn').addEventListener('click', async () => {
-        try { await api(`/merchant/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); draw(); }
+        try { await api(`/merchant/${a.id}/reject`, { method: 'POST' }); toast('Request rejected'); draw(); }
         catch (err) { toast(err.message); }
       });
       box.appendChild(row);
     });
   };
   draw();
+}
+
+// ---------- MENTOR DASHBOARD (Explore -> Mentor Dashboard, Mentor only) ----------
+// The merchants belonging to this mentor (see users.mentor_id), each one's
+// today's xp gain and trial status, plus a summary strip and a shortcut into
+// the pending-requests queue (renderMerchantApplications, same mentor-scoped
+// GET /merchant/pending).
+async function renderMentorDashboard(box) {
+  if (!currentUser.is_mentor) { box.innerHTML = '<div class="empty-note">Mentor only.</div>'; return; }
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let data;
+  try {
+    data = await api('/mentor/dashboard');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+
+  const summaryRow = document.createElement('div');
+  summaryRow.className = 'explore-2col-grid';
+  summaryRow.style.marginBottom = '14px';
+  const summaryTile = (label, value) => `
+    <div class="list-row" style="flex-direction:column; align-items:flex-start; gap:2px;">
+      <div class="list-row-subtitle">${escapeHtml(label)}</div>
+      <div class="list-row-title" style="font-size:18px;">${value}</div>
+    </div>
+  `;
+  summaryRow.innerHTML =
+    summaryTile('Merchants', data.summary.merchantCount) +
+    summaryTile('Pending requests', data.summary.pendingCount) +
+    summaryTile('Trials expired', data.summary.trialsExpired) +
+    summaryTile("Today's total XP gain", data.summary.totalDailyGainXp.toLocaleString());
+  box.appendChild(summaryRow);
+
+  if (data.summary.pendingCount > 0) {
+    const pendingBtn = document.createElement('button');
+    pendingBtn.className = 'primary-btn';
+    pendingBtn.style.marginBottom = '14px';
+    pendingBtn.textContent = `Review ${data.summary.pendingCount} pending request${data.summary.pendingCount === 1 ? '' : 's'}`;
+    pendingBtn.addEventListener('click', () => pushSubScreen('Merchant Requests', renderMerchantApplications));
+    box.appendChild(pendingBtn);
+  }
+
+  box.appendChild(sectionLabel('Your merchants'));
+  if (!data.merchants.length) {
+    box.innerHTML += '<div class="empty-note">No merchants under you yet.</div>';
+    return;
+  }
+  data.merchants.forEach((m) => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    row.innerHTML = `
+      <div class="avatar-circle small" style="background:${colorFor(m.username)}">${(m.username || '?').charAt(0).toUpperCase()}</div>
+      <div class="list-row-body">
+        <div class="list-row-title">${escapeHtml(m.username)}</div>
+        <div class="list-row-subtitle">Level ${m.level} · Daily gain ${m.dailyGainXp.toLocaleString()} XP · ${m.trialExpired ? '🔴 Trial expired' : '🟢 Trial active'}${m.trialExpiresAt ? ` (${new Date(m.trialExpiresAt).toLocaleDateString()})` : ''}</div>
+      </div>
+    `;
+    box.appendChild(row);
+  });
 }
 
 // ---------- BECOME A GLOBAL ADMINISTRATOR (Explore -> Become a Global Administrator) ----------
