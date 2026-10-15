@@ -932,12 +932,12 @@ body::after {
 .dicebet-badge.dicebet-countdown { background: rgba(255,255,255,0.22); }
 .dicebet-badge.dicebet-countdown.idle { font-weight: 600; opacity: 0.8; }
 .dicebet-badge.dicebet-bet-summary { background: #fff; color: #3b0764; }
-#luxuryGamePanel .dicebet-badge.dicebet-bet-summary { color: #78350f; }
+#luxuryGamePanel .dicebet-badge.dicebet-bet-summary { color: #5b21b6; }
 .dicebet-badge.dicebet-start-btn {
   cursor: pointer; border: none; font: inherit; font-weight: 800; color: #3b0764; background: #fde047;
   animation: dicebetStartPulse 1.4s ease-in-out infinite;
 }
-#luxuryGamePanel .dicebet-badge.dicebet-start-btn { color: #78350f; }
+#luxuryGamePanel .dicebet-badge.dicebet-start-btn { color: #5b21b6; }
 .dicebet-badge.dicebet-start-btn:hover { background: #fef08a; }
 @keyframes dicebetStartPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(253,224,71,0.6); } 50% { box-shadow: 0 0 0 5px rgba(253,224,71,0); } }
 .dicebet-icon-btn {
@@ -947,7 +947,6 @@ body::after {
 }
 .dicebet-icon-btn:hover { background: rgba(255,255,255,0.3); }
 .dicebet-icon-btn.active { background: #fff; color: #3b0764; }
-#luxuryGamePanel .dicebet-icon-btn.active { color: #78350f; }
 
 /* Capped + internally scrollable, same fix pattern as the room banner above
    the dice-betting panels: this list must never be allowed to grow the
@@ -992,8 +991,54 @@ body::after {
   border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 700; margin: 6px auto; display: block;
 }
 #luxuryGamePanel .dicebet-reopen-tab {
-  background: linear-gradient(135deg, #78350f, #b45309 55%, #92400e);
+  background: linear-gradient(135deg, #7c3aed, #a78bfa 55%, #818cf8); color: #2e1065;
 }
+
+/* Luxury Bet, restyled to the lavender-and-gold reference look (light pill
+   panel instead of the dark console-overlay look shared.css gives every
+   other dice-betting game above) — scoped to #luxuryGamePanel only, so
+   Legendary Bot keeps its original dark-purple styling untouched. */
+#luxuryGamePanel {
+  background: linear-gradient(165deg, #ede9fe, #ddd6fe 60%, #e9d5ff);
+  border: 1px solid #c4b5fd; border-radius: 18px; color: #2e1065;
+  box-shadow: 0 4px 16px rgba(91, 33, 182, 0.12);
+}
+#luxuryGamePanel .dicebet-title { color: #2e1065; }
+#luxuryGamePanel .dicebet-subtitle { color: #6d28d9; opacity: 0.85; }
+#luxuryGamePanel .dicebet-badge { background: rgba(124, 58, 237, 0.12); color: #4c1d95; }
+#luxuryGamePanel .dicebet-badge.dicebet-countdown { background: rgba(124, 58, 237, 0.18); }
+#luxuryGamePanel .dicebet-icon-btn {
+  background: #fff; color: #5b21b6; box-shadow: 0 1px 3px rgba(91, 33, 182, 0.25);
+}
+#luxuryGamePanel .dicebet-icon-btn:hover { background: #f5f3ff; }
+#luxuryGamePanel .dicebet-icon-btn.active { background: #7c3aed; color: #fff; }
+#luxuryGamePanel .dicebet-bets-list { background: rgba(124, 58, 237, 0.08); }
+#luxuryGamePanel .dicebet-bet-user { color: #4c1d95; }
+#luxuryGamePanel .dicebet-bet-amounts { color: #6d28d9; opacity: 1; }
+#luxuryGamePanel .dicebet-bets-empty { color: #6d28d9; }
+
+/* Character cards — gold gradient rounded cards (not the plain circle +
+   label the shared rules draw) so each pick reads like the reference's
+   "Laila / 12k" tiles. */
+#luxuryGamePanel .dicebet-face-row { gap: 8px; }
+#luxuryGamePanel .dicebet-face-item {
+  width: auto; flex: 1; min-width: 0; gap: 2px; padding: 10px 2px 8px;
+  background: linear-gradient(165deg, #fde68a, #fbbf24 70%, #f59e0b);
+  border: 2px solid transparent; border-radius: 14px; box-shadow: 0 2px 4px rgba(180, 83, 9, 0.25);
+}
+#luxuryGamePanel .dicebet-face-item.selected {
+  border-color: #7c3aed; box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.35);
+}
+#luxuryGamePanel .dicebet-face-item:hover .dicebet-face-avatar { border-color: transparent; }
+#luxuryGamePanel .dicebet-face-avatar { background: transparent; width: auto; height: auto; font-size: 22px; }
+#luxuryGamePanel .dicebet-face-item-label { color: #451a03; font-weight: 800; }
+#luxuryGamePanel .dicebet-face-total { color: #451a03; opacity: 0.85; }
+
+/* Quick-amount pills — white pills, filled purple when selected. */
+#luxuryGamePanel .dicebet-amount-pill { background: #fff; color: #4c1d95; box-shadow: 0 1px 3px rgba(91, 33, 182, 0.18); }
+#luxuryGamePanel .dicebet-amount-pill:hover { background: #f5f3ff; }
+#luxuryGamePanel .dicebet-amount-pill.selected { background: #7c3aed; color: #fff; }
+#luxuryGamePanel .dicebet-hint { color: #6d28d9; opacity: 0.9; }
 
 /* Cricket status bar — a slim green pitch-themed strip pinned above the chat
    input (matches the reference screenshot): players in/left on the left, a
