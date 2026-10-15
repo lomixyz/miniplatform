@@ -3191,25 +3191,40 @@ function sendGiftFlow(gift) {
   socket.emit('send_gift_by_username', { roomId: currentRoomId, toUsername: target, giftId: gift.id });
 }
 
+// "Gift Gallery" card grid — one circular icon badge + name + coin-cost pill
+// per gift, shared by the in-chat Send Gift picker and the Explore -> Gift
+// Store screen so both pickers look and behave identically. `onSelect(gift,
+// cardEl)` fires on click; the caller decides what selecting means (send
+// immediately vs. just highlight-and-wait-for-a-recipient).
+function buildGiftGalleryGrid(catalog, onSelect) {
+  const grid = document.createElement('div');
+  grid.className = 'gift-gallery-grid';
+  catalog.forEach((g) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'gift-gallery-card';
+    card.innerHTML = `
+      <div class="gift-gallery-icon">${g.emoji}</div>
+      <div class="gift-gallery-name">${escapeHtml(g.name)}</div>
+      <div class="gift-gallery-cost">🪙 ${g.cost.toLocaleString()}</div>
+    `;
+    card.addEventListener('click', () => onSelect(g, card));
+    grid.appendChild(card);
+  });
+  return grid;
+}
+
 // Full-catalog picker, opened from the chat ⋮ menu's "Send Gift" action.
 function renderSendGiftPicker(box) {
   box.innerHTML = '';
-  const note = document.createElement('div');
-  note.className = 'empty-note';
-  note.style.marginBottom = '8px';
-  note.textContent = 'Pick a gift to send in this room.';
-  box.appendChild(note);
-
-  const grid = document.createElement('div');
-  grid.className = 'gift-store-grid';
-  allGiftsCache.forEach((g) => {
-    const chip = document.createElement('button');
-    chip.className = 'gift-chip';
-    chip.innerHTML = `${g.emoji} ${g.name} (${g.cost}🪙)`;
-    chip.addEventListener('click', () => sendGiftFlow(g));
-    grid.appendChild(chip);
-  });
-  box.appendChild(grid);
+  const header = document.createElement('div');
+  header.className = 'gift-gallery-header';
+  header.innerHTML = `
+    <div class="gift-gallery-title">🎁 Gift Gallery</div>
+    <div class="gift-gallery-subtitle">Coins · Pick a gift to send in this room</div>
+  `;
+  box.appendChild(header);
+  box.appendChild(buildGiftGalleryGrid(allGiftsCache, (g) => sendGiftFlow(g)));
 }
 
 // ---------- ACTION SHEET (⋮ button in chat) ----------
@@ -5985,27 +6000,27 @@ async function renderGiftStore(box) {
   giftStoreSelectedUser = null;
   giftStoreSelectedGift = null;
   box.innerHTML = `
+    <div class="gift-gallery-header">
+      <div class="gift-gallery-title">🎁 Gift Gallery</div>
+      <div class="gift-gallery-subtitle">Coins · Special &amp; Limited</div>
+    </div>
     <div class="post-composer">
       <input type="text" id="giftStoreSearchInput" placeholder="Search a username..." />
       <div id="giftStoreSearchResults"></div>
     </div>
     <div id="giftStoreSelectedUserBox" class="empty-note">No recipient selected yet.</div>
     <div class="list-section-label">CHOOSE A GIFT</div>
-    <div class="gift-store-grid" id="giftStoreGrid"></div>
+    <div id="giftStoreGrid"></div>
     <button id="giftStoreSendBtn" class="primary-btn" style="margin-top:12px;" disabled>Send Gift</button>
   `;
-  const grid = box.querySelector('#giftStoreGrid');
-  giftStoreCatalog.forEach((g) => {
-    const chip = document.createElement('button');
-    chip.className = 'gift-chip';
-    chip.textContent = `${g.emoji} ${g.name} (${g.cost}🪙)`;
-    chip.addEventListener('click', () => {
-      giftStoreSelectedGift = g;
-      grid.querySelectorAll('.gift-chip').forEach((c) => c.classList.remove('selected'));
-      chip.classList.add('selected');
-    });
-    grid.appendChild(chip);
+  const gridHost = box.querySelector('#giftStoreGrid');
+  const grid = buildGiftGalleryGrid(giftStoreCatalog, (g, card) => {
+    giftStoreSelectedGift = g;
+    grid.querySelectorAll('.gift-gallery-card').forEach((c) => c.classList.remove('selected'));
+    card.classList.add('selected');
   });
+  gridHost.replaceWith(grid);
+  grid.id = 'giftStoreGrid';
 
   const input = box.querySelector('#giftStoreSearchInput');
   const results = box.querySelector('#giftStoreSearchResults');
