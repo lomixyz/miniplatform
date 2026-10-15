@@ -3776,6 +3776,19 @@ async function applyCountry(userId, country) {
   }
 }
 
+// Staff-only: change ANY user's gender. There's no self-service way to edit
+// this anywhere else in the app — it's fixed at registration otherwise.
+async function applyGender(userId, gender) {
+  if (!gender) { toast('Pick a gender first'); return; }
+  try {
+    await api(`/admin/users/${userId}/set-gender`, { method: 'POST', body: JSON.stringify({ gender }) });
+    toast(`Gender set to ${gender === 'male' ? 'Male' : 'Female'}`);
+    runAdminSearch();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 function openAdminPanel() {
   if (!currentUser.is_staff) return;
   $('#userTableBody').innerHTML = '';
@@ -4022,6 +4035,15 @@ async function runAdminSearch() {
           <button type="button" class="country-set-btn" data-id="${u.id}">Set</button>
         </div>`;
 
+      const genderControl = `
+        <div class="level-control" style="display:flex; gap:4px;">
+          <select class="gender-select" data-id="${u.id}" style="max-width:140px;">
+            <option value="male" ${u.gender === 'male' ? 'selected' : ''}>♂ Male</option>
+            <option value="female" ${u.gender === 'female' ? 'selected' : ''}>♀ Female</option>
+          </select>
+          <button type="button" class="gender-set-btn" data-id="${u.id}">Set</button>
+        </div>`;
+
       // Staff-only: reset this user's password with no need for their old
       // one (e.g. they're locked out). Plain text so Staff can read back
       // what they just typed before sending it; nothing here is ever
@@ -4048,6 +4070,10 @@ async function runAdminSearch() {
           <div class="staff-control-group">
             <div class="staff-control-label">Country</div>
             ${countryControl}
+          </div>
+          <div class="staff-control-group">
+            <div class="staff-control-label">Gender</div>
+            ${genderControl}
           </div>
           <div class="staff-control-group">
             <div class="staff-control-label">Password</div>
@@ -4107,6 +4133,12 @@ async function runAdminSearch() {
       btn.addEventListener('click', async () => {
         const select = document.querySelector(`.country-select[data-id="${btn.dataset.id}"]`);
         await applyCountry(btn.dataset.id, select.value);
+      });
+    });
+    $$('.gender-set-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const select = document.querySelector(`.gender-select[data-id="${btn.dataset.id}"]`);
+        await applyGender(btn.dataset.id, select.value);
       });
     });
     $$('.password-reset-btn').forEach((btn) => {

@@ -150,6 +150,25 @@ router.post('/users/:id/set-level', requireFlag('staff'), (req, res) => {
   res.json({ user: publicUser(updated) });
 });
 
+// Gender is otherwise fixed at registration — there's no self-service "edit
+// my gender" anywhere in the app. This is the one place it can be changed
+// after the fact, deliberately Staff-only (e.g. to fix a signup mistake).
+router.post('/users/:id/set-gender', requireFlag('staff'), (req, res) => {
+  const targetId = Number(req.params.id);
+  const gender = req.body && req.body.gender === 'female' ? 'female' : req.body && req.body.gender === 'male' ? 'male' : null;
+  if (!gender) return res.status(400).json({ error: 'Gender must be male or female' });
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  db.prepare('UPDATE users SET gender = ? WHERE id = ?').run(gender, targetId);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
+
+  const refresh = req.app.get('refreshUserPresence');
+  if (refresh) refresh(targetId);
+
+  res.json({ user: publicUser(updated) });
+});
+
 // Staff can reset any user's password directly from the Admin Panel — no
 // access to the old password needed (e.g. the user lost it and can't log in
 // to change it themselves via Settings). Same minimum-length rule as
