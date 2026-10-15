@@ -2275,17 +2275,64 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 .balance-tx-amount.positive { color: #16a34a; }
 .balance-tx-amount.negative { color: #dc2626; }
 
-/* /whois popup — a small centered card (reuses .modal-overlay/.modal-panel
-   for the same click-outside-to-close + Close button behavior as the
-   Admin/Give Coins modals, just narrower). */
-.whois-panel { width: 300px; padding: 18px; text-align: center; }
-.whois-avatar { width: 64px; height: 64px; font-size: 26px; margin: 4px auto 10px; }
-.whois-name { font-size: 17px; font-weight: 700; margin-bottom: 2px; }
-.whois-row {
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  font-size: 13px; color: var(--text-dim); margin-top: 6px;
+/* /whois popup — a gradient-header profile card (reuses .modal-overlay for
+   the same click-outside-to-close behavior as the Admin/Give Coins modals,
+   but with its own layout: header + pills + info rows + room chips + a
+   full-width Close button at the bottom, matching the reference design). */
+.whois-panel { width: 320px; padding: 0; text-align: center; overflow-x: hidden; overflow-y: auto; }
+.whois-header {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  padding: 24px 18px 18px; color: #fff; border-radius: 11px 11px 0 0;
 }
-.whois-row .status-dot { position: static; }
+.whois-avatar-wrap { position: relative; width: 76px; height: 76px; margin: 0 auto 10px; }
+.whois-avatar {
+  width: 76px; height: 76px; font-size: 30px; margin: 0; border: 3px solid rgba(255,255,255,0.85);
+}
+.whois-status-dot {
+  position: absolute; right: -2px; bottom: -2px; width: 16px; height: 16px;
+  border-radius: 50%; background: #22c55e; border: 3px solid #fff;
+}
+.whois-status-dot.offline { background: #94a3b8; }
+.whois-status-dot.away { background: #f59e0b; }
+.whois-status-dot.busy { background: #ef4444; }
+.whois-status-dot.invisible { background: #94a3b8; }
+.whois-name { font-size: 18px; font-weight: 700; margin-bottom: 10px; color: #fff; }
+/* The gradient header has a fixed purple background, so the username always
+   renders in plain white here regardless of role/purchased color — readable
+   against any role color, unlike the colored rendering used everywhere else
+   (chat, lists, profile) where the background is neutral. */
+.whois-name span { color: #fff !important; -webkit-text-fill-color: #fff !important; background: none !important; }
+.whois-pills { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
+.whois-pill {
+  display: inline-flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.18);
+  border: 1px solid rgba(255,255,255,0.35); border-radius: 999px; padding: 4px 10px;
+  font-size: 12px; font-weight: 600; color: #fff;
+}
+.whois-pill .status-dot { position: static; }
+.whois-body { padding: 16px 18px 18px; text-align: left; }
+.whois-bio {
+  font-style: italic; color: var(--text-dim); font-size: 13px; text-align: center;
+  margin-bottom: 14px; padding: 0 6px;
+}
+.whois-info-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid var(--border-light, #eef0f4); font-size: 13px;
+}
+.whois-info-row:last-of-type { border-bottom: none; }
+.whois-info-icon { font-size: 15px; width: 20px; text-align: center; }
+.whois-info-label { color: var(--text-dim); flex: 1; }
+.whois-info-value { font-weight: 600; text-align: right; }
+.whois-rooms { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-light, #eef0f4); }
+.whois-rooms-label { font-size: 12px; font-weight: 700; color: var(--text-dim); margin-bottom: 8px; }
+.whois-room-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.whois-room-chip {
+  background: var(--accent-light); color: #fff; border-radius: 999px;
+  padding: 4px 10px; font-size: 12px; font-weight: 600;
+}
+.whois-close-btn {
+  display: block; width: 100%; padding: 13px; border: none; border-top: 1px solid var(--border-light, #eef0f4);
+  background: var(--accent-light); color: #fff; font-size: 14px; font-weight: 700; cursor: pointer;
+}
 
 /* My Profile → footprint icon (who's viewed my profile) and the visitor list
    that opens when it's tapped. */

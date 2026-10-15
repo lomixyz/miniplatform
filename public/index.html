@@ -372,8 +372,10 @@
     </div>
 
     <div id="chatView">
-      <div id="roomInfoBanner"></div>
-      <div id="announcementBanner" class="hidden"></div>
+      <!-- roomInfoBanner/announcementBanner are no longer pinned here — they're
+           injected as the first children of #messages (see ensureRoomBannerHost
+           in app.js) so they scroll away with the rest of the chat log instead
+           of staying fixed above it. -->
       <div id="messages"></div>
       <div id="legendaryGamePanel" class="hidden"></div>
       <div id="luxuryGamePanel" class="hidden"></div>
@@ -706,8 +708,8 @@
 
 <div id="whoisModal" class="modal-overlay hidden">
   <div id="whoisPanel" class="modal-panel whois-panel">
-    <button class="close-btn secondary" id="closeWhoisBtn">Close</button>
     <div id="whoisContent"></div>
+    <button type="button" class="whois-close-btn" id="closeWhoisBtn">Close</button>
   </div>
 </div>
 

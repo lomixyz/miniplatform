@@ -2154,6 +2154,10 @@ function attachSocket(io, sessionMiddleware) {
       if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
       db.clearExpiredActiveColor(target.id);
       target = db.prepare('SELECT * FROM users WHERE id = ?').get(target.id);
+      const rooms = db.prepare(`
+        SELECT r.name FROM room_memberships rm JOIN rooms r ON r.id = rm.room_id
+        WHERE rm.user_id = ? AND rm.active = 1 ORDER BY r.name COLLATE NOCASE
+      `).all(target.id).map((r) => r.name);
       socket.emit('whois_result', {
         username: target.username,
         level: currentLevel(target.id),
@@ -2170,6 +2174,9 @@ function attachSocket(io, sessionMiddleware) {
         active_color_key: target.active_color_key || null,
         gender: target.gender || null,
         avatar_photo_url: target.avatar_photo_url || null,
+        bio: target.bio || null,
+        created_at: target.created_at || null,
+        rooms,
       });
     }
 

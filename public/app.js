@@ -2535,16 +2535,50 @@ function showEffectStoreModal(effects, mode) {
 }
 function closeEffectStore() { $('#effectStoreModal').classList.add('hidden'); }
 
-// "/whois <username>" result — a small popup with level, country, and live
-// status. Open to every user (see WHOIS_COMMAND in socket.js).
+// "/whois <username>" result — a gradient-header profile card with live
+// status, role pills, bio, and the rooms this user is currently active in.
+// Open to every user (see WHOIS_COMMAND in socket.js). The role pill reuses
+// the exact same resolver as the Profile Hero card (roleLabel in
+// profileHeroHtml) so it never shows a role the user doesn't actually hold.
 function showWhoisPopup(u) {
   const nameStyle = usernameStyleAttr(u);
+  const active = !u.is_staff ? resolveActiveColor(u) : null;
+  const roleLabel = u.is_staff ? '👑 Staff' : active ? `${active.icon ? active.icon + ' ' : ''}${escapeHtml(active.name)}` : null;
+  const statusLabel = STATUS_LABELS[u.status] || 'Offline';
+  const genderLabel = u.gender === 'male' ? '♂ Male' : u.gender === 'female' ? '♀ Female' : 'Not set';
+  const joinedLabel = u.created_at
+    ? new Date(u.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'Unknown';
+  const avatarInner = u.avatar_photo_url
+    ? `<div class="avatar-circle whois-avatar avatar-circle-photo" style="background-image:url('${escapeHtml(u.avatar_photo_url)}')"></div>`
+    : `<div class="avatar-circle whois-avatar" style="background:${colorFor(u.username)}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>`;
+  const rooms = Array.isArray(u.rooms) ? u.rooms : [];
+
   $('#whoisContent').innerHTML = `
-    <div class="avatar-circle whois-avatar" style="background:${colorFor(u.username)}; margin-left:auto; margin-right:auto;">${escapeHtml(u.username.charAt(0).toUpperCase())}</div>
-    <div class="whois-name"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)}</div>
-    <div class="whois-row">⚡ Level ${u.level}</div>
-    <div class="whois-row">${u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : 'No country set'}</div>
-    <div class="whois-row"><span class="status-dot ${statusDotClass(u.status)}"></span> ${STATUS_LABELS[u.status] || 'Offline'}</div>
+    <div class="whois-header">
+      <div class="whois-avatar-wrap">
+        ${avatarInner}
+        <span class="whois-status-dot ${statusDotClass(u.status)}" title="${statusLabel}"></span>
+      </div>
+      <div class="whois-name"><span class="${roleClass(u)}"${nameStyle}>${escapeHtml(u.username)}</span>${roleIcon(u)}</div>
+      <div class="whois-pills">
+        <span class="whois-pill"><span class="status-dot ${statusDotClass(u.status)}"></span> ${statusLabel}</span>
+        <span class="whois-pill">⭐ Level ${u.level}</span>
+        ${roleLabel ? `<span class="whois-pill">${roleLabel}</span>` : ''}
+      </div>
+    </div>
+    <div class="whois-body">
+      ${u.bio ? `<div class="whois-bio">“${escapeHtml(u.bio)}”</div>` : ''}
+      <div class="whois-info-row"><span class="whois-info-icon">🌐</span><span class="whois-info-label">Country</span><span class="whois-info-value">${u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : 'Not set'}</span></div>
+      <div class="whois-info-row"><span class="whois-info-icon">👤</span><span class="whois-info-label">Gender</span><span class="whois-info-value">${genderLabel}</span></div>
+      <div class="whois-info-row"><span class="whois-info-icon">📅</span><span class="whois-info-label">Joined</span><span class="whois-info-value">${joinedLabel}</span></div>
+      ${rooms.length ? `
+        <div class="whois-rooms">
+          <div class="whois-rooms-label">📍 In rooms</div>
+          <div class="whois-room-chips">${rooms.map((r) => `<span class="whois-room-chip">${escapeHtml(r)}</span>`).join('')}</div>
+        </div>
+      ` : ''}
+    </div>
   `;
   $('#whoisModal').classList.remove('hidden');
 }
@@ -6843,7 +6877,7 @@ function profileHeroHtml(u, editable) {
         ${editable ? '<button type="button" class="profile-hero-avatar-edit-btn" id="profileAvatarEditBtn" title="Change profile picture">📷</button>' : ''}
       </div>
       <div class="profile-hero-topline">
-        <div class="profile-hero-name">${usernameHtml(u)} <span class="status-dot ${statusDotClass(u.status)}${editable ? ' own' : ''}" id="${editable ? 'profileHeroStatusDot' : ''}" title="${STATUS_LABELS[u.status] || 'Offline'}${editable ? ' — tap to change' : ''}"></span>${u.equipped_badge ? ` <span title="${escapeHtml(u.equipped_badge.name)}">${u.equipped_badge.emoji}</span>` : ''}</div>
+        <div class="profile-hero-name">${usernameHtml(u)} <span class="status-dot ${statusDotClass(u.status)}${editable ? ' own' : ''}" id="${editable ? 'profileHeroStatusDot' : ''}" title="${STATUS_LABELS[u.status] || 'Offline'}${editable ? ' — tap to change' : ''}"></span></div>
         ${roleLabel ? `<div class="profile-hero-role">${roleLabel}</div>` : ''}
         <div class="profile-hero-meta">
           <span>Level ${u.level}</span>
