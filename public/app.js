@@ -34,6 +34,18 @@ let lastRoomMembers = [];
 let emailsCurrentThreadUser = null;
 let openRoomTabs = []; // [{id, name}] quick-switch pills for rooms visited this session
 
+// Long-press message menu (Reply/Copy/Report/Block + reactions) — see
+// openMessageActionMenu() and the long-press binding in buildMessageEl().
+let blockedUsernames = new Set(); // lowercased — loaded once at login, updated locally on block/unblock
+let replyContext = null; // { id, username, content, type } while composing a reply, else null
+
+async function loadBlockedUsers() {
+  try {
+    const { usernames } = await api('/users/blocked');
+    blockedUsernames = new Set((usernames || []).map((u) => u.toLowerCase()));
+  } catch (e) { /* best-effort — an empty set just means nothing is hidden yet */ }
+}
+
 // In-memory, this-session-only cache of what the #messages pane looked like
 // for a room the moment you switched AWAY from it. Chat text is only ever
 // visible from the moment you enter a room (see enterRoom below) — but with
@@ -113,7 +125,43 @@ function escapeHtml(s) {
 // opens an HTML injection route), then turn any **pair** into real <strong>
 // so it renders bold instead of showing the literal asterisks.
 function escapeChatText(s) {
-  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  const escaped = escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  return highlightMentions(escaped);
+}
+
+// Highlights "@username" in orange (see .chat-mention in styles.css) when
+// that exact username belongs to someone actually in the room right now
+// (lastRoomMembers) — never a blind "@word" match, so typing a literal "@"
+// followed by something that isn't a real member's name is left as plain
+// text. The viewer's own username gets the stronger "me" pill style so
+// being mentioned is unmistakable at a glance — this, plus the persisted
+// notification the server files for the mentioned user (see 'mention'
+// alerts), is the "notify the user mentioned" behavior.
+function highlightMentions(html) {
+  if (!lastRoomMembers || !lastRoomMembers.length) return html;
+  const byLower = new Map(lastRoomMembers.map((m) => [m.username.toLowerCase(), m.username]));
+  return html.replace(/@([A-Za-z0-9_.-]+)/g, (match, name) => {
+    const real = byLower.get(name.toLowerCase());
+    if (!real) return match;
+    const isMe = currentUser && real.toLowerCase() === currentUser.username.toLowerCase();
+    return `<span class="chat-mention${isMe ? ' me' : ''}">@${escapeHtml(real)}</span>`;
+  });
+}
+
+// Gift chat lines ("<<sender [15] gives a Rose 🌹 to recipient [22]!>>") get
+// two small touches to match the reference's bold pink gift announcements:
+// the "[level]" brackets pop in gold instead of blending into the pink, and
+// the gift's own emoji renders noticeably larger, like an inline sticker,
+// instead of plain inline text size.
+// Regional-indicator pairs (🇸🇩, 🇺🇸, ...) make up most of the gift catalog
+// (country-flag gifts) but aren't \p{Extended_Pictographic} themselves, so
+// they're matched as their own alternative alongside normal pictographs.
+const EMOJI_RUN_RE = /(\p{Regional_Indicator}{2}|\p{Extended_Pictographic}(?:️)?(?:‍\p{Extended_Pictographic}(?:️)?)*)/gu;
+function styleGiftText(raw) {
+  let html = escapeHtml(raw);
+  html = html.replace(/\[(\d+)\]/g, '<span class="gift-level">[$1]</span>');
+  html = html.replace(EMOJI_RUN_RE, '<span class="gift-emoji-inline">$1</span>');
+  return html;
 }
 
 // Fixed country catalog for My Profile / Admin Panel — name + flag emoji.
@@ -351,6 +399,7 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
   updateUserBar();
   connectSocket();
   loadGifts();
+  loadBlockedUsers();
   refreshBadgeCounts();
   // Populates the desktop right sidebar's room lists (see #rightSidebar)
   // right away — it's persistent across screens, unlike the Rooms screen
@@ -1036,6 +1085,12 @@ function connectSocket() {
     if (msg.roomId == null || msg.roomId === currentRoomId) { appendMessage(msg); return; }
     if (secondaryPanelEls.has(msg.roomId)) appendToSecondaryPanel(msg.roomId, msg);
   });
+  // A reaction chip changed anywhere this socket can see — update every
+  // matching message element on screen (primary pane + any secondary
+  // floating panels showing the same message).
+  socket.on('message_reactions_update', ({ messageId, reactions }) => {
+    updateReactionsOnScreen(messageId, reactions);
+  });
   socket.on('system_message', ({ roomId, text } = {}) => {
     const payload = { type: 'system', content: text, username: '' };
     if (roomId == null || roomId === currentRoomId) { appendMessage(payload); return; }
@@ -1069,24 +1124,16 @@ function connectSocket() {
   // persisted or replayed — see tryBroadcast in socket.js.
   socket.on('broadcast', ({ text, by }) => { if (text) showBroadcastBanner(by, text); });
   socket.on('coins_update', ({ coins }) => { currentUser.coins = coins; updateUserBar(); });
-  socket.on('legendary_state', (state) => {
-    legendaryState = state;
-    // A new round clears last round's bets server-side — drop our stale copy
-    // so the 👁 view doesn't keep showing a previous round's bettors.
-    if (state.phase === 'betting' && legendaryBetsList) legendaryBetsList = null;
-    if (isInLegendaryRoom()) {
-      renderLegendaryPanel();
-      if (legendaryShowBets) {
-        socket.emit('legendary_get_bets', {}, (res) => {
-          legendaryBetsList = (res && res.bettors) || [];
-          if (isInLegendaryRoom() && legendaryShowBets) renderLegendaryPanel();
-        });
-      }
-    }
+  // Both dice-betting games broadcast on the same event, identified by
+  // gameKey — only the matching controller reacts (same pattern as the
+  // shared LowCard/Cricket 'elimination_state' broadcast just below).
+  socket.on('dicebet_state', (state) => {
+    const p = DICE_BET_PANELS.find((pnl) => pnl.gameKey === state.gameKey);
+    if (p) p.onState(state);
   });
-  if (!legendaryCountdownTimer) {
-    legendaryCountdownTimer = setInterval(() => {
-      if (isInLegendaryRoom() && legendaryState.phase === 'betting') renderLegendaryPanel();
+  if (!diceBetCountdownTimer) {
+    diceBetCountdownTimer = setInterval(() => {
+      DICE_BET_PANELS.forEach((p) => p.tickCountdown());
     }, 1000);
   }
   // Shared LowCard/Cricket engine broadcasts for both games on the same
@@ -1659,16 +1706,7 @@ function enterRoom(id, name) {
   renderRoomTabs();
   updateMediaButtonsState();
 
-  legendarySelectedAnimal = null;
-  legendaryMinimized = false;
-  legendaryHidden = false;
-  legendaryShowBets = false;
-  legendaryBetsList = null;
-  if (isInLegendaryRoom()) {
-    socket.emit('legendary_get_state', {}, (state) => { if (state) { legendaryState = state; renderLegendaryPanel(); } });
-  } else {
-    renderLegendaryPanel(); // hides the panel when leaving the Legendary room
-  }
+  DICE_BET_PANELS.forEach((p) => p.onRoomSwitch());
 
   if (isInCricketRoom()) {
     socket.emit('elimination_get_state', { roomId: id }, (state) => { if (state) { cricketState = state; renderCricketPanel(); } });
@@ -1782,6 +1820,7 @@ function renderRoomTabs() {
 function buildMessageEl(msg) {
   const div = document.createElement('div');
   if (msg.id != null) div.dataset.msgId = String(msg.id);
+  if (msg.username) div.dataset.username = msg.username;
   div.className = 'msg ' + (msg.type || 'text');
   if (msg.type && msg.type.startsWith('effect_')) {
     // Purchased chat effect line ("/bomb", "/thunder", ...) — a persisted,
@@ -1801,15 +1840,17 @@ function buildMessageEl(msg) {
   } else if (msg.type === 'system' || msg.type === 'voucher') {
     div.textContent = msg.content;
   } else if (msg.type === 'gift') {
-    div.textContent = msg.content;
-  } else if (msg.type === 'legendary') {
+    div.innerHTML = styleGiftText(msg.content);
+  } else if (msg.type === 'legendary' || msg.type === 'luxury') {
     // Multi-line bot messages (bet confirmations, dice rolls, payouts) —
-    // preserve line breaks, bold purple "Legendary Bot:" prefix, bubble bg.
-    div.innerHTML = `<span class="user legendary-bot-name">Legendary Bot:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
+    // preserve line breaks, bold bot-name prefix (purple for Legendary,
+    // gold/amber for Luxury Bet), bubble bg.
+    const botLabel = msg.type === 'luxury' ? 'Luxury Bet' : 'Legendary Bot';
+    div.innerHTML = `<span class="user dicebet-bot-name ${msg.type}">${botLabel}:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
   } else if (msg.type === 'game_bot') {
-    // LowCard / Cricket bot messages — same bubble treatment as Legendary
-    // Bot, but the name comes from msg.username (e.g. "LowCard Bot").
-    div.innerHTML = `<span class="user legendary-bot-name">${escapeHtml(msg.username || 'Game Bot')}:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
+    // LowCard / Cricket bot messages — same bubble treatment as the dice-
+    // betting bots, but the name comes from msg.username (e.g. "LowCard Bot").
+    div.innerHTML = `<span class="user dicebet-bot-name legendary">${escapeHtml(msg.username || 'Game Bot')}:</span> ${escapeHtml(msg.content).replace(/\n/g, '<br>')}`;
   } else if (msg.type === 'image' || msg.type === 'voice') {
     const cls = roleClass(msg);
     const nameStyle = usernameStyleAttr(msg);
@@ -1823,9 +1864,255 @@ function buildMessageEl(msg) {
     // Participants panel and Members/Leaderboard screens — a role color
     // always wins, but a plain user's chosen color still shows in chat.
     const nameStyle = usernameStyleAttr(msg);
-    div.innerHTML = `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> ${escapeChatText(msg.content)}`;
+    const isOwn = !!(currentUser && msg.username && msg.username.toLowerCase() === currentUser.username.toLowerCase());
+    div.classList.add(isOwn ? 'msg-own' : 'msg-other');
+    const nameHtml = isOwn ? '' : `<span class="user clickable-username ${cls}"${nameStyle} data-username="${escapeHtml(msg.username)}">${escapeHtml(msg.username)}${roleIcon(msg)}:</span> `;
+    const replyHtml = msg.replyTo ? buildReplyQuoteHtml(msg.replyTo) : '';
+    const metaHtml = `<span class="msg-bubble-meta">${escapeHtml(formatMsgTime(msg.created_at))}${isOwn ? ' <span class="msg-sent-check" title="Sent">✓</span>' : ''}</span>`;
+    div.innerHTML = `
+      <div class="msg-bubble">
+        ${replyHtml}
+        <span class="msg-bubble-text">${nameHtml}${escapeChatText(msg.content)}</span>
+        ${metaHtml}
+      </div>
+    `;
   }
+  // Every persisted message type (not just plain text) can carry reactions —
+  // appended once here rather than duplicated in each branch above.
+  if (msg.id != null) {
+    const reactionsBox = document.createElement('div');
+    reactionsBox.className = 'msg-reactions hidden';
+    div.appendChild(reactionsBox);
+    renderReactionChips(reactionsBox, msg);
+  }
+  bindMessageLongPress(div, msg);
   return div;
+}
+
+// "10:47 PM" — created_at comes from SQLite's datetime('now') (UTC, space-
+// separated, no "Z"); a live broadcast's created_at is already a proper ISO
+// string. Normalize both the same way formatAlertTime does elsewhere.
+function formatMsgTime(createdAt) {
+  if (!createdAt) return '';
+  try {
+    const s = String(createdAt);
+    const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z');
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+
+// The nested quote card at the top of a reply bubble ("↩ replying to X" +
+// a truncated copy of the original) — see the first reference screenshot's
+// "roktim replied to tanvir121" block.
+function buildReplyQuoteHtml(replyTo) {
+  const snippetSource = replyTo.type === 'image' ? '📷 Photo' : replyTo.type === 'voice' ? '🎤 Voice note' : replyTo.content;
+  const snippet = escapeHtml(String(snippetSource || '').slice(0, 120));
+  return `
+    <div class="reply-quote">
+      <span class="reply-quote-icon">↩</span>
+      <div class="reply-quote-body">
+        <div class="reply-quote-to">${escapeHtml(replyTo.username)}</div>
+        <div class="reply-quote-text">${snippet}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- MESSAGE REACTIONS ----------
+// One reaction per user per message (see toggle_reaction in socket.js) —
+// myReactionsByMsgId remembers what *I* currently have on each message so a
+// reactions_update broadcast (counts only, no per-user info) still knows
+// which chip to highlight as "mine".
+let myReactionsByMsgId = new Map();
+
+function renderReactionChips(container, msg) {
+  if (!container) return;
+  if (msg.myReaction) myReactionsByMsgId.set(String(msg.id), msg.myReaction);
+  container.innerHTML = '';
+  const reactions = msg.reactions || {};
+  const entries = Object.entries(reactions).filter(([, c]) => c > 0);
+  if (!entries.length) { container.classList.add('hidden'); return; }
+  container.classList.remove('hidden');
+  const mine = myReactionsByMsgId.get(String(msg.id));
+  entries.forEach(([emoji, count]) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'msg-reaction-chip' + (emoji === mine ? ' mine' : '');
+    chip.innerHTML = `${emoji} <span class="msg-reaction-count">${count}</span>`;
+    chip.addEventListener('click', () => toggleReaction(msg.id, emoji));
+    container.appendChild(chip);
+  });
+}
+
+function toggleReaction(messageId, emoji) {
+  if (!messageId || !socket) return;
+  socket.emit('toggle_reaction', { messageId, emoji }, (ack) => {
+    if (!ack) return;
+    if (!ack.ok) return toast(ack.error || 'Could not react to that message');
+    if (ack.myReaction) myReactionsByMsgId.set(String(messageId), ack.myReaction);
+    else myReactionsByMsgId.delete(String(messageId));
+    updateReactionsOnScreen(messageId, ack.reactions);
+  });
+}
+
+// Rebuilds every on-screen copy of a message's reaction row (it can appear
+// in both the primary pane and a secondary floating panel at once).
+function updateReactionsOnScreen(messageId, reactions) {
+  $$(`.msg[data-msg-id="${CSS.escape(String(messageId))}"] .msg-reactions`).forEach((el) => {
+    renderReactionChips(el, { id: messageId, reactions, myReaction: myReactionsByMsgId.get(String(messageId)) });
+  });
+}
+
+// ---------- LONG-PRESS MESSAGE MENU (Reply/Copy/Report/Block + reactions) ----------
+const MSG_REACTION_EMOJIS = ['❤️', '😂', '😮', '😢', '😠', '😎', '👍', '👎'];
+const LONG_PRESS_MS = 450;
+let longPressTimer = null;
+
+function bindMessageLongPress(div, msg) {
+  // Only real, persisted messages have anything to act on — system notices,
+  // effect bars, etc. (no DB id) are skipped entirely.
+  if (msg.id == null) return;
+  const cancel = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
+  const start = () => {
+    cancel();
+    longPressTimer = setTimeout(() => { longPressTimer = null; openMessageActionMenu(div, msg); }, LONG_PRESS_MS);
+  };
+  div.addEventListener('touchstart', start, { passive: true });
+  div.addEventListener('touchend', cancel);
+  div.addEventListener('touchmove', cancel);
+  div.addEventListener('mousedown', start);
+  div.addEventListener('mouseup', cancel);
+  div.addEventListener('mouseleave', cancel);
+  // Desktop convenience: right-click opens it immediately, no holding required.
+  div.addEventListener('contextmenu', (e) => { e.preventDefault(); cancel(); openMessageActionMenu(div, msg); });
+}
+
+function openMessageActionMenu(targetEl, msg) {
+  const menu = $('#msgActionMenu');
+  const backdrop = $('#msgActionBackdrop');
+  if (!menu || !backdrop) return;
+  const isOwn = !!(currentUser && msg.username && msg.username.toLowerCase() === currentUser.username.toLowerCase());
+  const canBlock = !isOwn && msg.user_id != null;
+
+  const reactionRow = MSG_REACTION_EMOJIS
+    .map((e) => `<button type="button" class="msg-action-emoji" data-emoji="${e}">${e}</button>`)
+    .join('');
+  menu.innerHTML = `
+    <div class="msg-action-reactions">${reactionRow}</div>
+    <div class="msg-action-list">
+      <button type="button" class="msg-action-item" data-action="reply">↩ <span>Reply</span></button>
+      <button type="button" class="msg-action-item" data-action="copy">📋 <span>Copy</span></button>
+      <button type="button" class="msg-action-item msg-action-danger" data-action="report">🚩 <span>Report</span></button>
+      ${canBlock ? '<button type="button" class="msg-action-item msg-action-danger" data-action="block">🚫 <span>Block</span></button>' : ''}
+    </div>
+  `;
+  menu.querySelectorAll('.msg-action-emoji').forEach((btn) => {
+    btn.addEventListener('click', () => { toggleReaction(msg.id, btn.dataset.emoji); closeMessageActionMenu(); });
+  });
+  menu.querySelector('[data-action="reply"]').addEventListener('click', () => { startReply(msg); closeMessageActionMenu(); });
+  menu.querySelector('[data-action="copy"]').addEventListener('click', () => { copyMessageText(msg); closeMessageActionMenu(); });
+  menu.querySelector('[data-action="report"]').addEventListener('click', () => { reportMessage(msg); closeMessageActionMenu(); });
+  const blockBtn = menu.querySelector('[data-action="block"]');
+  if (blockBtn) blockBtn.addEventListener('click', () => { blockUserFlow(msg.username); closeMessageActionMenu(); });
+
+  backdrop.classList.remove('hidden');
+  menu.classList.remove('hidden');
+  menu.style.visibility = 'hidden';
+  const rect = targetEl.getBoundingClientRect();
+  requestAnimationFrame(() => {
+    const menuRect = menu.getBoundingClientRect();
+    let top = rect.top - menuRect.height - 8;
+    if (top < 8) top = Math.min(rect.bottom + 8, window.innerHeight - menuRect.height - 8);
+    let left = rect.left;
+    if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+    if (left < 8) left = 8;
+    menu.style.top = `${Math.max(8, top)}px`;
+    menu.style.left = `${left}px`;
+    menu.style.visibility = 'visible';
+  });
+}
+
+function closeMessageActionMenu() {
+  const menu = $('#msgActionMenu');
+  const backdrop = $('#msgActionBackdrop');
+  if (menu) menu.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+function copyMessageText(msg) {
+  const text = msg.type === 'image' ? msg.content : msg.type === 'voice' ? '[voice note]' : msg.content;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('📋 Copied')).catch(() => toast('Could not copy'));
+  } else {
+    toast('Copy is not supported in this browser');
+  }
+}
+
+function reportMessage(msg) {
+  if (!socket) return;
+  socket.emit('report_message', { messageId: msg.id }, (ack) => {
+    toast(ack && ack.ok ? '🚩 Message reported to Staff' : (ack && ack.error) || 'Could not report this message');
+  });
+}
+
+async function blockUserFlow(username) {
+  if (!username) return;
+  if (!confirm(`Block ${username}? You won't see their messages in any room anymore.`)) return;
+  try {
+    await api(`/users/${encodeURIComponent(username)}/block`, { method: 'POST' });
+    blockedUsernames.add(username.toLowerCase());
+    $$('.msg[data-username]').forEach((el) => {
+      if (el.dataset.username && el.dataset.username.toLowerCase() === username.toLowerCase()) el.remove();
+    });
+    toast(`🚫 Blocked ${username} — their messages are now hidden for you`);
+  } catch (err) {
+    toast(err.message || 'Could not block this user');
+  }
+}
+
+// ---------- REPLY COMPOSE BAR ----------
+function startReply(msg) {
+  replyContext = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
+  renderReplyPreview();
+  const input = $('#chatInput');
+  if (input) input.focus();
+}
+
+function cancelReply() {
+  replyContext = null;
+  renderReplyPreview();
+}
+
+function renderReplyPreview() {
+  const bar = $('#replyPreviewBar');
+  if (!bar) return;
+  if (!replyContext) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+  const snippetSource = replyContext.type === 'image' ? '📷 Photo' : replyContext.type === 'voice' ? '🎤 Voice note' : replyContext.content;
+  bar.innerHTML = `
+    <span class="reply-preview-icon">↩</span>
+    <div class="reply-preview-body">
+      <div class="reply-preview-to">Replying to ${escapeHtml(replyContext.username)}</div>
+      <div class="reply-preview-text">${escapeHtml(String(snippetSource || '').slice(0, 100))}</div>
+    </div>
+    <button type="button" class="reply-preview-close" id="replyPreviewCloseBtn">✕</button>
+  `;
+  bar.classList.remove('hidden');
+  $('#replyPreviewCloseBtn').addEventListener('click', cancelReply);
+}
+
+$('#msgActionBackdrop').addEventListener('click', closeMessageActionMenu);
+
+// A blocked user's messages are hidden for the blocker only (see the
+// long-press "Block" action) — purely a client-side filter, never sent at
+// all rather than sent-then-hidden, so there's nothing to leak if the DOM
+// were inspected. Never hides your own messages (blocking yourself isn't
+// possible server-side either) or anything with no real author (bots,
+// system notices).
+function isBlockedMessage(msg) {
+  if (!msg || !msg.username || msg.user_id == null) return false;
+  if (currentUser && msg.username.toLowerCase() === currentUser.username.toLowerCase()) return false;
+  return blockedUsernames.has(msg.username.toLowerCase());
 }
 
 function appendMessage(msg) {
@@ -1838,6 +2125,7 @@ function appendMessage(msg) {
     if (seenMsgIds.has(key)) return;
     seenMsgIds.add(key);
   }
+  if (isBlockedMessage(msg)) return;
   const div = buildMessageEl(msg);
   const box = $('#messages');
   box.appendChild(div);
@@ -2065,7 +2353,7 @@ const EFFECT_ARCHETYPE = {
 };
 const EFFECT_ARCHETYPE_DEFAULT = { kind: 'burst', shake: true, ring: true, flash: true };
 
-function playEffectImpact({ key, emoji, username, level }) {
+function playEffectImpact({ key, emoji, username, level, target }) {
   const theme = EFFECT_THEME[key] || EFFECT_THEME_DEFAULT;
   const arch = EFFECT_ARCHETYPE[key] || EFFECT_ARCHETYPE_DEFAULT;
   const wrap = document.createElement('div');
@@ -2231,7 +2519,9 @@ function playEffectImpact({ key, emoji, username, level }) {
   const who = level != null ? `${username} [${level}]` : username;
   const by = document.createElement('div');
   by.className = 'effect-impact-by';
-  by.innerHTML = `${emoji || '✨'} by ${escapeHtml(who)}`;
+  by.innerHTML = target
+    ? `${emoji || '✨'} ${escapeHtml(who)} → ${escapeHtml(target)}`
+    : `${emoji || '✨'} by ${escapeHtml(who)}`;
   wrap.appendChild(by);
 
   // A brief screen-shake sells the "impact" — applied to the whole app
@@ -2293,9 +2583,188 @@ $('#whoisModal').addEventListener('click', (e) => { if (e.target.id === 'whoisMo
 $('#closeEffectStoreBtn').addEventListener('click', closeEffectStore);
 $('#effectStoreModal').addEventListener('click', (e) => { if (e.target.id === 'effectStoreModal') closeEffectStore(); });
 
-// ---------- LEGENDARY BOT (dice-betting game) ----------
-const LEGENDARY_ROOM_NAME = 'Legendary Bot Official';
-const LEGENDARY_ANIMALS = [
+// ---------- DICE-BETTING GAMES (Legendary Bot, Luxury Bet) ----------
+// Both games are the exact same mechanic (bet coins on one of six faces,
+// the bot rolls 6 dice, payout by match count) — only the room, bot name
+// and face set differ. One controller factory, instantiated twice, instead
+// of duplicating the whole panel; mirrors createDiceBettingGame server-side.
+function formatBetAmount(n) { return n >= 1000 ? `${n / 1000}k` : String(n); }
+
+function createDiceBetController({ gameKey, roomName, panelId, title, titleIcon, subtitle, faces, betAmounts }) {
+  let selectedAmount = betAmounts[0];
+  let selectedFace = null;
+  let state = { phase: 'idle', endsAt: 0, totals: {}, betCount: 0 };
+  // Two independent declutter controls, matching the reference bar's 👁/− pair:
+  // minimized keeps the header strip (countdown + current bet) but hides the
+  // face/amount rows; hidden drops the whole bar, leaving only a small tab to
+  // bring it back. Both reset on room re-entry (not persisted) since they're
+  // just "I don't want to look at this right now" toggles, not a preference.
+  let minimized = false;
+  let hidden = false;
+  // 👁 toggle: shows what everyone else (including the bots now playing too)
+  // has bet on this round, fetched on demand from the server so it's always
+  // current. null = not fetched yet for this toggle-on.
+  let showBets = false;
+  let betsList = null;
+
+  function isInRoom() { return currentRoomName === roomName; }
+
+  function onRoomSwitch() {
+    selectedFace = null;
+    minimized = false;
+    hidden = false;
+    showBets = false;
+    betsList = null;
+    if (isInRoom()) {
+      socket.emit('dicebet_get_state', { gameKey }, (s) => { if (s) { state = s; render(); } });
+    } else {
+      render(); // hides the panel when leaving this game's room
+    }
+  }
+
+  function onState(s) {
+    state = s;
+    // A new round clears last round's bets server-side — drop our stale copy
+    // so the 👁 view doesn't keep showing a previous round's bettors.
+    if (s.phase === 'betting' && betsList) betsList = null;
+    if (isInRoom()) {
+      render();
+      if (showBets) {
+        socket.emit('dicebet_get_bets', { gameKey }, (res) => {
+          betsList = (res && res.bettors) || [];
+          if (isInRoom() && showBets) render();
+        });
+      }
+    }
+  }
+
+  function tickCountdown() {
+    if (isInRoom() && state.phase === 'betting') render();
+  }
+
+  function render() {
+    const panel = $(panelId);
+    if (!panel) return;
+    if (!isInRoom()) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+
+    if (hidden) {
+      panel.classList.remove('hidden');
+      panel.innerHTML = `<button type="button" class="dicebet-reopen-tab">${titleIcon} ${title}</button>`;
+      panel.querySelector('.dicebet-reopen-tab').addEventListener('click', () => { hidden = false; render(); });
+      return;
+    }
+    panel.classList.remove('hidden');
+
+    const secondsLeft = state.phase === 'betting' ? Math.max(0, Math.ceil((state.endsAt - Date.now()) / 1000)) : 0;
+    const selectedFaceObj = faces.find((f) => f.key === selectedFace);
+    const isIdle = state.phase !== 'betting' && state.phase !== 'resolving';
+
+    panel.innerHTML = `
+      <div class="dicebet-header">
+        <span class="dicebet-round-badge">${state.betCount || 0}</span>
+        <div class="dicebet-title-col">
+          <span class="dicebet-title"><span class="dicebet-title-icon">${titleIcon}</span> ${title}</span>
+          <span class="dicebet-subtitle">${subtitle}</span>
+        </div>
+        <span class="dicebet-header-spacer"></span>
+        ${state.phase === 'betting'
+          ? `<span class="dicebet-badge dicebet-countdown">${secondsLeft}s</span>`
+          : state.phase === 'resolving'
+            ? `<span class="dicebet-badge dicebet-countdown idle">rolling dice…</span>`
+            : `<button type="button" class="dicebet-badge dicebet-start-btn" id="${gameKey}StartBtn">▶ Start</button>`}
+        ${selectedFaceObj ? `<span class="dicebet-badge dicebet-bet-summary">${selectedFaceObj.emoji} ${formatBetAmount(selectedAmount)}</span>` : ''}
+        <button type="button" class="dicebet-icon-btn" id="${gameKey}DoubleBtn" title="Double the selected bet amount">2x</button>
+        <button type="button" class="dicebet-icon-btn${showBets ? ' active' : ''}" id="${gameKey}EyeBtn" title="See everyone's bets">👁</button>
+        <button type="button" class="dicebet-icon-btn" id="${gameKey}MinBtn" title="${minimized ? 'Expand' : 'Minimize'}">${minimized ? '+' : '−'}</button>
+        <button type="button" class="dicebet-icon-btn" id="${gameKey}HideBtn" title="Hide">✕</button>
+      </div>
+      ${minimized ? '' : `
+        ${showBets ? '<div class="dicebet-bets-list"></div>' : ''}
+        <div class="dicebet-face-row"></div>
+        <div class="dicebet-amount-row"></div>
+        <div class="dicebet-hint">👆 Tap a character to bid instantly</div>
+      `}
+    `;
+
+    if (isIdle) {
+      panel.querySelector(`#${gameKey}StartBtn`).addEventListener('click', () => {
+        socket.emit('dicebet_start', { gameKey }, (ack) => {
+          if (ack && !ack.ok) toast(ack.error || 'Could not start a round');
+        });
+      });
+    }
+    panel.querySelector(`#${gameKey}DoubleBtn`).addEventListener('click', () => {
+      const idx = betAmounts.indexOf(selectedAmount);
+      selectedAmount = betAmounts[Math.min(betAmounts.length - 1, idx + 1)];
+      render();
+    });
+    panel.querySelector(`#${gameKey}EyeBtn`).addEventListener('click', () => {
+      showBets = !showBets;
+      if (showBets) {
+        socket.emit('dicebet_get_bets', { gameKey }, (res) => {
+          betsList = (res && res.bettors) || [];
+          render();
+        });
+      }
+      render();
+    });
+    panel.querySelector(`#${gameKey}HideBtn`).addEventListener('click', () => { hidden = true; render(); });
+    panel.querySelector(`#${gameKey}MinBtn`).addEventListener('click', () => { minimized = !minimized; render(); });
+
+    if (minimized) return;
+
+    if (showBets) {
+      const betsBox = panel.querySelector('.dicebet-bets-list');
+      if (!betsList) {
+        betsBox.innerHTML = `<div class="dicebet-bets-empty">Loading bets…</div>`;
+      } else if (!betsList.length) {
+        betsBox.innerHTML = `<div class="dicebet-bets-empty">No one has placed a bet yet this round.</div>`;
+      } else {
+        betsBox.innerHTML = betsList.map((b) => `
+          <div class="dicebet-bet-row">
+            <span class="dicebet-bet-user">${b.isBot ? '🤖 ' : ''}${escapeHtml(b.username)}</span>
+            <span class="dicebet-bet-amounts">${b.bets.map((x) => `${x.emoji} ${formatBetAmount(x.amount)}`).join('  ')}</span>
+          </div>
+        `).join('');
+      }
+    }
+
+    const row = panel.querySelector('.dicebet-face-row');
+    faces.forEach((f) => {
+      const item = document.createElement('div');
+      item.className = 'dicebet-face-item' + (f.key === selectedFace ? ' selected' : '');
+      const total = (state.totals && state.totals[f.key]) || 0;
+      item.innerHTML = `
+        <div class="dicebet-face-avatar">${f.emoji}</div>
+        <div class="dicebet-face-item-label">${f.label}</div>
+        <div class="dicebet-face-total">${total > 0 ? formatBetAmount(total) : ''}</div>
+      `;
+      item.addEventListener('click', () => {
+        selectedFace = f.key;
+        if (state.phase !== 'betting') { render(); return toast('Betting is closed — wait for the next round'); }
+        socket.emit('dicebet_place_bet', { gameKey, face: f.key, amount: selectedAmount }, (ack) => {
+          if (!ack || !ack.ok) toast((ack && ack.error) || 'Could not place that bet');
+        });
+        render();
+      });
+      row.appendChild(item);
+    });
+
+    const amountRow = panel.querySelector('.dicebet-amount-row');
+    betAmounts.forEach((amt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'dicebet-amount-pill' + (amt === selectedAmount ? ' selected' : '');
+      chip.textContent = formatBetAmount(amt);
+      chip.addEventListener('click', () => { selectedAmount = amt; render(); });
+      amountRow.appendChild(chip);
+    });
+  }
+
+  return { gameKey, roomName, isInRoom, onRoomSwitch, onState, tickCountdown, render };
+}
+
+const LEGENDARY_FACES = [
   { key: 'lion', label: 'Lion', emoji: '🦁' },
   { key: 'tiger', label: 'Tiger', emoji: '🐯' },
   { key: 'fox', label: 'Fox', emoji: '🦊' },
@@ -2303,27 +2772,28 @@ const LEGENDARY_ANIMALS = [
   { key: 'bear', label: 'Bear', emoji: '🐻' },
   { key: 'panda', label: 'Panda', emoji: '🐼' },
 ];
-const LEGENDARY_BET_AMOUNTS = [500, 1000, 2000, 5000, 10000, 15000, 20000];
-function formatBetAmount(n) { return n >= 1000 ? `${n / 1000}k` : String(n); }
+const DICE_BET_AMOUNTS = [500, 1000, 2000, 5000, 10000, 15000, 20000];
 
-let legendarySelectedAmount = 500;
-let legendarySelectedAnimal = null;
-let legendaryState = { phase: 'idle', endsAt: 0, animalTotals: {} };
-let legendaryCountdownTimer = null;
-// Two independent declutter controls, matching the reference bar's 👁/− pair:
-// minimized keeps the header strip (countdown + current bet) but hides the
-// animal/amount rows; hidden drops the whole bar, leaving only a small tab
-// to bring it back. Both reset on room re-entry (not persisted) since they're
-// just "I don't want to look at this right now" toggles, not a preference.
-let legendaryMinimized = false;
-let legendaryHidden = false;
-// 👁 toggle: shows what everyone else (including the bots now playing too)
-// has bet on this round, fetched on demand from the server so it's always
-// current. null = not fetched yet for this toggle-on.
-let legendaryShowBets = false;
-let legendaryBetsList = null;
+const legendaryPanel = createDiceBetController({
+  gameKey: 'legendary', roomName: 'Legendary Bot Official', panelId: '#legendaryGamePanel',
+  title: 'Legendary', titleIcon: '🎲', subtitle: 'tap to bid', faces: LEGENDARY_FACES, betAmounts: DICE_BET_AMOUNTS,
+});
 
-function isInLegendaryRoom() { return currentRoomName === LEGENDARY_ROOM_NAME; }
+const LUXURY_FACES = [
+  { key: 'laila', label: 'Laila', emoji: '🧕' },
+  { key: 'majnu', label: 'Majnu', emoji: '👱' },
+  { key: 'romeo', label: 'Romeo', emoji: '🤵' },
+  { key: 'juliet', label: 'Juliet', emoji: '👱‍♀️' },
+  { key: 'shirin', label: 'Shirin', emoji: '💃' },
+  { key: 'farhad', label: 'Farhad', emoji: '🕺' },
+];
+const luxuryPanel = createDiceBetController({
+  gameKey: 'luxury', roomName: 'Luxury Bet Official', panelId: '#luxuryGamePanel',
+  title: 'Luxury Bet', titleIcon: '🎰', subtitle: 'tap to bid', faces: LUXURY_FACES, betAmounts: DICE_BET_AMOUNTS,
+});
+
+const DICE_BET_PANELS = [legendaryPanel, luxuryPanel];
+let diceBetCountdownTimer = null;
 
 // ---------- CRICKET STATUS BAR (Official Cricket Room) ----------
 // Purely informational pitch-themed strip — Cricket is still played with the
@@ -2364,111 +2834,143 @@ function renderCricketPanel() {
   `;
 }
 
-function renderLegendaryPanel() {
-  const panel = $('#legendaryGamePanel');
-  if (!isInLegendaryRoom()) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+$('#sendBtn').addEventListener('click', sendChat);
+$('#chatInput').addEventListener('keydown', (e) => {
+  if (mentionKeydown(e)) return; // popover open — it owns Enter/Arrows/Escape right now
+  if (e.key === 'Enter') sendChat();
+});
 
-  if (legendaryHidden) {
-    panel.classList.remove('hidden');
-    panel.innerHTML = `<button type="button" class="legendary-reopen-tab">🎲 Legendary</button>`;
-    panel.querySelector('.legendary-reopen-tab').addEventListener('click', () => { legendaryHidden = false; renderLegendaryPanel(); });
-    return;
-  }
-  panel.classList.remove('hidden');
+// ---------- @MENTION AUTOCOMPLETE ----------
+// Typing "@" opens a popover listing everyone currently in the room (same
+// data the Participants panel/room banner use — lastRoomMembers), filtered
+// live as more of the name is typed; picking one inserts "@username " at
+// the cursor. Mirrors the reference app's "Mention a user" panel.
+let mentionActive = false;
+let mentionStart = -1; // index of the "@" in the input's current value
+let mentionIndex = 0;  // keyboard-highlighted row, for Up/Down + Enter
 
-  const secondsLeft = legendaryState.phase === 'betting' ? Math.max(0, Math.ceil((legendaryState.endsAt - Date.now()) / 1000)) : 0;
-  const selectedAnimalObj = LEGENDARY_ANIMALS.find((a) => a.key === legendarySelectedAnimal);
-  const isIdle = legendaryState.phase !== 'betting' && legendaryState.phase !== 'resolving';
-
-  panel.innerHTML = `
-    <div class="legendary-header">
-      <span class="legendary-title-icon">🎲</span>
-      <span class="legendary-title">Legendary</span>
-      ${legendaryState.phase === 'betting'
-        ? `<span class="legendary-badge legendary-countdown">${secondsLeft}s</span>`
-        : legendaryState.phase === 'resolving'
-          ? `<span class="legendary-badge legendary-countdown idle">rolling dice…</span>`
-          : `<button type="button" class="legendary-badge legendary-start-btn" id="legendaryStartBtn">▶ Start round</button>`}
-      ${selectedAnimalObj ? `<span class="legendary-badge legendary-bet-summary">${selectedAnimalObj.label} · ${formatBetAmount(legendarySelectedAmount)}</span>` : ''}
-      <span class="legendary-header-spacer"></span>
-      <button type="button" class="legendary-icon-btn${legendaryShowBets ? ' active' : ''}" id="legendaryEyeBtn" title="See everyone's bets">👁</button>
-      <button type="button" class="legendary-icon-btn" id="legendaryMinBtn" title="${legendaryMinimized ? 'Expand' : 'Minimize'}">${legendaryMinimized ? '+' : '−'}</button>
-      <button type="button" class="legendary-icon-btn" id="legendaryHideBtn" title="Hide">✕</button>
-    </div>
-    ${legendaryMinimized ? '' : `
-      ${legendaryShowBets ? '<div class="legendary-bets-list"></div>' : ''}
-      <div class="legendary-animal-row"></div>
-      <div class="legendary-amount-row"></div>
-    `}
-  `;
-
-  if (isIdle) {
-    panel.querySelector('#legendaryStartBtn').addEventListener('click', () => {
-      socket.emit('legendary_start', {}, (ack) => {
-        if (ack && !ack.ok) toast(ack.error || 'Could not start a round');
-      });
-    });
-  }
-  panel.querySelector('#legendaryEyeBtn').addEventListener('click', () => {
-    legendaryShowBets = !legendaryShowBets;
-    if (legendaryShowBets) {
-      socket.emit('legendary_get_bets', {}, (res) => {
-        legendaryBetsList = (res && res.bettors) || [];
-        renderLegendaryPanel();
-      });
-    }
-    renderLegendaryPanel();
-  });
-  panel.querySelector('#legendaryHideBtn').addEventListener('click', () => { legendaryHidden = true; renderLegendaryPanel(); });
-  panel.querySelector('#legendaryMinBtn').addEventListener('click', () => { legendaryMinimized = !legendaryMinimized; renderLegendaryPanel(); });
-
-  if (legendaryMinimized) return;
-
-  if (legendaryShowBets) {
-    const betsBox = panel.querySelector('.legendary-bets-list');
-    if (!legendaryBetsList) {
-      betsBox.innerHTML = `<div class="legendary-bets-empty">Loading bets…</div>`;
-    } else if (!legendaryBetsList.length) {
-      betsBox.innerHTML = `<div class="legendary-bets-empty">No one has placed a bet yet this round.</div>`;
-    } else {
-      betsBox.innerHTML = legendaryBetsList.map((b) => `
-        <div class="legendary-bet-row">
-          <span class="legendary-bet-user">${b.isBot ? '🤖 ' : ''}${escapeHtml(b.username)}</span>
-          <span class="legendary-bet-amounts">${b.bets.map((x) => `${x.emoji} ${formatBetAmount(x.amount)}`).join('  ')}</span>
-        </div>
-      `).join('');
-    }
-  }
-
-  const row = panel.querySelector('.legendary-animal-row');
-  LEGENDARY_ANIMALS.forEach((a) => {
-    const item = document.createElement('div');
-    item.className = 'legendary-animal-item' + (a.key === legendarySelectedAnimal ? ' selected' : '');
-    item.innerHTML = `<div class="legendary-animal-avatar">${a.emoji}</div><div class="legendary-animal-item-label">${a.label}</div>`;
-    item.addEventListener('click', () => {
-      legendarySelectedAnimal = a.key;
-      if (legendaryState.phase !== 'betting') { renderLegendaryPanel(); return toast('Betting is closed — wait for the next round'); }
-      socket.emit('legendary_place_bet', { animal: a.key, amount: legendarySelectedAmount }, (ack) => {
-        if (!ack || !ack.ok) toast((ack && ack.error) || 'Could not place that bet');
-      });
-      renderLegendaryPanel();
-    });
-    row.appendChild(item);
-  });
-
-  const amountRow = panel.querySelector('.legendary-amount-row');
-  LEGENDARY_BET_AMOUNTS.forEach((amt) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'legendary-amount-pill' + (amt === legendarySelectedAmount ? ' selected' : '');
-    chip.textContent = formatBetAmount(amt);
-    chip.addEventListener('click', () => { legendarySelectedAmount = amt; renderLegendaryPanel(); });
-    amountRow.appendChild(chip);
-  });
+function mentionCandidates(query) {
+  const q = (query || '').toLowerCase();
+  // Same "actually here right now" filter renderRoomInfoBanner uses for its
+  // "Currently in this room" line — room membership itself is persistent
+  // (and can include dozens of bots/past visitors), but mentioning someone
+  // who isn't actually online to see it isn't useful.
+  return (lastRoomMembers || [])
+    .filter((m) => m.status !== 'offline' && m.username.toLowerCase().includes(q))
+    .sort((a, b) => a.username.localeCompare(b.username));
 }
 
-$('#sendBtn').addEventListener('click', sendChat);
-$('#chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+function closeMentionPopover() {
+  mentionActive = false;
+  mentionStart = -1;
+  mentionIndex = 0;
+  $('#mentionPopover').classList.add('hidden');
+  $('#mentionPopover').innerHTML = '';
+}
+
+// Scans back from the cursor to see if we're still inside an "@token" (no
+// whitespace since the "@"). Returns { start, query } or null.
+function findMentionContext(input) {
+  const pos = input.selectionStart;
+  const value = input.value;
+  let i = pos - 1;
+  while (i >= 0 && /[A-Za-z0-9_.-]/.test(value[i])) i--;
+  if (i < 0 || value[i] !== '@') return null;
+  // "@" must start a token (start of string, or preceded by whitespace) —
+  // so a plain email-looking "name@x" never triggers the popover.
+  if (i > 0 && !/\s/.test(value[i - 1])) return null;
+  return { start: i, query: value.slice(i + 1, pos) };
+}
+
+function selectMention(username) {
+  const input = $('#chatInput');
+  const value = input.value;
+  const pos = input.selectionStart;
+  const before = value.slice(0, mentionStart);
+  const after = value.slice(pos);
+  const insertion = `@${username} `;
+  input.value = before + insertion + after;
+  const newPos = before.length + insertion.length;
+  input.focus();
+  input.setSelectionRange(newPos, newPos);
+  closeMentionPopover();
+}
+
+function renderMentionPopover(query) {
+  const pop = $('#mentionPopover');
+  const candidates = mentionCandidates(query);
+  mentionIndex = 0;
+  if (!candidates.length) {
+    pop.innerHTML = `
+      <div class="mention-popover-header">👤 Mention a user</div>
+      <div class="mention-popover-empty">No one matching "${escapeHtml(query)}" is in this room</div>
+    `;
+  } else {
+    pop.innerHTML = `
+      <div class="mention-popover-header">👤 Mention a user <span class="mention-popover-count">${candidates.length}</span></div>
+      <div class="mention-popover-list"></div>
+    `;
+    const list = pop.querySelector('.mention-popover-list');
+    candidates.forEach((m, idx) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'mention-popover-row' + (idx === mentionIndex ? ' active' : '');
+      row.innerHTML = `
+        <div class="avatar-circle small" style="background:${colorFor(m.username)}">${escapeHtml(m.username.charAt(0).toUpperCase())}</div>
+        <span class="${roleClass(m)}"${usernameStyleAttr(m)}>@${escapeHtml(m.username)}</span>
+      `;
+      // mousedown (not click) so it fires before the input's blur
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); selectMention(m.username); });
+      list.appendChild(row);
+    });
+  }
+  pop.classList.remove('hidden');
+}
+
+$('#chatInput').addEventListener('input', () => {
+  const input = $('#chatInput');
+  const ctx = findMentionContext(input);
+  if (!ctx) { if (mentionActive) closeMentionPopover(); return; }
+  mentionActive = true;
+  mentionStart = ctx.start;
+  renderMentionPopover(ctx.query);
+});
+$('#chatInput').addEventListener('blur', () => {
+  // Small delay so a row's mousedown (which calls preventDefault but still
+  // fires after blur starts) can complete its click before we tear down.
+  setTimeout(() => closeMentionPopover(), 150);
+});
+
+// Returns true if it handled the key itself (popover open), meaning the
+// normal Enter-to-send handler above should NOT also run.
+function mentionKeydown(e) {
+  if (!mentionActive) return false;
+  const pop = $('#mentionPopover');
+  const rows = Array.from(pop.querySelectorAll('.mention-popover-row'));
+  if (e.key === 'Escape') { closeMentionPopover(); return true; }
+  if (!rows.length) return false;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    mentionIndex = Math.min(rows.length - 1, mentionIndex + 1);
+    rows.forEach((r, i) => r.classList.toggle('active', i === mentionIndex));
+    rows[mentionIndex].scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    mentionIndex = Math.max(0, mentionIndex - 1);
+    rows.forEach((r, i) => r.classList.toggle('active', i === mentionIndex));
+    rows[mentionIndex].scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    const candidates = mentionCandidates(findMentionContext($('#chatInput'))?.query || '');
+    if (candidates[mentionIndex]) selectMention(candidates[mentionIndex].username);
+    return true;
+  }
+  return false;
+}
 
 // ---------- SHARED PICTURES ----------
 $('#shareImageBtn').addEventListener('click', () => {
@@ -2664,8 +3166,11 @@ function sendChat() {
   const input = $('#chatInput');
   const text = input.value.trim();
   if (!text || !currentRoomId) return;
-  socket.emit('chat_message', { roomId: currentRoomId, text });
+  const payload = { roomId: currentRoomId, text };
+  if (replyContext) payload.replyToId = replyContext.id;
+  socket.emit('chat_message', payload);
   input.value = '';
+  cancelReply();
 }
 
 // ---------- GIFTS ----------
@@ -2895,6 +3400,7 @@ const ALERT_TYPES = {
   gift: { icon: '🎁', bg: '#ec4899' },
   coins: { icon: '🪙', bg: '#f97316' },
   system: { icon: '📣', bg: '#3b82f6' },
+  mention: { icon: '@', bg: '#f59e0b' },
 };
 
 // created_at comes from SQLite's datetime('now'), which is UTC formatted as
@@ -4074,47 +4580,166 @@ function formatCountdown(seconds) {
   return `${h}h ${m}m ${s}s`;
 }
 
+// A slice's fill color — coins and XP get their own two-tone palette
+// (alternating shade per index so neighboring slices of the same prize type
+// still read as separate wedges), with the actual SPIN_COLOR_WINNER used to
+// repaint whichever slice the wheel actually lands on afterward.
+const SPIN_COIN_COLORS = ['#111827', '#1f2937'];
+const SPIN_XP_COLORS = ['#4c1d95', '#5b21b6'];
+const SPIN_COLOR_WINNER = '#2563eb';
+
+function spinSliceColor(prize, i) {
+  const pair = prize.type === 'xp' ? SPIN_XP_COLORS : SPIN_COIN_COLORS;
+  return pair[i % 2];
+}
+
+function spinWheelGradient(prizes, winnerIdx) {
+  const n = prizes.length;
+  const sliceAngle = 360 / n;
+  return prizes
+    .map((p, i) => {
+      const color = i === winnerIdx ? SPIN_COLOR_WINNER : spinSliceColor(p, i);
+      return `${color} ${i * sliceAngle}deg ${(i + 1) * sliceAngle}deg`;
+    })
+    .join(', ');
+}
+
+// Builds the wheel + pointer + center button, with one label per prize
+// rotated out to sit mid-slice (rotate to the slice's angle, push out along
+// the now-rotated axis, rotate back so the text itself stays upright).
+function buildSpinWheelHtml(prizes) {
+  const n = prizes.length;
+  const sliceAngle = 360 / n;
+  const labels = prizes
+    .map((p, i) => {
+      const mid = i * sliceAngle + sliceAngle / 2;
+      const text = p.type === 'coins' ? `${p.amount}<small>coins</small>` : `+${p.amount}<small>XP</small>`;
+      return `<div class="spin-wheel-label" style="transform: rotate(${mid}deg) translateY(-96px) rotate(${-mid}deg)">${text}</div>`;
+    })
+    .join('');
+  return `
+    <div class="spin-wheel-wrap">
+      <div class="spin-wheel-pointer">▼</div>
+      <div class="spin-wheel" id="spinWheel" style="background: conic-gradient(${spinWheelGradient(prizes, -1)});">
+        ${labels}
+      </div>
+      <button type="button" class="spin-wheel-center" id="spinCenterBtn">SPIN</button>
+    </div>
+  `;
+}
+
+// Spins the wheel to land on `prize` (the real result the server already
+// committed) — never a fake animation that could disagree with what the
+// player actually won. Keeps spinning forward from wherever it last
+// stopped (via the element's own data-rotation) so a second spin never
+// looks like it snaps backward.
+function spinWheelTo(wheel, prizes, prize, onDone) {
+  const n = prizes.length;
+  const sliceAngle = 360 / n;
+  let idx = prizes.findIndex((p) => p.type === prize.type && p.amount === prize.amount);
+  if (idx === -1) idx = 0;
+  const sliceMid = idx * sliceAngle + sliceAngle / 2;
+  const jitter = (Math.random() - 0.5) * sliceAngle * 0.6; // lands somewhere inside the slice, not dead-center every time
+  const extraSpins = 6;
+
+  const current = parseFloat(wheel.dataset.rotation || '0');
+  const currentMod = ((current % 360) + 360) % 360;
+  // Pointer is fixed at the top (0deg) — rotating the wheel clockwise by R
+  // moves the point that was at angle A to (A + R) mod 360. We need the
+  // slice's own angle to land on 0 (mod 360) under the pointer.
+  const targetMod = ((360 - sliceMid - jitter) % 360 + 360) % 360;
+  let delta = targetMod - currentMod;
+  if (delta < 0) delta += 360;
+  const final = current + extraSpins * 360 + delta;
+
+  wheel.style.transition = 'transform 4.2s cubic-bezier(0.12, 0.73, 0.14, 1)';
+  wheel.style.transform = `rotate(${final}deg)`;
+  wheel.dataset.rotation = String(final);
+
+  setTimeout(() => {
+    wheel.style.background = `conic-gradient(${spinWheelGradient(prizes, idx)})`;
+    onDone();
+  }, 4300);
+}
+
+function spinResultBannerHtml(prize) {
+  const label = prize.type === 'coins' ? `${prize.amount} coins` : `+${prize.amount} XP`;
+  const icon = prize.type === 'coins' ? '🪙' : '⚡';
+  return `
+    <div class="spin-result-banner">
+      <div class="spin-result-icon">${icon}</div>
+      <div class="spin-result-text">
+        <div class="spin-result-label">Today you won</div>
+        <div class="spin-result-amount">${label}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSpinCountdownCard(secondsLeft) {
+  const total = Math.max(0, Math.round(secondsLeft));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  // Progress bar fills back up toward the 24h cooldown as it elapses —
+  // "how close is the next spin", not "how much is left".
+  const pct = Math.max(0, Math.min(100, 100 - (total / (24 * 3600)) * 100));
+  return `
+    <div class="spin-countdown-card">
+      <div class="spin-countdown-card-label">NEXT FREE SPIN IN</div>
+      <div class="spin-countdown-digits">
+        <div class="spin-countdown-box"><div class="spin-countdown-num" id="spinH">${String(h).padStart(2, '0')}</div><div class="spin-countdown-unit">HOURS</div></div>
+        <div class="spin-countdown-box"><div class="spin-countdown-num" id="spinM">${String(m).padStart(2, '0')}</div><div class="spin-countdown-unit">MIN</div></div>
+        <div class="spin-countdown-box"><div class="spin-countdown-num" id="spinS">${String(s).padStart(2, '0')}</div><div class="spin-countdown-unit">SEC</div></div>
+      </div>
+      <div class="spin-progress-track"><div class="spin-progress-fill" id="spinProgressFill" style="width:${pct}%"></div></div>
+      <div class="spin-countdown-note">A new spin unlocks every 24 hours.</div>
+    </div>
+  `;
+}
+
 async function renderSpin(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   try {
     const { canSpin, secondsLeft, prizes } = await api('/spin/status');
     box.innerHTML = `
-      <div class="spin-card">
-        <div class="spin-emoji">🎰</div>
-        <button id="spinPlayBtn" class="primary-btn" ${canSpin ? '' : 'disabled'}>${canSpin ? 'Spin Now' : 'On Cooldown'}</button>
-        <div id="spinCountdown" class="spin-countdown">${canSpin ? 'Free spin ready!' : `Next spin in ${formatCountdown(secondsLeft)}`}</div>
-      </div>
-      <div class="list-section-label">POSSIBLE PRIZES</div>
-      <div class="spin-prizes"></div>
+      <div id="spinResultSlot"></div>
+      ${buildSpinWheelHtml(prizes)}
+      <div id="spinCountdownSlot">${canSpin ? '' : renderSpinCountdownCard(secondsLeft)}</div>
     `;
-    const prizeBox = box.querySelector('.spin-prizes');
-    prizes.forEach((p) => {
-      const chip = document.createElement('div');
-      chip.className = 'spin-prize-chip';
-      chip.textContent = p.type === 'coins' ? `🪙 ${p.amount} coins` : `⚡ ${p.amount} XP`;
-      prizeBox.appendChild(chip);
-    });
-    const btn = box.querySelector('#spinPlayBtn');
+    const wheel = box.querySelector('#spinWheel');
+    const centerBtn = box.querySelector('#spinCenterBtn');
+
     if (canSpin) {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
+      centerBtn.textContent = 'SPIN';
+      centerBtn.addEventListener('click', async () => {
+        centerBtn.disabled = true;
+        centerBtn.textContent = '…';
         try {
           const result = await api('/spin/play', { method: 'POST' });
-          toast(result.prize.type === 'coins' ? `🪙 You won ${result.prize.amount} coins!` : `⚡ You won ${result.prize.amount} XP!`);
-          renderSpin(box);
+          spinWheelTo(wheel, prizes, result.prize, () => {
+            box.querySelector('#spinResultSlot').innerHTML = spinResultBannerHtml(result.prize);
+            box.querySelector('#spinCountdownSlot').innerHTML = renderSpinCountdownCard(86400);
+            centerBtn.textContent = 'DONE';
+            centerBtn.disabled = false;
+            centerBtn.onclick = () => renderSpin(box);
+          });
         } catch (err) {
           toast(err.message);
-          renderSpin(box);
+          centerBtn.disabled = false;
+          centerBtn.textContent = 'SPIN';
         }
       });
     } else {
+      centerBtn.textContent = 'DONE';
+      centerBtn.disabled = true;
       let left = secondsLeft;
       const timer = setInterval(() => {
         left -= 1;
         if (!box.isConnected) return clearInterval(timer);
         if (left <= 0) { clearInterval(timer); renderSpin(box); return; }
-        const el = box.querySelector('#spinCountdown');
-        if (el) el.textContent = `Next spin in ${formatCountdown(left)}`;
+        const slot = box.querySelector('#spinCountdownSlot');
+        if (slot) slot.innerHTML = renderSpinCountdownCard(left);
       }, 1000);
     }
   } catch (err) {

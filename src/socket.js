@@ -258,11 +258,53 @@ function attachSocket(io, sessionMiddleware) {
   // markEntered above), so this correctly returns nothing for it; a
   // mid-session refresh/reconnect leaves last_entered_at untouched, so this
   // returns exactly what would still be on screen if the page hadn't reloaded.
+  // Resolves a batch of messages' reply-to targets (username/content/type of
+  // the original, if any) and their aggregated reactions — shared by the
+  // history backlog below and by postMessage's live broadcast, so a reply
+  // quote/reaction chip renders identically whether it arrived live or was
+  // loaded on room entry.
+  function attachReplyAndReactions(rows, viewerId) {
+    const ids = rows.map((r) => r.id);
+    const replyIds = [...new Set(rows.map((r) => r.reply_to_id).filter(Boolean))];
+    const replyMap = new Map();
+    if (replyIds.length) {
+      const placeholders = replyIds.map(() => '?').join(',');
+      db.prepare(`SELECT id, username, content, type FROM messages WHERE id IN (${placeholders})`)
+        .all(...replyIds)
+        .forEach((r) => replyMap.set(r.id, r));
+    }
+    const reactionsByMsg = new Map();
+    const myReactionByMsg = new Map();
+    if (ids.length) {
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`SELECT message_id, emoji, COUNT(*) c FROM message_reactions WHERE message_id IN (${placeholders}) GROUP BY message_id, emoji`)
+        .all(...ids)
+        .forEach((r) => {
+          if (!reactionsByMsg.has(r.message_id)) reactionsByMsg.set(r.message_id, {});
+          reactionsByMsg.get(r.message_id)[r.emoji] = r.c;
+        });
+      if (viewerId != null) {
+        db.prepare(`SELECT message_id, emoji FROM message_reactions WHERE message_id IN (${placeholders}) AND user_id = ?`)
+          .all(...ids, viewerId)
+          .forEach((r) => myReactionByMsg.set(r.message_id, r.emoji));
+      }
+    }
+    return rows.map((r) => {
+      const replyTo = r.reply_to_id ? replyMap.get(r.reply_to_id) : null;
+      return {
+        ...r,
+        replyTo: replyTo ? { id: replyTo.id, username: replyTo.username, content: replyTo.content, type: replyTo.type } : null,
+        reactions: reactionsByMsg.get(r.id) || {},
+        myReaction: myReactionByMsg.get(r.id) || null,
+      };
+    });
+  }
+
   function historySinceEntry(userId, roomId) {
     const membership = db.prepare('SELECT last_entered_at FROM room_memberships WHERE user_id = ? AND room_id = ?').get(userId, roomId);
     if (!membership || !membership.last_entered_at) return [];
     const rows = db.prepare(`
-      SELECT m.id, m.user_id, m.username, m.content, m.type, m.created_at,
+      SELECT m.id, m.user_id, m.username, m.content, m.type, m.created_at, m.reply_to_id,
              COALESCE(u.is_staff, 0) AS is_staff, COALESCE(u.is_global_admin, 0) AS is_global_admin,
              COALESCE(u.is_mentor, 0) AS is_mentor, COALESCE(u.is_merchant, 0) AS is_merchant,
              COALESCE(u.is_exec_board, 0) AS is_exec_board, COALESCE(u.is_country_rep, 0) AS is_country_rep,
@@ -272,7 +314,8 @@ function attachSocket(io, sessionMiddleware) {
       ORDER BY m.id ASC LIMIT 300
     `).all(roomId, membership.last_entered_at);
     const moderatorIds = new Set(getRoomModerators(roomId).map((m) => m.id));
-    return rows.map((r) => ({
+    const withExtras = attachReplyAndReactions(rows, userId);
+    return withExtras.map((r) => ({
       ...r,
       is_staff: !!r.is_staff, is_global_admin: !!r.is_global_admin, is_mentor: !!r.is_mentor,
       is_merchant: !!r.is_merchant, is_exec_board: !!r.is_exec_board, is_country_rep: !!r.is_country_rep,
@@ -418,13 +461,28 @@ function attachSocket(io, sessionMiddleware) {
     );
   }
 
-  function postMessage(roomId, { userId, username, type, content }) {
-    const info = db.prepare('INSERT INTO messages (room_id, user_id, username, type, content) VALUES (?, ?, ?, ?, ?)')
-      .run(roomId, userId, username, type, content);
+  // Persist a "X mentioned you" notification for a "@username" chat mention
+  // — same pattern as notifyGiftReceived above. The live highlight (orange
+  // "@name", see highlightMentions in app.js) is what the mentioned user
+  // sees immediately if they're watching the room; this is what still
+  // reaches them later via Notifications if they weren't.
+  function notifyMention(roomId, recipientId, mentionerUsername) {
+    db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)').run(
+      recipientId, 'mention', `${mentionerUsername} mentioned you`,
+      `${mentionerUsername} mentioned you in ${roomName(roomId)}`
+    );
+  }
+
+  function postMessage(roomId, { userId, username, type, content, replyToId }) {
+    const info = db.prepare('INSERT INTO messages (room_id, user_id, username, type, content, reply_to_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(roomId, userId, username, type, content, replyToId || null);
+    const replyTo = replyToId ? db.prepare('SELECT id, username, content, type FROM messages WHERE id = ?').get(replyToId) : null;
     io.to(`room:${roomId}`).emit('chat_message', {
-      id: info.lastInsertRowid, roomId, username, content, type, created_at: new Date().toISOString(),
+      id: info.lastInsertRowid, roomId, user_id: userId, username, content, type, created_at: new Date().toISOString(),
       ...freshRoleFlags(userId),
       is_moderator: isRoomModerator(userId, roomId),
+      replyTo: replyTo ? { id: replyTo.id, username: replyTo.username, content: replyTo.content, type: replyTo.type } : null,
+      reactions: {},
     });
   }
 
@@ -721,16 +779,230 @@ function attachSocket(io, sessionMiddleware) {
   botTopUpTimer.unref?.();
 
   // ---------------------------------------------------------------------
-  // Legendary Bot — a dice-betting minigame confined to the dedicated
-  // "Legendary Bot Official" room (seeded in db.js). Players bet coins on
-  // one of six animals; each round Legendary Bot rolls 6 dice (each lands
-  // on one of the six animals) and pays out based on how many of the 6
-  // matched the animal a player bet on. Entirely server-authoritative —
-  // coins are deducted the instant a bet is placed (so nobody can bet more
-  // than they have across several quick clicks) and the round timer runs
-  // independent of any one player's connection, same pattern as the ambient
-  // bot gift showers above.
-  const LEGENDARY_ANIMALS = [
+  function emitToUser(userId, event, payload) {
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data.user && s.data.user.id === userId) s.emit(event, payload);
+    }
+  }
+
+  // Dice-betting minigames (Legendary Bot, Luxury Bet) — each confined to
+  // its own dedicated room (seeded in db.js). Players bet coins on one of
+  // six "faces" (animals for Legendary Bot, characters for Luxury Bet);
+  // each round the bot rolls 6 dice (each landing on one of the six faces)
+  // and pays out based on how many of the 6 matched the face a player bet
+  // on. Entirely server-authoritative — coins are deducted the instant a
+  // bet is placed (so nobody can bet more than they have across several
+  // quick clicks) and the round timer runs independent of any one player's
+  // connection, same pattern as createEliminationGame below. Both games are
+  // identical in mechanics and only differ in their face set/bot identity —
+  // factored out once here rather than duplicated, same approach as the
+  // shared LowCard/Cricket engine.
+  function createDiceBettingGame({ gameKey, roomName, botName, messageType, faces, betAmounts, payoutTable, bettingMs, resultPauseMs, nextRoundDelayMs, botPlayersPerRound }) {
+    const faceByKey = new Map(faces.map((f) => [f.key, f]));
+    let roomId = null;
+    let phase = 'idle'; // 'idle' | 'betting' | 'resolving'
+    let endsAt = 0;
+    let bets = new Map(); // userId -> { username, isBot, byFace: Map<faceKey, amount> }
+    let faceTotals = new Map(); // faceKey -> total coins bet across everyone this round (insertion order = first-bet order)
+    let betCount = 0; // how many individual bet actions (real + bot) this round — drives the panel's round badge
+    let timer = null;
+
+    function getRoomId() {
+      if (roomId == null) {
+        const row = db.prepare('SELECT id FROM rooms WHERE name = ?').get(roomName);
+        roomId = row ? row.id : -1;
+      }
+      return roomId;
+    }
+    function botMessage(text) {
+      postMessage(getRoomId(), { userId: null, username: botName, type: messageType, content: text });
+    }
+    function broadcastState() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      const totals = {};
+      for (const [k, v] of faceTotals) totals[k] = v;
+      io.to(`room:${rid}`).emit('dicebet_state', { gameKey, phase, endsAt, totals, betCount });
+    }
+    // "Bets:" summary line — every face with a bet so far this round, in the
+    // order it was first bet on, each showing the running total across all
+    // bettors (not just the bet that was just placed).
+    function betsSummaryLine() {
+      const parts = [];
+      for (const [key, total] of faceTotals) {
+        if (total <= 0) continue;
+        const f = faceByKey.get(key);
+        parts.push(`${f.emoji} ${f.label} ${total}`);
+      }
+      return parts.join(' | ');
+    }
+
+    // Makes the room feel alive even when no real player has placed a bet
+    // yet — a handful of the room's own bot members place small, randomly-
+    // timed bets during the betting window, through the exact same placeBet
+    // path a real player uses (coins really move, same payout odds apply).
+    // Capped to a small sample (not all 200+ members) so this never floods
+    // the room with bot chat lines or hammers the DB every round.
+    function scheduleBotBets() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      const roomBots = db.prepare(`
+        SELECT u.id, u.username, u.coins FROM room_memberships rm
+        JOIN users u ON u.id = rm.user_id
+        WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
+        ORDER BY RANDOM() LIMIT ?
+      `).all(rid, botPlayersPerRound);
+      for (const bot of roomBots) {
+        const delay = 2_000 + Math.random() * Math.max(1000, bettingMs - 8_000);
+        const t = setTimeout(() => {
+          if (phase !== 'betting') return;
+          const affordable = betAmounts.filter((a) => a <= bot.coins);
+          if (!affordable.length) return;
+          const face = faces[Math.floor(Math.random() * faces.length)];
+          const amount = affordable[Math.floor(Math.random() * affordable.length)];
+          placeBet({ id: bot.id, username: bot.username, is_bot: 1 }, face.key, amount);
+        }, delay);
+        t.unref?.();
+      }
+    }
+
+    function startBettingRound() {
+      const rid = getRoomId();
+      if (rid < 0) return; // room not seeded yet (very old DB mid-migration) — skip quietly
+      if (timer) clearTimeout(timer);
+      phase = 'betting';
+      bets = new Map();
+      faceTotals = new Map();
+      betCount = 0;
+      endsAt = Date.now() + bettingMs;
+      botMessage(`🎲 Round in progress — ${Math.round(bettingMs / 1000)}s left to bid!`);
+      broadcastState();
+      scheduleBotBets();
+      timer = setTimeout(resolveRound, bettingMs);
+      timer.unref?.();
+    }
+
+    function resolveRound() {
+      phase = 'resolving';
+      broadcastState();
+      botMessage(`${botName} is calculating result... Please wait!`);
+
+      timer = setTimeout(() => {
+        // Roll 6 dice, each landing on one of the 6 faces.
+        const rolls = Array.from({ length: 6 }, () => faces[Math.floor(Math.random() * faces.length)]);
+        const matchCounts = new Map(faces.map((f) => [f.key, 0]));
+        for (const r of rolls) matchCounts.set(r.key, matchCounts.get(r.key) + 1);
+
+        const diceLine = rolls.map((r) => r.emoji).join(' ');
+        const tallyLines = faces
+          .filter((f) => matchCounts.get(f.key) > 0)
+          .map((f) => `- ${f.emoji} ${f.label}: ${matchCounts.get(f.key)}x`)
+          .join('\n');
+        botMessage(`Rolling Dice...\n${diceLine}\n\n${tallyLines}`);
+
+        // Pay out every bettor based on how many dice matched what they bet on.
+        let anyWinner = false;
+        for (const [userId, entry] of bets) {
+          for (const [faceKey, amount] of entry.byFace) {
+            const matches = matchCounts.get(faceKey) || 0;
+            const multiplier = payoutTable[matches] || 0;
+            if (multiplier <= 0) continue;
+            const winnings = Math.round(amount * multiplier);
+            db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(winnings, userId);
+            db.logCoinTx(userId, winnings, 'games', `${botName} win`);
+            emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
+            const f = faceByKey.get(faceKey);
+            botMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${f.label} ${f.emoji}`);
+            if (!entry.isBot) { awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
+            anyWinner = true;
+          }
+        }
+        if (!anyWinner && bets.size > 0) {
+          botMessage('No winners this round — better luck next time!');
+        }
+        botMessage('Game over. Type !start to start a new round.');
+
+        phase = 'idle';
+        bets = new Map();
+        faceTotals = new Map();
+        broadcastState();
+
+        timer = setTimeout(() => {
+          if (phase === 'idle') startBettingRound();
+        }, nextRoundDelayMs);
+        timer.unref?.();
+      }, resultPauseMs);
+      timer.unref?.();
+    }
+
+    function tryStart() {
+      if (phase !== 'idle') return false;
+      if (timer) clearTimeout(timer);
+      startBettingRound();
+      return true;
+    }
+
+    function placeBet(user, faceKey, amount) {
+      const rid = getRoomId();
+      if (phase !== 'betting') return { ok: false, error: 'Betting is closed right now — wait for the next round.' };
+      if (!faceByKey.has(faceKey)) return { ok: false, error: 'Unknown character' };
+      amount = Number(amount);
+      if (!betAmounts.includes(amount)) return { ok: false, error: 'Invalid bet amount' };
+      if (!isActiveMember(user.id, rid)) return { ok: false, error: `Join the ${roomName} room first.` };
+
+      // Deduct atomically, checking the balance in the same statement so a
+      // burst of quick clicks can never overdraw a player's coins.
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(amount, user.id, amount);
+      if (result.changes === 0) return { ok: false, error: "You don't have enough coins for that bet." };
+      db.logCoinTx(user.id, -amount, 'games', `${botName} bet`);
+      emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+
+      if (!bets.has(user.id)) bets.set(user.id, { username: user.username, isBot: !!user.is_bot, byFace: new Map() });
+      const entry = bets.get(user.id);
+      entry.byFace.set(faceKey, (entry.byFace.get(faceKey) || 0) + amount);
+      faceTotals.set(faceKey, (faceTotals.get(faceKey) || 0) + amount);
+      betCount += 1;
+
+      const f = faceByKey.get(faceKey);
+      botMessage(`${user.username} placed ${amount} coins on ${f.emoji} ${f.label}.\nBets: ${betsSummaryLine()}`);
+      broadcastState();
+      if (!user.is_bot) awardXp(user.id, XP_REWARDS.GAME_PLAY);
+      return { ok: true };
+    }
+
+    function getState() {
+      const totals = {};
+      for (const [k, v] of faceTotals) totals[k] = v;
+      return { gameKey, phase, endsAt, totals, betCount };
+    }
+
+    function getBets() {
+      const bettors = [];
+      for (const [, entry] of bets) {
+        const list = [...entry.byFace].map(([key, amt]) => {
+          const f = faceByKey.get(key);
+          return { face: key, label: f ? f.label : key, emoji: f ? f.emoji : '', amount: amt };
+        });
+        bettors.push({ username: entry.username, isBot: !!entry.isBot, bets: list });
+      }
+      return bettors;
+    }
+
+    // Kick off the very first round shortly after boot so the room isn't
+    // sitting empty waiting for someone to type !start.
+    setTimeout(() => { if (getRoomId() >= 0) tryStart(); }, 15_000).unref?.();
+
+    return { gameKey, getRoomId, tryStart, placeBet, getState, getBets };
+  }
+
+  const DICE_BET_PAYOUT_TABLE = [0, 1, 2, 3, 4.5, 8, 15]; // indexed by dice matches (0..6) — 0 forfeits, a full sweep is the jackpot
+  const DICE_BET_AMOUNTS = [500, 1000, 2000, 5000, 10000, 15000, 20000];
+  const DICE_BET_BETTING_MS = 45_000;
+  const DICE_BET_RESULT_PAUSE_MS = 2_500; // "calculating..." / "rolling dice..." beats
+  const DICE_BET_NEXT_ROUND_DELAY_MS = 20_000; // auto-restarts if nobody types !start
+  const DICE_BET_BOT_PLAYERS_PER_ROUND = 6;
+
+  const LEGENDARY_FACES = [
     { key: 'lion', label: 'Lion', emoji: '🦁' },
     { key: 'tiger', label: 'Tiger', emoji: '🐯' },
     { key: 'fox', label: 'Fox', emoji: '🦊' },
@@ -738,184 +1010,31 @@ function attachSocket(io, sessionMiddleware) {
     { key: 'bear', label: 'Bear', emoji: '🐻' },
     { key: 'panda', label: 'Panda', emoji: '🐼' },
   ];
-  const LEGENDARY_ANIMAL_BY_KEY = new Map(LEGENDARY_ANIMALS.map((a) => [a.key, a]));
-  const LEGENDARY_BET_AMOUNTS = [500, 1000, 2000, 5000, 10000, 15000, 20000];
-  // Indexed by how many of the 6 dice matched the animal bet on — 0 matches
-  // forfeits the bet entirely; a full sweep (6 of 6) is the jackpot.
-  const LEGENDARY_PAYOUT_TABLE = [0, 1, 2, 3, 4.5, 8, 15];
-  const LEGENDARY_BETTING_MS = 45_000;
-  const LEGENDARY_RESULT_PAUSE_MS = 2_500; // "calculating..." / "rolling dice..." beats
-  const LEGENDARY_NEXT_ROUND_DELAY_MS = 20_000; // auto-restarts if nobody types !start
+  const legendaryGame = createDiceBettingGame({
+    gameKey: 'legendary', roomName: 'Legendary Bot Official', botName: 'Legendary Bot', messageType: 'legendary',
+    faces: LEGENDARY_FACES, betAmounts: DICE_BET_AMOUNTS, payoutTable: DICE_BET_PAYOUT_TABLE,
+    bettingMs: DICE_BET_BETTING_MS, resultPauseMs: DICE_BET_RESULT_PAUSE_MS,
+    nextRoundDelayMs: DICE_BET_NEXT_ROUND_DELAY_MS, botPlayersPerRound: DICE_BET_BOT_PLAYERS_PER_ROUND,
+  });
 
-  let legendaryRoomId = null;
-  let legendaryPhase = 'idle'; // 'idle' | 'betting' | 'resolving'
-  let legendaryEndsAt = 0;
-  let legendaryBets = new Map(); // userId -> { username, byAnimal: Map<animalKey, amount> }
-  let legendaryAnimalTotals = new Map(); // animalKey -> total coins bet across everyone
-  let legendaryTimer = null;
+  // Luxury Bet — same dice-betting mechanic as Legendary Bot above, reskinned
+  // with six human characters instead of animals (per the reference design).
+  const LUXURY_FACES = [
+    { key: 'laila', label: 'Laila', emoji: '🧕' },
+    { key: 'majnu', label: 'Majnu', emoji: '👱' },
+    { key: 'romeo', label: 'Romeo', emoji: '🤵' },
+    { key: 'juliet', label: 'Juliet', emoji: '👱‍♀️' },
+    { key: 'shirin', label: 'Shirin', emoji: '💃' },
+    { key: 'farhad', label: 'Farhad', emoji: '🕺' },
+  ];
+  const luxuryGame = createDiceBettingGame({
+    gameKey: 'luxury', roomName: 'Luxury Bet Official', botName: 'Luxury Bet', messageType: 'luxury',
+    faces: LUXURY_FACES, betAmounts: DICE_BET_AMOUNTS, payoutTable: DICE_BET_PAYOUT_TABLE,
+    bettingMs: DICE_BET_BETTING_MS, resultPauseMs: DICE_BET_RESULT_PAUSE_MS,
+    nextRoundDelayMs: DICE_BET_NEXT_ROUND_DELAY_MS, botPlayersPerRound: DICE_BET_BOT_PLAYERS_PER_ROUND,
+  });
 
-  function getLegendaryRoomId() {
-    if (legendaryRoomId == null) {
-      const row = db.prepare('SELECT id FROM rooms WHERE name = ?').get('Legendary Bot Official');
-      legendaryRoomId = row ? row.id : -1;
-    }
-    return legendaryRoomId;
-  }
-
-  function emitToUser(userId, event, payload) {
-    for (const [, s] of io.sockets.sockets) {
-      if (s.data.user && s.data.user.id === userId) s.emit(event, payload);
-    }
-  }
-
-  function legendaryBotMessage(text) {
-    postMessage(getLegendaryRoomId(), { userId: null, username: 'Legendary Bot', type: 'legendary', content: text });
-  }
-
-  function broadcastLegendaryState() {
-    const totals = {};
-    for (const [k, v] of legendaryAnimalTotals) totals[k] = v;
-    io.to(`room:${getLegendaryRoomId()}`).emit('legendary_state', {
-      phase: legendaryPhase, endsAt: legendaryEndsAt, animalTotals: totals,
-    });
-  }
-
-  // Makes the room feel alive even when no real player has placed a bet yet
-  // — a handful of the room's own bot members place small, randomly-timed
-  // bets during the betting window, through the exact same placeLegendaryBet
-  // path a real player uses (coins really move, same payout odds apply).
-  // Capped to a small sample (not all 200+ members) so this never floods the
-  // room with bot chat lines or hammers the DB every round.
-  const LEGENDARY_BOT_PLAYERS_PER_ROUND = 6;
-  function scheduleLegendaryBotBets() {
-    const roomId = getLegendaryRoomId();
-    if (roomId < 0) return;
-    const bots = db.prepare(`
-      SELECT u.id, u.username, u.coins FROM room_memberships rm
-      JOIN users u ON u.id = rm.user_id
-      WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
-      ORDER BY RANDOM() LIMIT ?
-    `).all(roomId, LEGENDARY_BOT_PLAYERS_PER_ROUND);
-    for (const bot of bots) {
-      const delay = 2_000 + Math.random() * Math.max(1000, LEGENDARY_BETTING_MS - 8_000);
-      const t = setTimeout(() => {
-        if (legendaryPhase !== 'betting') return;
-        const affordable = LEGENDARY_BET_AMOUNTS.filter((a) => a <= bot.coins);
-        if (!affordable.length) return;
-        const animal = LEGENDARY_ANIMALS[Math.floor(Math.random() * LEGENDARY_ANIMALS.length)];
-        const amount = affordable[Math.floor(Math.random() * affordable.length)];
-        placeLegendaryBet({ id: bot.id, username: bot.username, is_bot: 1 }, animal.key, amount);
-      }, delay);
-      t.unref?.();
-    }
-  }
-
-  function startLegendaryBettingRound() {
-    const roomId = getLegendaryRoomId();
-    if (roomId < 0) return; // room not seeded yet (very old DB mid-migration) — skip quietly
-    if (legendaryTimer) clearTimeout(legendaryTimer);
-    legendaryPhase = 'betting';
-    legendaryBets = new Map();
-    legendaryAnimalTotals = new Map(LEGENDARY_ANIMALS.map((a) => [a.key, 0]));
-    legendaryEndsAt = Date.now() + LEGENDARY_BETTING_MS;
-    legendaryBotMessage(`🎲 Round in progress — ${Math.round(LEGENDARY_BETTING_MS / 1000)}s left to bid!`);
-    broadcastLegendaryState();
-    scheduleLegendaryBotBets();
-    legendaryTimer = setTimeout(resolveLegendaryRound, LEGENDARY_BETTING_MS);
-    legendaryTimer.unref?.();
-  }
-
-  function resolveLegendaryRound() {
-    const roomId = getLegendaryRoomId();
-    legendaryPhase = 'resolving';
-    broadcastLegendaryState();
-    legendaryBotMessage('Legendary Bot is calculating result... Please wait!');
-
-    legendaryTimer = setTimeout(() => {
-      // Roll 6 dice, each landing on one of the 6 animals.
-      const rolls = Array.from({ length: 6 }, () => LEGENDARY_ANIMALS[Math.floor(Math.random() * LEGENDARY_ANIMALS.length)]);
-      const matchCounts = new Map(LEGENDARY_ANIMALS.map((a) => [a.key, 0]));
-      for (const r of rolls) matchCounts.set(r.key, matchCounts.get(r.key) + 1);
-
-      const diceLine = rolls.map((r) => r.emoji).join(' ');
-      const tallyLines = LEGENDARY_ANIMALS
-        .filter((a) => matchCounts.get(a.key) > 0)
-        .map((a) => `- ${a.emoji} ${a.label}: ${matchCounts.get(a.key)}x`)
-        .join('\n');
-      legendaryBotMessage(`Rolling Dice...\n${diceLine}\n\n${tallyLines}`);
-
-      // Pay out every bettor based on how many dice matched what they bet on.
-      let anyWinner = false;
-      for (const [userId, entry] of legendaryBets) {
-        for (const [animalKey, amount] of entry.byAnimal) {
-          const matches = matchCounts.get(animalKey) || 0;
-          const multiplier = LEGENDARY_PAYOUT_TABLE[matches] || 0;
-          if (multiplier <= 0) continue;
-          const winnings = Math.round(amount * multiplier);
-          db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(winnings, userId);
-          db.logCoinTx(userId, winnings, 'games', 'Legendary Bot win');
-          emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
-          const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
-          legendaryBotMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${animal.label} ${animal.emoji}`);
-          if (!entry.isBot) { awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
-          anyWinner = true;
-        }
-      }
-      if (!anyWinner && legendaryBets.size > 0) {
-        legendaryBotMessage('No winners this round — better luck next time!');
-      }
-      legendaryBotMessage('Game over. Type !start to start a new round.');
-
-      legendaryPhase = 'idle';
-      legendaryBets = new Map();
-      legendaryAnimalTotals = new Map();
-      broadcastLegendaryState();
-
-      legendaryTimer = setTimeout(() => {
-        if (legendaryPhase === 'idle') startLegendaryBettingRound();
-      }, LEGENDARY_NEXT_ROUND_DELAY_MS);
-      legendaryTimer.unref?.();
-    }, LEGENDARY_RESULT_PAUSE_MS);
-    legendaryTimer.unref?.();
-  }
-
-  function tryStartLegendaryRound() {
-    if (legendaryPhase !== 'idle') return false;
-    if (legendaryTimer) clearTimeout(legendaryTimer);
-    startLegendaryBettingRound();
-    return true;
-  }
-
-  function placeLegendaryBet(user, animalKey, amount) {
-    const roomId = getLegendaryRoomId();
-    if (legendaryPhase !== 'betting') return { ok: false, error: 'Betting is closed right now — wait for the next round.' };
-    if (!LEGENDARY_ANIMAL_BY_KEY.has(animalKey)) return { ok: false, error: 'Unknown animal' };
-    amount = Number(amount);
-    if (!LEGENDARY_BET_AMOUNTS.includes(amount)) return { ok: false, error: 'Invalid bet amount' };
-    if (!isActiveMember(user.id, roomId)) return { ok: false, error: 'Join the Legendary Bot Official room first.' };
-
-    // Deduct atomically, checking the balance in the same statement so a
-    // burst of quick clicks can never overdraw a player's coins.
-    const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(amount, user.id, amount);
-    if (result.changes === 0) return { ok: false, error: "You don't have enough coins for that bet." };
-    db.logCoinTx(user.id, -amount, 'games', 'Legendary Bot bet');
-    emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
-
-    if (!legendaryBets.has(user.id)) legendaryBets.set(user.id, { username: user.username, isBot: !!user.is_bot, byAnimal: new Map() });
-    const entry = legendaryBets.get(user.id);
-    entry.byAnimal.set(animalKey, (entry.byAnimal.get(animalKey) || 0) + amount);
-    legendaryAnimalTotals.set(animalKey, (legendaryAnimalTotals.get(animalKey) || 0) + amount);
-
-    const animal = LEGENDARY_ANIMAL_BY_KEY.get(animalKey);
-    legendaryBotMessage(`${user.username} placed ${amount} coins on ${animal.label} ${animal.emoji}\nBets: ${animal.label} ${animal.emoji} ${legendaryAnimalTotals.get(animalKey)}`);
-    broadcastLegendaryState();
-    if (!user.is_bot) awardXp(user.id, XP_REWARDS.GAME_PLAY);
-    return { ok: true };
-  }
-
-  // Kick off the very first round shortly after boot so the room isn't
-  // sitting empty waiting for someone to type !start.
-  setTimeout(() => { if (getLegendaryRoomId() >= 0) tryStartLegendaryRound(); }, 15_000).unref?.();
+  const DICE_BET_GAMES = new Map([[legendaryGame.gameKey, legendaryGame], [luxuryGame.gameKey, luxuryGame]]);
 
   // ---------- Generic "last player standing" bot games (LowCard, Cricket) ----------
   // Both games share the same shape: "!start" opens a join window ("!j" to
@@ -1337,9 +1456,19 @@ function attachSocket(io, sessionMiddleware) {
       }
     });
 
-    on('chat_message', ({ roomId, text }) => {
+    on('chat_message', ({ roomId, text, replyToId }) => {
       roomId = Number(roomId);
       if (!text || !text.trim()) return;
+      // "Reply" from the long-press menu — only honored if it actually
+      // points at a real message in THIS room (never trust the client's
+      // claim blindly; a stale/foreign id is just dropped, not rejected
+      // outright, so a reply whose original got deleted still sends as a
+      // normal message instead of failing silently).
+      let validReplyToId = null;
+      if (replyToId) {
+        const target = db.prepare('SELECT id FROM messages WHERE id = ? AND room_id = ?').get(Number(replyToId), roomId);
+        if (target) validReplyToId = target.id;
+      }
 
       // A bumped/kicked user must not be able to keep chatting in that room
       // just because their socket is still (or gets re-)focused on it — this
@@ -1363,12 +1492,16 @@ function attachSocket(io, sessionMiddleware) {
       const clean = text.trim().slice(0, 500);
       touchActivity(user.id, roomId);
 
-      // "!start" — anyone in the Legendary Bot Official room can kick off a
-      // new betting round once the current one has finished (a no-op while
-      // one is already running, same as the reference bot's behavior).
-      if (roomId === getLegendaryRoomId() && /^!start$/i.test(clean)) {
-        if (!tryStartLegendaryRound()) socket.emit('error_message', 'A round is already in progress.');
-        return;
+      // "!start" — anyone in the Legendary Bot Official or Luxury Bet
+      // Official room can kick off a new betting round once the current one
+      // has finished (a no-op while one is already running, same as the
+      // reference bot's behavior).
+      for (const game of DICE_BET_GAMES.values()) {
+        if (roomId !== game.getRoomId()) continue;
+        if (/^!start$/i.test(clean)) {
+          if (!game.tryStart()) socket.emit('error_message', 'A round is already in progress.');
+          return;
+        }
       }
 
       // LowCard / Cricket — "!start" opens a join window, "!j" joins it
@@ -1458,12 +1591,20 @@ function attachSocket(io, sessionMiddleware) {
         // A bare, argument-less "/bomb", "/thunder", etc. from someone who
         // actually owns that effect fires it. Checked BEFORE the roleplay
         // map so an owned effect takes priority over a same-named free emote
-        // ("/love" is both) — but only when bare: "/love <username>" (an
-        // arg present) still falls through to the normal targeted emote
-        // below, and a non-owner typing "/bomb" harmlessly falls through to
-        // "unrecognized command" same as before this feature existed.
-        if (!arg && EFFECTS_BY_KEY.has(cmd) && userOwnsEffect(user.id, cmd)) {
-          return triggerPurchasedEffect(roomId, cmd);
+        // ("/love" is both) — a non-owner typing "/bomb" harmlessly falls
+        // through to "unrecognized command" same as before this feature existed.
+        if (EFFECTS_BY_KEY.has(cmd) && userOwnsEffect(user.id, cmd)) {
+          // "/missile <username>" — fire it AT that user (adds "at {target}"
+          // to the chat line and to the full-screen effect banner). Only
+          // for effect keys that aren't ALSO a free roleplay emote (like
+          // "love") — those keep their existing behavior of the targeted
+          // form always going to the free emote below, unchanged.
+          if (arg && !ROLEPLAY_MAP.has(cmd)) {
+            const target = db.prepare('SELECT username FROM users WHERE username = ? COLLATE NOCASE').get(arg.trim());
+            if (!target) return socket.emit('error_message', `No user named "${arg.trim()}"`);
+            return triggerPurchasedEffect(roomId, cmd, target.username);
+          }
+          if (!arg) return triggerPurchasedEffect(roomId, cmd);
         }
         if (SPECIAL_COMMANDS.has(cmd)) {
           return handleSpecialCommand(roomId, cmd, arg);
@@ -1503,11 +1644,74 @@ function attachSocket(io, sessionMiddleware) {
       // Reject it with a clear error instead, so a mismatch is obvious.
       if (/^\//.test(clean)) {
         console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
-        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}". Try /whois <username>, /kick <username>, /bump <username>, /ban <username>, /unban <username>, /pick <code>, /gift <username> <gift>, /gift all, /silence <seconds>, /unsilence, /mod <username>, /unmod <username>, /announcement <text>, /broadcast <text>, or an emote like /hug <username> — see the Command List in Explore for the full set.`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}"`);
       }
 
-      postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean });
+      // "@username" mentions (see the chat input's autocomplete popover in
+      // app.js) — notify every distinct, currently-active room member named
+      // this way, except the sender mentioning themself. The live chat
+      // bubble already highlights it in orange for anyone watching right
+      // now; this persisted alert is what still reaches the mentioned
+      // user(s) later via Notifications if they weren't.
+      const mentionedNames = new Set();
+      const mentionRe = /@([A-Za-z0-9_.-]+)/g;
+      let mentionMatch;
+      while ((mentionMatch = mentionRe.exec(clean))) mentionedNames.add(mentionMatch[1].toLowerCase());
+      if (mentionedNames.size) {
+        const members = db.prepare(`
+          SELECT u.id, u.username FROM room_memberships rm JOIN users u ON u.id = rm.user_id
+          WHERE rm.room_id = ? AND rm.active = 1
+        `).all(roomId);
+        for (const m of members) {
+          if (m.id === user.id) continue;
+          if (mentionedNames.has(m.username.toLowerCase())) notifyMention(roomId, m.id, user.username);
+        }
+      }
+
+      postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean, replyToId: validReplyToId });
       awardXp(user.id, XP_REWARDS.CHAT_MESSAGE);
+    });
+
+    // Long-press "React" bar — one reaction per user per message: tapping a
+    // different emoji swaps it, tapping your own current one again removes
+    // it. Broadcasts the new aggregated counts to the whole room so every
+    // open client stays in sync, and acks the caller with their own current
+    // reaction so their chip highlights immediately.
+    on('toggle_reaction', ({ messageId, emoji }, ack) => {
+      messageId = Number(messageId);
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); };
+      if (!messageId || !emoji || typeof emoji !== 'string' || emoji.length > 8) return fail('Invalid reaction');
+      const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
+      if (!msg) return fail('Message not found');
+      if (!isActiveMember(user.id, msg.room_id)) return fail("You're not currently in this room");
+
+      const existing = db.prepare('SELECT emoji FROM message_reactions WHERE message_id = ? AND user_id = ?').get(messageId, user.id);
+      if (existing && existing.emoji === emoji) {
+        db.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?').run(messageId, user.id);
+      } else {
+        db.prepare(`
+          INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)
+          ON CONFLICT(message_id, user_id) DO UPDATE SET emoji = excluded.emoji, created_at = datetime('now')
+        `).run(messageId, user.id, emoji);
+      }
+
+      const rows = db.prepare('SELECT emoji, COUNT(*) c FROM message_reactions WHERE message_id = ? GROUP BY emoji').all(messageId);
+      const reactions = {};
+      rows.forEach((r) => { reactions[r.emoji] = r.c; });
+      const mine = db.prepare('SELECT emoji FROM message_reactions WHERE message_id = ? AND user_id = ?').get(messageId, user.id);
+      io.to(`room:${msg.room_id}`).emit('message_reactions_update', { messageId, reactions });
+      if (typeof ack === 'function') ack({ ok: true, reactions, myReaction: mine ? mine.emoji : null });
+    });
+
+    // "Report" in the long-press menu — durably filed, not yet surfaced in
+    // an Admin screen, but genuinely recorded rather than a no-op button.
+    on('report_message', ({ messageId }, ack) => {
+      messageId = Number(messageId);
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); };
+      const msg = db.prepare('SELECT id FROM messages WHERE id = ?').get(messageId);
+      if (!msg) return fail('Message not found');
+      db.prepare('INSERT INTO message_reports (message_id, reporter_id) VALUES (?, ?)').run(messageId, user.id);
+      if (typeof ack === 'function') ack({ ok: true });
     });
 
     // A shared picture or voice note — gated to trusted roles (see
@@ -1731,10 +1935,12 @@ function attachSocket(io, sessionMiddleware) {
       }));
     }
 
-    function triggerPurchasedEffect(roomId, key) {
+    function triggerPurchasedEffect(roomId, key, targetUsername) {
       const entry = EFFECTS_BY_KEY.get(key);
       const me = nameWithLevel(user.id, user.username);
-      const text = entry.text.replace('{user}', me);
+      const text = targetUsername && entry.textTargeted
+        ? entry.textTargeted.replace('{user}', me).replace('{target}', targetUsername)
+        : entry.text.replace('{user}', me);
 
       // Persisted, full-width themed bar in the chat scrollback — same
       // persistence as a gift/legendary-bot line (postMessage writes to the
@@ -1756,6 +1962,7 @@ function attachSocket(io, sessionMiddleware) {
       io.emit('effect_triggered', {
         key: entry.key, emoji: entry.emoji, label: entry.label,
         username: user.username, level: currentLevel(user.id), roomId,
+        target: targetUsername || null,
       });
     }
 
@@ -2424,42 +2631,39 @@ function attachSocket(io, sessionMiddleware) {
       socket.emit('room_delete_confirmed', { roomId });
     });
 
-    // ---- Legendary Bot (dice-betting game, confined to its own room) ----
-    on('legendary_place_bet', ({ animal, amount }, ack) => {
-      const result = placeLegendaryBet(user, animal, amount);
+    // ---- Dice-betting games (Legendary Bot, Luxury Bet) — each confined to
+    // its own room, identified by gameKey ('legendary' | 'luxury'). ----
+    on('dicebet_place_bet', ({ gameKey, face, amount }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (!game) return typeof ack === 'function' && ack({ ok: false, error: 'Unknown game' });
+      const result = game.placeBet(user, face, amount);
       if (typeof ack === 'function') ack(result);
       else if (!result.ok) socket.emit('error_message', result.error);
     });
-    on('legendary_get_state', (data, ack) => {
-      const totals = {};
-      for (const [k, v] of legendaryAnimalTotals) totals[k] = v;
-      if (typeof ack === 'function') ack({ phase: legendaryPhase, endsAt: legendaryEndsAt, animalTotals: totals });
+    on('dicebet_get_state', ({ gameKey }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (typeof ack === 'function') ack(game ? game.getState() : null);
     });
     // "👁 View bets" — what everyone else (including bots) has placed this
     // round, so a player can see the other side of the board before betting.
-    on('legendary_get_bets', (data, ack) => {
+    on('dicebet_get_bets', ({ gameKey }, ack) => {
       if (typeof ack !== 'function') return;
-      const bettors = [];
-      for (const [, entry] of legendaryBets) {
-        const bets = [...entry.byAnimal].map(([key, amt]) => {
-          const a = LEGENDARY_ANIMAL_BY_KEY.get(key);
-          return { animal: key, label: a ? a.label : key, emoji: a ? a.emoji : '', amount: amt };
-        });
-        bettors.push({ username: entry.username, isBot: !!entry.isBot, bets });
-      }
-      ack({ phase: legendaryPhase, bettors });
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (!game) return ack({ phase: 'idle', bettors: [] });
+      ack({ phase: game.getState().phase, bettors: game.getBets() });
     });
     // Manual "Start" — same effect as typing !start in the room, exposed as a
     // button so a player doesn't need to know the chat command to kick the
     // next round off once the previous one has finished (phase === 'idle').
-    on('legendary_start', (data, ack) => {
-      const started = tryStartLegendaryRound();
+    on('dicebet_start', ({ gameKey }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      const started = !!game && game.tryStart();
       if (typeof ack === 'function') ack({ ok: started, error: started ? null : 'A round is already in progress.' });
       else if (!started) socket.emit('error_message', 'A round is already in progress.');
     });
 
     // ---- LowCard / Cricket status bar — initial state on room entry, same
-    // purpose as legendary_get_state (live updates after that come via the
+    // purpose as dicebet_get_state (live updates after that come via the
     // 'elimination_state' room broadcast). roomId identifies which of the
     // two shared-engine games to read.
     on('elimination_get_state', ({ roomId }, ack) => {

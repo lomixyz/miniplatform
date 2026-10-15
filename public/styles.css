@@ -691,28 +691,116 @@ body::after {
 /* Pinned room-info banners at the top of the chat — owner, welcome message,
    and who's currently in the room — always visible, never scrolls away with
    the chat log (see #roomInfoBanner's position as a sibling before #messages). */
-#roomInfoBanner { flex-shrink: 0; display: flex; flex-direction: column; }
+#roomInfoBanner { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 0; }
 #roomInfoBanner:empty { display: none; }
+/* Dark-navy info cards (owner, welcome message, who's currently here) —
+   deliberately fixed colors rather than the light/dark theme vars (like
+   #announcementBanner below): this is the room's own "console" styling,
+   matching the mig33/mig66-style reference, not a surface that should flip
+   with the rest of the app's light/dark mode toggle. */
 .room-banner-row {
   display: flex; align-items: flex-start; gap: 10px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px; line-height: 1.4;
+  padding: 12px 16px; border-radius: 12px;
+  background: linear-gradient(135deg, #0f1f3d, #16234a 60%, #0f1f3d);
+  font-size: 13.5px; line-height: 1.45; color: #e2e8f0;
 }
 .room-banner-row .room-banner-icon { flex-shrink: 0; font-size: 15px; }
-.room-banner-row .room-banner-text { color: var(--text); }
-.room-banner-row .room-banner-text b { font-weight: 700; }
-.room-banner-row .room-banner-text .room-banner-sub { display: block; color: var(--text-dim); margin-top: 2px; }
+.room-banner-row .room-banner-text { color: #e2e8f0; }
+.room-banner-row .room-banner-text b { font-weight: 700; color: #e2e8f0; }
+.room-banner-row .room-banner-text .room-banner-sub { display: block; color: #cbd5e1; margin-top: 2px; }
 .room-banner-row .room-banner-text a.room-banner-link,
-.room-banner-row .room-banner-text .room-banner-link { color: var(--accent-light); font-weight: 600; }
+.room-banner-row .room-banner-text .room-banner-link { color: #fbbf24; font-weight: 700; }
 
-.msg { font-size: 14px; line-height: 1.5; }
+.msg { font-size: 14px; line-height: 1.5; max-width: 100%; }
 .msg .user { font-weight: 700; color: var(--accent-light); }
 .msg .clickable-username { cursor: pointer; }
-.msg.gift { color: var(--pink); font-weight: 600; }
+
+/* Plain chat-text bubbles — own messages float right in a dark-navy bubble
+   (no username, since it's obviously you), everyone else's float left in a
+   light bubble with their colored username inline. Long-press (or
+   right-click on desktop) either one for Reply/Copy/Report/Block +
+   reactions — see bindMessageLongPress/openMessageActionMenu in app.js. */
+.msg.msg-own, .msg.msg-other { display: flex; flex-direction: column; max-width: 82%; }
+.msg.msg-own { align-self: flex-end; align-items: flex-end; }
+.msg.msg-other { align-self: flex-start; align-items: flex-start; }
+.msg-bubble {
+  border-radius: 16px; padding: 8px 12px; cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.msg-own .msg-bubble { background: #16234a; color: #f1f5f9; border-bottom-right-radius: 4px; }
+.msg-other .msg-bubble { background: var(--panel-alt); color: var(--text); border-bottom-left-radius: 4px; }
+.msg-bubble-text { white-space: pre-wrap; word-break: break-word; }
+.msg-bubble-meta {
+  display: block; font-size: 10.5px; opacity: 0.65; margin-top: 3px; text-align: right;
+}
+.msg-sent-check { opacity: 0.85; }
+
+/* Reply quote card nested at the top of a reply bubble. */
+.reply-quote {
+  display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px;
+  padding: 6px 8px; border-radius: 8px; border-left: 3px solid #0891B2;
+  background: rgba(127, 127, 127, 0.14);
+}
+.reply-quote-icon { flex: none; opacity: 0.8; }
+.reply-quote-to { font-weight: 700; font-size: 12px; color: #0891B2; }
+.reply-quote-text { font-size: 12.5px; opacity: 0.85; white-space: pre-wrap; word-break: break-word; }
+
+/* Reaction chips under a message bubble. */
+.msg-reactions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.msg-reactions.hidden { display: none; }
+.msg-reaction-chip {
+  display: flex; align-items: center; gap: 3px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; font-size: 12px;
+}
+.msg-reaction-chip.mine { border-color: #f59e0b; background: rgba(245, 158, 11, 0.12); }
+.msg-reaction-count { font-size: 11px; font-weight: 700; color: var(--text-dim); }
+
+/* Reply compose bar — appears above the chat input while replyContext is
+   set (see startReply/cancelReply/renderReplyPreview in app.js). */
+#replyPreviewBar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+  border-top: 1px solid var(--border); background: var(--panel-alt);
+}
+.reply-preview-icon { flex: none; font-size: 15px; opacity: 0.8; }
+.reply-preview-body { flex: 1; min-width: 0; }
+.reply-preview-to { font-size: 12px; font-weight: 700; color: #0891B2; }
+.reply-preview-text { font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-preview-close { background: transparent; color: var(--text-dim); font-size: 14px; padding: 4px 6px; flex: none; }
+
+/* Long-press message menu — a transparent full-screen backdrop (tap
+   anywhere to dismiss) plus the floating card itself, positioned next to
+   whichever message was pressed (see openMessageActionMenu in app.js). */
+#msgActionBackdrop { position: fixed; inset: 0; z-index: 998; background: transparent; }
+#msgActionMenu {
+  position: fixed; z-index: 999; width: 300px; max-width: calc(100vw - 16px);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.3); overflow: hidden;
+}
+.msg-action-reactions {
+  display: flex; justify-content: space-between; gap: 1px; padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.msg-action-emoji {
+  background: transparent; font-size: 18px; padding: 3px; border-radius: 8px; line-height: 1; flex: none;
+}
+.msg-action-emoji:hover { background: var(--panel-alt); }
+.msg-action-list { display: flex; flex-direction: column; padding: 4px; }
+.msg-action-item {
+  display: flex; align-items: center; gap: 10px; background: transparent; text-align: left;
+  padding: 10px 10px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--text);
+}
+.msg-action-item:hover { background: var(--panel-alt); }
+.msg-action-item.msg-action-danger { background: transparent; color: var(--danger); }
+.msg-action-item.msg-action-danger:hover { background: var(--panel-alt); }
+.msg.gift { color: var(--pink); font-weight: 700; font-size: 14.5px; }
+.gift-level { color: #f59e0b; font-weight: 800; }
+.gift-emoji-inline { font-size: 22px; vertical-align: -4px; display: inline-block; margin: 0 1px; }
 .msg.voucher { color: #facc15; font-weight: 600; }
-.msg.system { color: var(--text-dim); font-style: italic; font-size: 13px; }
+/* System notices ("has entered"/"has left", silence/kick/ban notices, voucher
+   expiry, etc. — all posted as type 'system') — plain readable text instead
+   of the dim gray, using --text so it's still legible in dark mode (true
+   black would vanish against the dark background there). */
+.msg.system { color: var(--text); font-style: italic; font-size: 13px; }
 #chatInputBar { display: flex; gap: 6px; padding: 12px 20px; border-top: 1px solid var(--border); align-items: center; position: relative; }
 #chatInputBar input { flex: 1; border-radius: 999px; }
 .chat-input-icon { font-size: 17px; padding: 6px 8px; }
@@ -739,6 +827,41 @@ body::after {
 .emoji-picker-item { background: transparent; padding: 4px; font-size: 18px; border-radius: 6px; }
 .emoji-picker-item:hover { background: var(--panel-alt); }
 
+/* @mention popover — opens the instant "@" is typed in the chat input,
+   listing everyone currently in the room (same positioning recipe as
+   #emojiPickerPopover: absolute, anchored just above the input bar) so
+   picking someone is a single tap, same mechanic as the mig33/mig66-style
+   reference this was modeled on. */
+#mentionPopover {
+  position: absolute; left: 20px; right: 20px; bottom: 62px; z-index: 21;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25); max-height: 260px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.mention-popover-header {
+  display: flex; align-items: center; gap: 6px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border); font-weight: 700; font-size: 13px; flex: none;
+}
+.mention-popover-count {
+  background: var(--panel-alt); color: var(--text-dim); border-radius: 999px;
+  padding: 1px 8px; font-size: 11px; font-weight: 700; margin-left: auto;
+}
+.mention-popover-list { overflow-y: auto; }
+.mention-popover-empty { padding: 14px 12px; font-size: 13px; color: var(--text-dim); text-align: center; }
+.mention-popover-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; width: 100%; text-align: left;
+}
+.mention-popover-row:hover, .mention-popover-row.active { background: var(--panel-alt); }
+.mention-popover-row .avatar-circle { flex: none; }
+
+/* Highlighted @mention inside a chat bubble — orange, matching the app's
+   existing notification-accent color (see .level-progress-pct / owned
+   badges), so a mentioned name stands out from normal chat text. A mention
+   of the person actually viewing this (you) gets a filled pill instead of
+   just colored text, so it's unmistakable at a glance. */
+.chat-mention { color: #f59e0b; font-weight: 700; }
+.chat-mention.me { background: rgba(245, 158, 11, 0.18); border-radius: 5px; padding: 1px 5px; }
+
 /* Admin Panel -> Emoji Store pack cards */
 .emoji-pack-admin-card {
   border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-alt);
@@ -758,86 +881,118 @@ body::after {
 .chat-shared-image { max-width: 220px; max-height: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
 .chat-voice-note { margin-top: 4px; max-width: 240px; height: 34px; }
 
-/* Legendary Bot chat messages — a distinct light bubble so a whole round
-   (bet confirmations, dice roll, payouts) reads clearly against normal chat. */
-.msg.legendary {
+/* Dice-betting bot chat messages (Legendary Bot + Luxury Bet) — a distinct
+   light bubble so a whole round (bet confirmations, dice roll, payouts)
+   reads clearly against normal chat. Each game gets its own bot-name color
+   so the two are visually distinguishable in a shared chat history. */
+.msg.legendary, .msg.luxury {
   background: var(--panel-alt); border: 1px solid var(--border);
   border-radius: 10px; padding: 8px 12px; white-space: pre-line;
 }
+.dicebet-bot-name { font-weight: 700; }
+.dicebet-bot-name.legendary { color: #7c3aed; }
+.dicebet-bot-name.luxury { color: #b45309; }
+/* Back-compat alias in case any older markup still emits this exact class. */
 .legendary-bot-name { color: #7c3aed; font-weight: 700; }
 
-/* Legendary Bot betting panel — a dark purple strip pinned above the chat
-   input (matches the reference bar): countdown + current-bet pills in the
-   header, a row of circular animal "avatars" to tap, a row of bet-amount
-   pills below. Deliberately has its own dark palette instead of the
-   --panel/--border theme vars the rest of the UI uses — it reads as a game
-   console overlay, not a normal chat panel, in both light and dark mode. */
+/* Dice-betting panel (Legendary Bot + Luxury Bet) — a dark strip pinned
+   above the chat input (matches the reference bar): a round-counter badge,
+   countdown + current-bet pills in the header, a row of circular character
+   "avatars" to tap (each showing its running bet total), a row of
+   bet-amount pills below, and a hint line. Deliberately has its own dark
+   palette instead of the --panel/--border theme vars the rest of the UI
+   uses — it reads as a game console overlay, not a normal chat panel, in
+   both light and dark mode. Each game's panel gets its own gradient so the
+   two feel distinct while sharing every other rule below. */
 #legendaryGamePanel {
   background: linear-gradient(135deg, #3b0764, #5b21b6 55%, #312e81);
   padding: 10px 14px 12px;
   color: #fff;
 }
-.legendary-header { display: flex; align-items: center; gap: 6px; }
-.legendary-title-icon { font-size: 15px; }
-.legendary-title { font-weight: 800; font-size: 14px; }
-.legendary-header-spacer { flex: 1; }
-.legendary-badge {
+#luxuryGamePanel {
+  background: linear-gradient(135deg, #78350f, #b45309 55%, #92400e);
+  padding: 10px 14px 12px;
+  color: #fff;
+}
+.dicebet-header { display: flex; align-items: center; gap: 6px; }
+.dicebet-round-badge {
+  background: #dc2626; color: #fff; border-radius: 50%;
+  width: 22px; height: 22px; font-size: 12px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center; flex: none;
+}
+.dicebet-title-col { display: flex; flex-direction: column; line-height: 1.25; }
+.dicebet-title-icon { font-size: 15px; }
+.dicebet-title { font-weight: 800; font-size: 14px; }
+.dicebet-subtitle { font-size: 11px; opacity: 0.75; }
+.dicebet-header-spacer { flex: 1; }
+.dicebet-badge {
   background: rgba(255,255,255,0.16); border-radius: 999px; padding: 3px 10px;
   font-size: 12px; font-weight: 700; white-space: nowrap;
 }
-.legendary-badge.legendary-countdown { background: rgba(255,255,255,0.22); }
-.legendary-badge.legendary-countdown.idle { font-weight: 600; opacity: 0.8; }
-.legendary-badge.legendary-bet-summary { background: #fff; color: #3b0764; }
-.legendary-badge.legendary-start-btn {
+.dicebet-badge.dicebet-countdown { background: rgba(255,255,255,0.22); }
+.dicebet-badge.dicebet-countdown.idle { font-weight: 600; opacity: 0.8; }
+.dicebet-badge.dicebet-bet-summary { background: #fff; color: #3b0764; }
+#luxuryGamePanel .dicebet-badge.dicebet-bet-summary { color: #78350f; }
+.dicebet-badge.dicebet-start-btn {
   cursor: pointer; border: none; font: inherit; font-weight: 800; color: #3b0764; background: #fde047;
-  animation: legendaryStartPulse 1.4s ease-in-out infinite;
+  animation: dicebetStartPulse 1.4s ease-in-out infinite;
 }
-.legendary-badge.legendary-start-btn:hover { background: #fef08a; }
-@keyframes legendaryStartPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(253,224,71,0.6); } 50% { box-shadow: 0 0 0 5px rgba(253,224,71,0); } }
-.legendary-icon-btn {
+#luxuryGamePanel .dicebet-badge.dicebet-start-btn { color: #78350f; }
+.dicebet-badge.dicebet-start-btn:hover { background: #fef08a; }
+@keyframes dicebetStartPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(253,224,71,0.6); } 50% { box-shadow: 0 0 0 5px rgba(253,224,71,0); } }
+.dicebet-icon-btn {
   background: rgba(255,255,255,0.16); border: none; color: #fff; cursor: pointer;
   width: 26px; height: 26px; border-radius: 50%; font-size: 13px; line-height: 1;
   display: flex; align-items: center; justify-content: center; flex: none;
 }
-.legendary-icon-btn:hover { background: rgba(255,255,255,0.3); }
-.legendary-icon-btn.active { background: #fff; color: #3b0764; }
+.dicebet-icon-btn:hover { background: rgba(255,255,255,0.3); }
+.dicebet-icon-btn.active { background: #fff; color: #3b0764; }
+#luxuryGamePanel .dicebet-icon-btn.active { color: #78350f; }
 
 /* Capped + internally scrollable, same fix pattern as the room banner above
-   #legendaryGamePanel: this list must never be allowed to grow the panel's
-   own height, or it re-creates the exact "icons pushed off-screen" bug in
-   the floating desktop chat window that the member-list banner fix solved. */
-.legendary-bets-list {
+   the dice-betting panels: this list must never be allowed to grow the
+   panel's own height, or it re-creates the exact "icons pushed off-screen"
+   bug in the floating desktop chat window that the member-list banner fix
+   solved. */
+.dicebet-bets-list {
   max-height: 86px; overflow-y: auto; margin-top: 10px;
   background: rgba(0,0,0,0.18); border-radius: 8px; padding: 6px 8px;
   display: flex; flex-direction: column; gap: 4px;
 }
-.legendary-bet-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
-.legendary-bet-user { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.legendary-bet-amounts { white-space: nowrap; opacity: 0.9; }
-.legendary-bets-empty { font-size: 11px; opacity: 0.75; text-align: center; padding: 4px 0; }
+.dicebet-bet-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
+.dicebet-bet-user { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dicebet-bet-amounts { white-space: nowrap; opacity: 0.9; }
+.dicebet-bets-empty { font-size: 11px; opacity: 0.75; text-align: center; padding: 4px 0; }
 
-.legendary-animal-row { display: flex; gap: 6px; margin-top: 12px; overflow-x: auto; justify-content: space-between; }
-.legendary-animal-item { display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; flex: none; width: 52px; }
-.legendary-animal-avatar {
+.dicebet-face-row { display: flex; gap: 6px; margin-top: 12px; overflow-x: auto; justify-content: space-between; }
+.dicebet-face-item { display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; flex: none; width: 52px; }
+.dicebet-face-avatar {
   width: 46px; height: 46px; border-radius: 50%; font-size: 24px;
   background: rgba(255,255,255,0.14); border: 2px solid transparent;
   display: flex; align-items: center; justify-content: center;
 }
-.legendary-animal-item.selected .legendary-animal-avatar { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.35); }
-.legendary-animal-item:hover .legendary-animal-avatar { border-color: rgba(255,255,255,0.6); }
-.legendary-animal-item-label { font-size: 11px; color: rgba(255,255,255,0.85); }
+.dicebet-face-item.selected .dicebet-face-avatar { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.35); }
+.dicebet-face-item:hover .dicebet-face-avatar { border-color: rgba(255,255,255,0.6); }
+.dicebet-face-item-label { font-size: 11px; color: rgba(255,255,255,0.85); }
+.dicebet-face-total { font-size: 10px; font-weight: 700; color: #fde047; min-height: 12px; }
 
-.legendary-amount-row { display: flex; gap: 6px; margin-top: 10px; overflow-x: auto; }
-.legendary-amount-pill {
+.dicebet-amount-row { display: flex; gap: 6px; margin-top: 10px; overflow-x: auto; }
+.dicebet-amount-pill {
   flex: 1; min-width: 42px; background: rgba(255,255,255,0.14); border: none; color: #fff;
   border-radius: 999px; padding: 8px 0; font-size: 12px; font-weight: 800; white-space: nowrap;
 }
-.legendary-amount-pill:hover { background: rgba(255,255,255,0.24); }
-.legendary-amount-pill.selected { background: #fff; color: #3b0764; }
+.dicebet-amount-pill:hover { background: rgba(255,255,255,0.24); }
+.dicebet-amount-pill.selected { background: #fff; color: #3b0764; }
+#luxuryGamePanel .dicebet-amount-pill.selected { color: #78350f; }
 
-.legendary-reopen-tab {
+.dicebet-hint { font-size: 11px; opacity: 0.8; text-align: center; margin-top: 8px; }
+
+.dicebet-reopen-tab {
   background: linear-gradient(135deg, #3b0764, #5b21b6 55%, #312e81); color: #fff; border: none;
   border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 700; margin: 6px auto; display: block;
+}
+#luxuryGamePanel .dicebet-reopen-tab {
+  background: linear-gradient(135deg, #78350f, #b45309 55%, #92400e);
 }
 
 /* Cricket status bar — a slim green pitch-themed strip pinned above the chat
@@ -1173,7 +1328,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
    light and dark mode. */
 #announcementBanner {
   background: #fff7e6; border-left: 4px solid #f97316; border-radius: 6px;
-  padding: 10px 14px; margin-bottom: 10px;
+  padding: 10px 14px; margin: 10px 12px;
 }
 #announcementBanner .announcement-label {
   display: block; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
@@ -1403,18 +1558,59 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 }
 .primary-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* Daily Spin */
-.spin-card {
-  text-align: center; background: var(--panel); border: 1px solid var(--border);
-  border-radius: 14px; padding: 24px 16px; margin-bottom: 14px;
+/* Daily Spin — a real spinning prize wheel (see buildSpinWheelHtml/
+   spinWheelTo in app.js): CSS transform + transition does the spin, always
+   landing on whatever prize the server already committed (never a fake
+   animation that could disagree with the real result). */
+.spin-result-banner {
+  display: flex; align-items: center; gap: 12px; background: var(--panel-alt);
+  border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; margin-bottom: 16px;
 }
-.spin-emoji { font-size: 48px; margin-bottom: 12px; }
-.spin-countdown { margin-top: 10px; font-size: 13px; color: var(--text-dim); }
-.spin-prizes { display: flex; gap: 8px; flex-wrap: wrap; }
-.spin-prize-chip {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
-  padding: 6px 12px; font-size: 12px; font-weight: 600;
+.spin-result-icon {
+  width: 48px; height: 48px; border-radius: 12px; background: rgba(245, 158, 11, 0.18);
+  display: flex; align-items: center; justify-content: center; font-size: 22px; flex: none;
 }
+.spin-result-label { font-size: 13px; color: var(--text-dim); font-weight: 600; }
+.spin-result-amount { font-size: 22px; font-weight: 800; color: #f59e0b; }
+
+.spin-wheel-wrap { position: relative; width: 260px; height: 260px; margin: 8px auto 20px; }
+.spin-wheel-pointer {
+  position: absolute; top: -16px; left: 50%; transform: translateX(-50%);
+  font-size: 26px; color: #f59e0b; z-index: 5; filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4));
+}
+.spin-wheel {
+  width: 100%; height: 100%; border-radius: 50%; position: relative;
+  border: 7px solid #f59e0b; box-shadow: 0 0 0 3px #111827 inset, 0 10px 30px rgba(0,0,0,0.25);
+}
+.spin-wheel-label {
+  position: absolute; top: 50%; left: 50%; width: 70px; margin-left: -35px; margin-top: -8px;
+  text-align: center; font-size: 11px; font-weight: 800; color: #fff; line-height: 1.3;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5); pointer-events: none;
+}
+.spin-wheel-label small { display: block; font-size: 8px; font-weight: 600; opacity: 0.85; text-transform: uppercase; }
+.spin-wheel-center {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 76px; height: 76px; border-radius: 50%; background: #fff; color: #1f2937;
+  font-weight: 800; font-size: 15px; border: 4px solid #f59e0b; z-index: 6;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+}
+.spin-wheel-center:disabled { opacity: 0.7; cursor: default; }
+
+.spin-countdown-card {
+  background: var(--panel-alt); border: 1px solid var(--border); border-radius: 14px;
+  padding: 16px; text-align: center;
+}
+.spin-countdown-card-label { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 10px; }
+.spin-countdown-digits { display: flex; gap: 8px; justify-content: center; }
+.spin-countdown-box {
+  flex: 1; max-width: 90px; background: var(--panel); border-radius: 10px; padding: 10px 0;
+  border: 1px solid var(--border);
+}
+.spin-countdown-num { font-size: 26px; font-weight: 800; color: var(--text); }
+.spin-countdown-unit { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); margin-top: 2px; }
+.spin-progress-track { height: 6px; border-radius: 999px; background: var(--border); margin: 12px 0 10px; overflow: hidden; }
+.spin-progress-fill { height: 100%; background: #f59e0b; border-radius: 999px; transition: width 1s linear; }
+.spin-countdown-note { font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
 
 /* Color Shop (tiered redesign) */
 .color-shop-coins-row {

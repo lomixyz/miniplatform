@@ -376,7 +376,10 @@
       <div id="announcementBanner" class="hidden"></div>
       <div id="messages"></div>
       <div id="legendaryGamePanel" class="hidden"></div>
+      <div id="luxuryGamePanel" class="hidden"></div>
       <div id="cricketGamePanel" class="hidden"></div>
+      <div id="mentionPopover" class="hidden"></div>
+      <div id="replyPreviewBar" class="hidden"></div>
       <div id="chatInputBar">
         <button class="icon-btn" id="actionSheetBtn" title="More">⋮</button>
         <button class="icon-btn chat-input-icon" id="shareImageBtn" title="Share a picture">🖼️</button>
@@ -723,6 +726,13 @@
 <div id="giftShowerLayer"></div>
 <div id="toast" class="hidden"></div>
 <div id="broadcastBanner" class="hidden"></div>
+
+<!-- Long-press message menu (reaction bar + Reply/Copy/Report/Block) — see
+     openMessageActionMenu() in app.js. The backdrop is a full-screen
+     transparent tap-to-dismiss layer; the menu itself is positioned next to
+     whichever message was pressed. -->
+<div id="msgActionBackdrop" class="hidden"></div>
+<div id="msgActionMenu" class="hidden"></div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app.js"></script>

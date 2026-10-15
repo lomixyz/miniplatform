@@ -88,6 +88,33 @@ router.get('/me/footprint', requireLogin, (req, res) => {
   res.json({ count: visitors.length, visitors });
 });
 
+// "Block" from the chat long-press menu — this MUST come before GET
+// /:username for the same reason /me/footprint does above. Blocking is
+// one-directional and purely client-filtered: the blocked user is never
+// told and keeps posting normally, it's just that the blocker's own
+// client stops rendering their messages (see blockedUsernames in app.js).
+router.get('/blocked', requireLogin, (req, res) => {
+  const rows = db.prepare(`
+    SELECT u.username FROM blocked_users b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ?
+  `).all(req.session.user.id);
+  res.json({ usernames: rows.map((r) => r.username) });
+});
+
+router.post('/:username/block', requireLogin, (req, res) => {
+  const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(req.params.username);
+  if (!target) return res.status(404).json({ error: 'No such user' });
+  if (target.id === req.session.user.id) return res.status(400).json({ error: "You can't block yourself" });
+  db.prepare('INSERT OR IGNORE INTO blocked_users (blocker_id, blocked_id) VALUES (?, ?)').run(req.session.user.id, target.id);
+  res.json({ ok: true });
+});
+
+router.post('/:username/unblock', requireLogin, (req, res) => {
+  const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(req.params.username);
+  if (!target) return res.status(404).json({ error: 'No such user' });
+  db.prepare('DELETE FROM blocked_users WHERE blocker_id = ? AND blocked_id = ?').run(req.session.user.id, target.id);
+  res.json({ ok: true });
+});
+
 // A user's public profile card. Viewing someone ELSE's profile leaves a
 // "footprint" — an upserted (visitor, visited) row so it shows up on their
 // My Profile → footprint list. Viewing your own profile through this route

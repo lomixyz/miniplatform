@@ -547,6 +547,54 @@ if (!roomColumns.includes('announcement_by')) {
 if (!roomColumns.includes('announcement_at')) {
   db.exec('ALTER TABLE rooms ADD COLUMN announcement_at TEXT');
 }
+
+// Reply-to (quote) support for chat messages — nullable self-reference,
+// resolved back to the original's username/content/type at broadcast time
+// (see postMessage in socket.js) so the client can render the quoted block
+// without a second round trip.
+const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
+if (!messageColumns.includes('reply_to_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER');
+}
+
+// Emoji reactions on a chat message (the long-press reaction bar) — one
+// reaction per user per message: tapping a different emoji swaps it,
+// tapping the same one again removes it (see the toggle_reaction handler
+// in socket.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, user_id)
+  )
+`);
+
+// Per-viewer message blocking ("Block" in the long-press menu, see
+// routes/users.js) — hides a blocked user's messages for the blocker only,
+// persisted so it survives a reload/new device. Purely client-filtered:
+// the blocked user is never notified and isn't restricted server-side.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS blocked_users (
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (blocker_id, blocked_id)
+  )
+`);
+
+// "Report" in the long-press menu — durably filed for Staff to review later
+// (no review screen exists yet, but this at least actually records the
+// report instead of the button doing nothing).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS message_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    reporter_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
 // One-time backfill: rooms used to hold a single moderator_id column;
 // moderators now live in room_moderators (a room can have several). Any
 // already-set single moderator is copied over once — harmless to re-run,
@@ -589,7 +637,7 @@ if (roomCount === 0) {
 {
   const setCapacity = db.prepare('UPDATE rooms SET capacity = ? WHERE name = ? AND capacity != ?');
   for (const name of ['Lobby', 'UNO Arena', 'Chill Zone']) setCapacity.run(200, name, 200);
-  for (const name of ['Legendary Bot Official', 'Official LowCard Room', 'Official Cricket Room']) setCapacity.run(300, name, 300);
+  for (const name of ['Legendary Bot Official', 'Luxury Bet Official', 'Official LowCard Room', 'Official Cricket Room']) setCapacity.run(300, name, 300);
 }
 
 // The Legendary Bot dice-betting game's dedicated room (added after the
@@ -600,6 +648,17 @@ if (roomCount === 0) {
   if (!legendaryExists) {
     db.prepare("INSERT INTO rooms (name, is_official, capacity, room_type, description) VALUES (?, 1, ?, 'chat', ?)")
       .run('Legendary Bot Official', 300, 'Bet coins on Lion, Tiger, Fox, Wolf, Bear or Panda — Legendary Bot rolls 6 dice every round and pays out on however many land on your animal. Type !start to kick off a round.');
+  }
+}
+
+// Luxury Bet — same dice-betting engine as Legendary Bot (createDiceBettingGame
+// in socket.js), reskinned with six human characters instead of animals.
+// Seeded the same migration-safe way.
+{
+  const luxuryExists = db.prepare('SELECT 1 FROM rooms WHERE name = ?').get('Luxury Bet Official');
+  if (!luxuryExists) {
+    db.prepare("INSERT INTO rooms (name, is_official, capacity, room_type, description) VALUES (?, 1, ?, 'chat', ?)")
+      .run('Luxury Bet Official', 300, 'Bet coins on Laila, Majnu, Romeo, Juliet, Shirin or Farhad — Luxury Bet rolls 6 dice every round and pays out on however many land on your pick. Type !start to kick off a round.');
   }
 }
 

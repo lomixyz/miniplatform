@@ -1,0 +1,10 @@
+{
+	"appId": "com.miniplatform.app",
+	"appName": "MiniPlatform",
+	"webDir": "public",
+	"server": {
+		"url": "https://miniplatform.onrender.com",
+		"cleartext": false
+	},
+	"packageClassList": []
+}

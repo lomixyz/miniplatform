@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>MiniPlatform — Chat &amp; Games</title>
+<link rel="stylesheet" href="/styles.css" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0891B2" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="MiniPlatform" />
+<meta name="mobile-web-app-capable" content="yes" />
+<script>try { if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) {}</script>
+</head>
+<body>
+
+<div id="authScreen">
+
+  <!-- LOGIN -->
+  <div id="authLoginView" class="auth-view">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="auth-logo-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="white" stroke="none"><path d="M21 11.5c0 4.7-4 8.5-9 8.5-1.4 0-2.7-.3-3.9-.8L3 21l1.6-4.8C3.6 14.8 3 13.2 3 11.5 3 6.8 7 3 12 3s9 3.8 9 8.5Z"/></svg>
+        </div>
+        <div class="auth-logo-text">MiniPlatform</div>
+      </div>
+      <h2 class="auth-title">Welcome back</h2>
+      <p class="auth-subtitle">Sign in to continue</p>
+
+      <form id="loginForm">
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input id="loginUsername" type="text" placeholder="User ID" autocomplete="username" required />
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+          <input id="loginPassword" type="password" placeholder="Secret Code" autocomplete="current-password" required />
+          <button type="button" class="auth-eye-btn" data-target="loginPassword">
+            <svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+
+        <div class="auth-row-between">
+          <label class="auth-checkbox-inline"><input type="checkbox" id="loginRemember" /> Remember me</label>
+          <a href="#" id="authGoForgot">Forgot Code?</a>
+        </div>
+
+        <div id="loginError" class="auth-error"></div>
+
+        <button type="submit" id="loginSubmitBtn" class="auth-submit-btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          LOGIN
+        </button>
+
+        <p class="auth-terms-note">By logging in you agree to our <a href="#" class="auth-terms-link">Terms of Use (EULA)</a>, including zero tolerance for objectionable content or abusive users.</p>
+
+        <div class="auth-divider"><span>OR</span></div>
+
+        <p class="auth-switch-row">New here? <a href="#" id="authGoRegister">Sign Up →</a></p>
+        <p class="auth-switch-row dim"><a href="#" id="authGoActivate">Activate Account</a></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- REGISTER -->
+  <div id="authRegisterView" class="auth-view hidden">
+    <div class="auth-header">
+      <button type="button" class="auth-back-btn" id="registerBackBtn">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <h2>Create Account</h2>
+      <span class="auth-header-spacer"></span>
+    </div>
+    <div class="auth-card">
+      <p class="auth-card-title">Join the community</p>
+      <form id="registerForm">
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input id="regUsername" type="text" placeholder="User ID" autocomplete="username" required />
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-5.5 8.28"/></svg></span>
+          <input id="regEmail" type="email" placeholder="Email ID" autocomplete="email" required />
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+          <input id="regPassword" type="password" placeholder="Secret Code" autocomplete="new-password" required />
+          <button type="button" class="auth-eye-btn" data-target="regPassword">
+            <svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <input id="regConfirmPassword" type="password" placeholder="Confirm Code" autocomplete="new-password" required />
+          <button type="button" class="auth-eye-btn" data-target="regConfirmPassword">
+            <svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+
+        <div class="auth-subgroup-label">Gender</div>
+        <div class="gender-toggle">
+          <button type="button" class="gender-btn active" data-gender="male">♂ Male</button>
+          <button type="button" class="gender-btn" data-gender="female">♀ Female</button>
+        </div>
+
+        <div class="auth-subgroup-label">Country</div>
+        <div class="auth-field auth-select-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18Z"/></svg></span>
+          <select id="regCountry" required>
+            <option value="">Select a country…</option>
+          </select>
+          <span class="auth-select-chevron"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+        </div>
+
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/><path d="M12 8c-1.5-4-6-4-6-1.5S9 8 12 8Zm0 0c1.5-4 6-4 6-1.5S15 8 12 8Z"/></svg></span>
+          <input id="regReferrer" type="text" placeholder="Referrer User ID (optional)" />
+        </div>
+
+        <label class="auth-checkbox-row">
+          <input type="checkbox" id="regAgreeTerms" required />
+          <span>I have read and agree to the <a href="#" class="auth-terms-link">Terms of Use (EULA)</a>. MiniPlatform has zero tolerance for objectionable content or abusive users.</span>
+        </label>
+
+        <div id="registerError" class="auth-error"></div>
+
+        <button type="submit" id="registerSubmitBtn" class="auth-submit-btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          CREATE ACCOUNT
+        </button>
+
+        <p class="auth-switch-row">Already have an account? <a href="#" id="authGoLoginFromRegister">Login →</a></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- FORGOT CODE -->
+  <div id="authForgotView" class="auth-view hidden">
+    <div class="auth-header">
+      <button type="button" class="auth-back-btn" id="forgotBackBtn">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <h2>Forgot Code</h2>
+      <span class="auth-header-spacer"></span>
+    </div>
+    <div class="auth-card">
+      <p class="auth-card-title">Reset your Secret Code</p>
+      <p class="auth-hint">No email gets sent — confirm the User ID and Email ID on your account, then set a new Secret Code right here.</p>
+      <form id="forgotForm">
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input id="forgotUsername" type="text" placeholder="User ID" autocomplete="username" required />
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-5.5 8.28"/></svg></span>
+          <input id="forgotEmail" type="email" placeholder="Email ID" autocomplete="email" required />
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+          <input id="forgotNewPassword" type="password" placeholder="New Secret Code" autocomplete="new-password" required />
+          <button type="button" class="auth-eye-btn" data-target="forgotNewPassword">
+            <svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <div class="auth-field">
+          <span class="auth-field-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <input id="forgotConfirmPassword" type="password" placeholder="Confirm New Code" autocomplete="new-password" required />
+          <button type="button" class="auth-eye-btn" data-target="forgotConfirmPassword">
+            <svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+
+        <div id="forgotError" class="auth-error"></div>
+        <div id="forgotSuccess" class="auth-success"></div>
+
+        <button type="submit" id="forgotSubmitBtn" class="auth-submit-btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          RESET CODE
+        </button>
+
+        <p class="auth-switch-row">Remembered it? <a href="#" id="authGoLoginFromForgot">Login →</a></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ACTIVATE ACCOUNT -->
+  <div id="authActivateView" class="auth-view hidden">
+    <div class="auth-header">
+      <button type="button" class="auth-back-btn" id="activateBackBtn">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <h2>Activate Account</h2>
+      <span class="auth-header-spacer"></span>
+    </div>
+    <div class="auth-card">
+      <p class="auth-card-title">You're already good to go</p>
+      <p class="auth-hint">MiniPlatform accounts activate the moment you finish Create Account — there's no separate email step to complete. If you can't log in, use Forgot Code to reset your Secret Code instead.</p>
+      <button type="button" id="activateGoLoginBtn" class="auth-submit-btn">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        BACK TO LOGIN
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<div id="appScreen" class="hidden">
+  <div id="topbar">
+    <button class="icon-btn" id="hamburgerBtn" title="Menu">☰</button>
+    <!-- On desktop this group is centered in the topbar (logo/hamburger far
+         left, account menu far right — see #topbarNavGroup in styles.css),
+         matching iNwe. Plain flex children on mobile — unchanged there. -->
+    <div id="topbarNavGroup">
+      <button class="icon-btn nav-btn active" id="navHomeBtn" title="Home">🏠</button>
+      <button class="icon-btn nav-btn" id="navRoomsBtn" title="Rooms">💬</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navExploreBtn" title="Explore">🧭</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navFriendsBtn" title="Friends">👥<span class="qa-badge hidden" id="navFriendsBadge"></span></button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navFamilyBtn" title="Family">🏛️</button>
+      <button class="icon-btn nav-btn desktop-nav-btn" id="navAlertsTopBtn" title="Notifications">🔔<span class="qa-badge hidden" id="navAlertsTopBadge"></span></button>
+    </div>
+    <div id="roomTabBar"></div>
+    <div id="topbarRight">
+      <span id="coinsDisplay">🪙 0</span>
+      <!-- Desktop-only account dropdown — replaces the hamburger drawer
+           there (see #hamburgerBtn { display:none } in styles.css) by
+           surfacing the drawer items that have no top-nav icon of their
+           own (Profile/Balance/Blog/Emails/Settings/Give Coins/Admin). -->
+      <div id="topbarUserMenuWrap">
+        <button id="topbarUserMenuBtn" class="topbar-user-btn">
+          <div id="topbarUserAvatar" class="avatar-circle small"></div>
+          <span id="topbarUserName" class="topbar-user-name"></span>
+          <span class="drawer-chevron">▾</span>
+        </button>
+        <div id="topbarUserMenu" class="topbar-dropdown hidden">
+          <div class="topbar-dropdown-item" id="menuMyProfile">👤 My Profile</div>
+          <div class="topbar-dropdown-item" id="menuMyBalance">🪙 My Balance</div>
+          <div class="topbar-dropdown-item" id="menuBlog">📰 Blog</div>
+          <div class="topbar-dropdown-item" id="menuEmails">✉️ Emails <span class="drawer-badge hidden" id="menuEmailsBadge"></span></div>
+          <div class="topbar-dropdown-item" id="menuSettings">⚙️ Settings</div>
+          <div class="topbar-dropdown-item hidden" id="menuGiveCoins">🪙 Give Coins</div>
+          <div class="topbar-dropdown-item hidden" id="menuAdmin">🛠️ Admin Panel</div>
+          <div class="topbar-dropdown-item topbar-dropdown-logout" id="menuLogout">🚪 Logout</div>
+        </div>
+      </div>
+      <button class="icon-btn" id="logoutBtnTop" title="Log Out">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="navDrawerOverlay" class="hidden"></div>
+  <div id="navDrawer" class="hidden">
+    <div class="drawer-profile-card">
+      <div id="drawerAvatar" class="avatar-circle"></div>
+      <div class="drawer-profile-info">
+        <div id="drawerUsername" class="drawer-profile-name"></div>
+        <div class="drawer-profile-status">⭐ Level <span id="drawerLevel">1</span> · <span class="drawer-active-dot"></span> Active</div>
+        <div class="drawer-stat-row">
+          <div class="drawer-stat"><span id="drawerXp">0</span><small>XP</small></div>
+          <div class="drawer-stat"><span id="drawerCoins">0</span><small>Coins</small></div>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-items">
+      <div class="drawer-item active" id="drawerHome">🏠 Home</div>
+      <div class="drawer-item" id="drawerMyProfile">👤 My Profile</div>
+      <div class="drawer-item" id="drawerMyBalance">🪙 My Balance</div>
+      <div class="drawer-item" id="drawerFriends">👥 Friends <span class="drawer-badge hidden" id="drawerFriendsBadge"></span></div>
+      <div class="drawer-item" id="drawerExplore">🧭 Explore</div>
+      <div class="drawer-item" id="drawerBlog">📰 Blog</div>
+      <div class="drawer-item" id="drawerSettings">⚙️ Settings</div>
+      <div class="drawer-section-label">Chat</div>
+      <div class="drawer-item" id="drawerRooms">💬 Rooms</div>
+      <div class="drawer-item" id="drawerAlerts">🔔 Alerts <span class="drawer-badge hidden" id="drawerAlertsBadge"></span></div>
+      <div class="drawer-item" id="drawerEmails">✉️ Emails <span class="drawer-badge hidden" id="drawerEmailsBadge"></span></div>
+      <div class="drawer-item hidden" id="drawerGiveCoins">🪙 Give Coins</div>
+      <div class="drawer-item hidden" id="drawerAdmin">🛠️ Admin Panel</div>
+    </div>
+    <div class="drawer-item drawer-logout" id="drawerLogout">🚪 Logout <span class="drawer-chevron">›</span></div>
+  </div>
+
+  <!-- ===================== DESKTOP APP BODY (3-column shell) =====================
+       leftSidebar/rightSidebar are desktop-only (hidden below the 960px
+       breakpoint — see styles.css); the mobile "screen" flow below is
+       completely untouched, so a phone/PWA install still works exactly as
+       before. The profile card and quick actions used to live inside
+       #homeView; they're relocated here so they stay visible across every
+       screen (Home/Rooms/Chat), matching the persistent-sidebar layout. -->
+  <div id="appBody">
+  <div id="leftSidebar" class="desktop-only">
+    <div class="profile-card">
+      <div class="profile-card-top">
+        <div id="profileAvatar" class="avatar-circle"></div>
+        <div class="profile-card-info">
+          <div class="profile-name-row">
+            <span id="profileUsername"></span>
+            <span id="profileStatusDot" class="status-dot own"></span>
+            <span id="profileLevelBadge" class="level-pill">⚡ 1</span>
+          </div>
+          <div class="profile-bio-row">
+            <span id="profileBio" class="profile-bio"></span>
+            <button class="icon-btn small" id="editBioBtn" title="Edit bio">✎</button>
+          </div>
+        </div>
+      </div>
+      <div class="xp-bar-track"><div id="xpBarFill" class="xp-bar-fill"></div></div>
+    </div>
+
+    <div class="quick-actions-row">
+      <button class="quick-action-btn" id="alertsBtn">🔔 Alerts <span class="qa-badge hidden" id="alertsBadge"></span></button>
+      <button class="quick-action-btn" id="emailsBtn">✉️ Emails <span class="qa-badge hidden" id="emailsBadge"></span></button>
+      <button class="quick-action-btn" id="friendsBtn">👥 Friends <span class="qa-badge hidden" id="friendsBtnBadge"></span></button>
+    </div>
+  </div>
+
+  <div id="centerColumn">
+  <!-- ===================== HOME SCREEN ===================== -->
+  <div id="homeView" class="screen">
+    <div class="section-card">
+      <div class="section-header">Feed</div>
+      <div id="homeFeedBox" class="section-body"></div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-header">Friends</div>
+      <div id="homeFriendList" class="section-body"><div class="empty-note">No friends yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ===================== ROOM BROWSER ===================== -->
+  <div id="roomsView" class="screen hidden">
+    <div class="room-search-bar">
+      <input id="roomSearchInput" placeholder="Search room" />
+      <button class="icon-btn" id="roomsRefreshBtn" title="Refresh">🔄</button>
+      <button class="icon-btn" id="roomsCreateBtn" title="Create room">➕</button>
+    </div>
+
+    <div class="section-card">
+      <div class="section-header">Recent Rooms <span class="count-chip" id="recentCountChip">0</span></div>
+      <div id="recentRoomGrid" class="room-grid"></div>
+    </div>
+    <div class="section-card">
+      <div class="section-header">Official Rooms <span class="count-chip" id="officialCountChip">0</span></div>
+      <div id="officialRoomGrid" class="room-grid"></div>
+    </div>
+    <div class="section-card">
+      <div class="section-header">Other Rooms <span class="count-chip" id="otherCountChip">0</span></div>
+      <div id="otherRoomGrid" class="room-grid"></div>
+    </div>
+  </div>
+
+  <!-- ===================== CHAT SCREEN ===================== -->
+  <div id="chatScreen" class="screen hidden">
+    <div id="roomHeader" class="chat-drag-handle">
+      <h2 id="currentRoomName">Select a room</h2>
+      <!-- Desktop-only floating window controls (see .floating-chat-controls
+           in styles.css) — on mobile the chat screen is still the normal
+           full-screen flow and these stay hidden. -->
+      <div class="floating-chat-controls">
+        <button type="button" class="icon-btn small" id="chatFloatMinimizeBtn" title="Minimize">–</button>
+        <button type="button" class="icon-btn small" id="chatFloatCloseBtn" title="Close">✕</button>
+      </div>
+    </div>
+
+    <div id="chatView">
+      <div id="roomInfoBanner"></div>
+      <div id="announcementBanner" class="hidden"></div>
+      <div id="messages"></div>
+      <div id="legendaryGamePanel" class="hidden"></div>
+      <div id="cricketGamePanel" class="hidden"></div>
+      <div id="chatInputBar">
+        <button class="icon-btn" id="actionSheetBtn" title="More">⋮</button>
+        <button class="icon-btn chat-input-icon" id="shareImageBtn" title="Share a picture">🖼️</button>
+        <button class="icon-btn chat-input-icon" id="voiceNoteBtn" title="Send a voice note">🎤</button>
+        <input id="chatInput" placeholder="Type a message..." autocomplete="off" />
+        <button class="icon-btn chat-input-icon" id="emojiPickerBtn" title="Emoji">😊</button>
+        <button id="sendBtn" title="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+      <div id="emojiPickerPopover" class="hidden"></div>
+      <input type="file" id="shareImageFileInput" accept="image/*" class="hidden" />
+    </div>
+  </div>
+
+  <!-- Desktop-only: rooms you have open besides the one showing in the
+       primary floating window above render here as small always-visible
+       floating panels, so entering several rooms shows all of them at once
+       instead of only the last one you switched to — see renderSecondaryPanels()
+       in app.js. Empty/hidden on mobile (one room, full-screen, as before). -->
+  <div id="secondaryPanels" class="secondary-panels"></div>
+  </div><!-- /#centerColumn -->
+
+  <div id="rightSidebar" class="desktop-only">
+    <div class="sidebar-top-row">
+      <button id="sidebarCreateRoomBtn" class="primary-btn sidebar-create-room-btn">➕ Create Room</button>
+      <button id="sidebarRoomSearchBtn" class="icon-btn" title="Search rooms">🔍</button>
+    </div>
+    <div id="sidebarRoomSearchWrap" class="hidden">
+      <input id="sidebarRoomSearchInput" placeholder="Search rooms..." autocomplete="off" />
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarFavoriteRooms">
+        <span>Favorite rooms</span>
+        <span class="count-chip" id="sidebarFavoriteCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarFavoriteRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarOfficialRooms">
+        <span>Official rooms</span>
+        <span class="count-chip" id="sidebarOfficialCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarOfficialRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarHotRooms">
+        <span>🔥 Hot rooms</span>
+        <span class="count-chip" id="sidebarHotCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarHotRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarOtherRooms">
+        <span>Other rooms</span>
+        <span class="count-chip" id="sidebarOtherCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarOtherRooms" class="sidebar-room-list"></div>
+    </div>
+    <div class="sidebar-room-section">
+      <div class="sidebar-section-header" data-target="sidebarRecentRooms">
+        <span>Recent rooms</span>
+        <span class="count-chip" id="sidebarRecentCount">0</span>
+        <button class="icon-btn small sidebar-refresh-btn" title="Refresh">🔄</button>
+        <span class="sidebar-chevron">⌃</span>
+      </div>
+      <div id="sidebarRecentRooms" class="sidebar-room-list"></div>
+    </div>
+  </div>
+  </div><!-- /#appBody -->
+</div>
+
+<!-- Bottom action sheet (mobile-style), opened from the chat input's ⋮ button -->
+<div id="actionSheetOverlay" class="hidden">
+  <div id="actionSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-item" id="sheetParticipants">👥 Participants</div>
+    <div class="sheet-item" id="sheetRoomInfo">⚙️ Room Settings</div>
+    <div class="sheet-item hidden" id="sheetInvisible">👻 Go Invisible</div>
+    <div class="sheet-item" id="sheetBalance">💰 Check Balance</div>
+    <div class="sheet-item" id="sheetSendGift">🎁 Send Gift</div>
+    <div class="sheet-item" id="sheetClearChat">🧹 Clear Chat</div>
+    <div class="sheet-item danger" id="sheetLeaveRoom">🚪 Leave Room</div>
+  </div>
+</div>
+
+<!-- Participants slide-over panel -->
+<div id="participantsOverlay" class="hidden">
+  <div id="participantsPanel">
+    <div class="panel-header">
+      <span>Room Participants</span>
+      <button class="icon-btn" id="closeParticipantsBtn">✕</button>
+    </div>
+    <div id="participantsList" class="panel-body"></div>
+  </div>
+</div>
+
+<!-- Alerts / Notifications (full-screen list) -->
+<div id="alertsOverlay" class="hidden">
+  <div class="notif-screen">
+    <div class="notif-header">
+      <button class="icon-btn" id="closeAlertsBtn">✕</button>
+      <span class="notif-title">Notifications</span>
+      <button class="notif-mark-all-btn" id="markAllReadBtn">Mark all read</button>
+    </div>
+    <div id="alertsList" class="notif-list"></div>
+  </div>
+</div>
+
+<!-- Generic full-screen sub-screen (Explore, Members, Leader Board, Contests,
+     Daily Spin, Color Shop, Avatar Maker, Command List, Announcements, Blog,
+     Gift Store, My Profile, My Account, Settings, Game List) — one shared
+     shell, content swapped in per screen, with a back-stack so drilling into
+     e.g. Explore → Members → Staff goes back a level at a time. -->
+<div id="subScreenOverlay" class="hidden">
+  <div class="notif-screen">
+    <div class="notif-header">
+      <button class="icon-btn" id="subScreenBackBtn">←</button>
+      <div class="notif-title-wrap">
+        <span class="notif-title" id="subScreenTitle"></span>
+        <span class="notif-subtitle hidden" id="subScreenSubtitle"></span>
+      </div>
+      <button class="subscreen-action-btn hidden" id="subScreenActionBtn"></button>
+    </div>
+    <div id="subScreenContent" class="notif-list"></div>
+  </div>
+</div>
+
+<!-- Emails panel -->
+<div id="emailsOverlay" class="hidden">
+  <div class="side-panel">
+    <div class="panel-header">
+      <span id="emailsHeaderTitle">Emails</span>
+      <button class="icon-btn" id="closeEmailsBtn">✕</button>
+    </div>
+    <div id="emailsThreadList" class="panel-body"></div>
+    <div id="emailsThreadView" class="panel-body hidden">
+      <button class="secondary" id="emailsBackBtn" style="margin-bottom:8px;">← Back</button>
+      <div id="emailsMessages"></div>
+      <div class="email-compose-bar">
+        <input id="emailComposeInput" placeholder="Type a message..." />
+        <button id="emailSendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Friends panel -->
+<div id="friendsOverlay" class="hidden">
+  <div class="side-panel">
+    <div class="panel-header">
+      <span>Friends</span>
+      <button class="icon-btn" id="closeFriendsBtn">✕</button>
+    </div>
+    <div class="panel-body">
+      <div class="add-friend-bar">
+        <input id="addFriendInput" placeholder="Add friend by username" />
+        <button id="addFriendBtn">Add</button>
+      </div>
+      <div id="addFriendSearchResults"></div>
+      <div id="friendsIncoming"></div>
+      <div id="friendsOutgoing"></div>
+      <div class="section-header" style="margin-top:10px;">My Friends</div>
+      <div id="friendsAccepted"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Room Info popup (read-only — everyone who isn't the room's owner or
+     Staff/Global Admin; see the ⋮ menu's Room Info/Room Settings split and
+     openRoomInfoModal() in app.js). A compact modal instead of the full
+     editable Settings/Moderators/Banned page, since there's nothing here
+     for this viewer to change. -->
+<div id="roomInfoModal" class="modal-overlay hidden">
+  <div class="room-info-modal-panel">
+    <div class="room-info-modal-header">
+      <span id="roomInfoModalTitle"></span>
+      <button class="icon-btn" id="roomInfoModalCloseBtn">✕</button>
+    </div>
+    <div id="roomInfoModalBody" class="room-info-modal-body"></div>
+  </div>
+</div>
+
+<div id="adminModal" class="staff-page-overlay hidden">
+  <div class="staff-page-header">
+    <button class="icon-btn" id="closeAdminBtn" title="Back">←</button>
+    <div class="staff-page-title">🛠️ Staff Control</div>
+    <div class="staff-page-header-spacer"></div>
+  </div>
+  <div id="adminPanel" class="staff-page-body">
+    <div class="staff-page-container">
+      <div class="staff-col-left">
+        <div class="section-card">
+          <div class="section-header">🔍 Manage users</div>
+          <div class="section-body">
+            <p class="staff-section-desc">Search for a user by username to manage their roles (Staff, Global Admin, Mentor, Merchant) and level. Nothing is listed until you search.</p>
+            <div class="room-search-bar" style="margin-bottom:12px;">
+              <input id="adminUserSearchInput" placeholder="Search by username..." autocomplete="off" />
+              <button class="icon-btn" id="adminUserSearchBtn" title="Search">🔍</button>
+            </div>
+            <div id="userTableBody" class="staff-user-list"></div>
+            <div id="adminSearchEmpty" class="empty-note">Type a username above and press search.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="staff-col-right">
+        <div class="section-card">
+          <div class="section-header">➕ Create user <span class="count-chip">short IDs</span></div>
+          <div class="section-body">
+            <p class="staff-section-desc">The only way to create a short (3-5 letter) User ID — public signup always needs 6+. This doesn't touch your own session.</p>
+            <div id="adminCreateUserForm" class="staff-form-col">
+              <input id="createUserUsername" placeholder="User ID (3+ letters, numbers, _ - .)" autocomplete="off" />
+              <input id="createUserEmail" type="email" placeholder="Email ID" autocomplete="off" />
+              <input id="createUserPassword" type="password" placeholder="Secret Code (4+ characters)" autocomplete="new-password" />
+              <div class="staff-form-row">
+                <select id="createUserGender">
+                  <option value="male">♂ Male</option>
+                  <option value="female">♀ Female</option>
+                </select>
+                <select id="createUserCountry">
+                  <option value="">No country</option>
+                </select>
+              </div>
+              <button id="createUserBtn" class="primary-btn" type="button">Create User</button>
+              <div id="createUserResult" class="empty-note hidden"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">🚪 Room creation settings</div>
+          <div class="section-body">
+            <div class="lock-level-bar">
+              <span style="font-size:13px; color:var(--text-dim);">Minimum level to create a room:</span>
+              <button class="lock-level-btn" id="minCreateLevelMinus" type="button">−</button>
+              <div class="lock-level-value" id="minCreateLevelValue">0</div>
+              <button class="lock-level-btn" id="minCreateLevelPlus" type="button">+</button>
+              <button id="saveMinCreateLevelBtn" class="secondary">Save</button>
+            </div>
+            <div id="minCreateLevelNote" class="empty-note">0 = anyone can create a room. Staff always bypass this.</div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">😀 Emoji store</div>
+          <div class="section-body">
+            <p class="staff-section-desc">Free for every user the moment you add it — unlike the paid Sticker Store. Group emoji into a named pack (its own tab in the chat emoji picker), or add a single emoji with no pack — it goes into an auto "Custom" pack.</p>
+            <div id="emojiPackList"></div>
+            <div class="add-friend-bar" style="margin-top:10px;">
+              <input id="newEmojiPackName" placeholder="New pack name..." maxlength="40" style="flex:2;" />
+              <input id="newEmojiPackIcon" placeholder="Tab icon (emoji)" maxlength="8" style="flex:1;" />
+              <button id="createEmojiPackBtn">Create Pack</button>
+            </div>
+            <div class="add-friend-bar" style="margin-top:8px;">
+              <select id="addEmojiTargetPack" style="flex:2;"></select>
+              <input id="addEmojiInput" placeholder="Paste an emoji..." maxlength="8" style="flex:1;" />
+              <button id="addEmojiBtn">Add Emoji</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="giveCoinsModal" class="modal-overlay hidden">
+  <div id="giveCoinsPanel" class="modal-panel">
+    <button class="close-btn secondary" id="closeGiveCoinsBtn">Close</button>
+    <h2>Give Coins</h2>
+    <p style="color:var(--text-dim); font-size:13px;">Staff, Mentors, and Merchants can hand out coins to any user. Search by username, then enter an amount to give.</p>
+    <div class="room-search-bar" style="margin-bottom:12px;">
+      <input id="coinsUserSearchInput" placeholder="Search by username..." autocomplete="off" />
+      <button class="icon-btn" id="coinsUserSearchBtn" title="Search">🔍</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Username</th><th>Lv.</th><th>Coins</th><th>Give</th></tr></thead>
+      <tbody id="coinsTableBody"></tbody>
+    </table>
+    <div id="coinsSearchEmpty" class="empty-note">Type a username above and press search.</div>
+  </div>
+</div>
+
+<div id="badgesModal" class="modal-overlay hidden">
+  <div id="badgesModalPanel" class="modal-panel badges-modal-panel">
+    <button class="close-btn secondary" id="closeBadgesModalBtn">✕</button>
+    <div id="badgesModalBody"></div>
+  </div>
+</div>
+
+<div id="viewsModal" class="modal-overlay hidden">
+  <div id="viewsModalPanel" class="modal-panel">
+    <button class="close-btn secondary" id="closeViewsModalBtn">✕</button>
+    <h2>👣 Profile Views</h2>
+    <div id="viewsModalBody"></div>
+  </div>
+</div>
+
+<div id="createRoomModal" class="modal-overlay hidden">
+  <div id="createRoomPanel" class="modal-panel">
+    <button class="close-btn secondary" id="closeCreateRoomBtn">Close</button>
+    <h2>Create a Chat Room</h2>
+    <div id="createRoomLevelNote" class="empty-note hidden"></div>
+    <form id="roomForm">
+      <label for="newRoomName">Room name</label>
+      <input id="newRoomName" placeholder="Room name" autocomplete="off" />
+      <label for="newRoomDescription">Description</label>
+      <textarea id="newRoomDescription" placeholder="What's this room about?" rows="3"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="cancelCreateRoomBtn">Cancel</button>
+        <button type="submit">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="whoisModal" class="modal-overlay hidden">
+  <div id="whoisPanel" class="modal-panel whois-panel">
+    <button class="close-btn secondary" id="closeWhoisBtn">Close</button>
+    <div id="whoisContent"></div>
+  </div>
+</div>
+
+<div id="effectStoreModal" class="modal-overlay hidden">
+  <div class="modal-panel">
+    <button class="close-btn secondary" id="closeEffectStoreBtn">Close</button>
+    <h2 id="effectStoreTitle">✨ Effects on Sale</h2>
+    <div id="effectStoreList"></div>
+    <div id="effectStoreFooter" class="effect-store-footer">
+      <div>To buy: <code>/purchase &lt;effect&gt;</code>, then <code>/purchase confirm</code></div>
+      <div>Your effects: <code>/purchase effect info</code></div>
+    </div>
+  </div>
+</div>
+
+<div id="giftShowerLayer"></div>
+<div id="toast" class="hidden"></div>
+<div id="broadcastBanner" class="hidden"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
