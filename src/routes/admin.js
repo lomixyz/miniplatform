@@ -150,6 +150,26 @@ router.post('/users/:id/set-level', requireFlag('staff'), (req, res) => {
   res.json({ user: publicUser(updated) });
 });
 
+// Staff can reset any user's password directly from the Admin Panel — no
+// access to the old password needed (e.g. the user lost it and can't log in
+// to change it themselves via Settings). Same minimum-length rule as
+// registration/admin-create (4+ characters); never touches req.session, so
+// resetting someone else's password never logs the Staff member out of
+// their own account.
+router.post('/users/:id/reset-password', requireFlag('staff'), (req, res) => {
+  const targetId = Number(req.params.id);
+  const password = String((req.body && req.body.password) || '');
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'New password must be at least 4 characters' });
+  }
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, targetId);
+  res.json({ ok: true });
+});
+
 // A normal user can pick their own country only once (see POST /auth/country).
 // Staff is exempt from that lock and can set or change ANY user's country at
 // any time, including re-opening/correcting one that's already set.

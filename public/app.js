@@ -4022,6 +4022,17 @@ async function runAdminSearch() {
           <button type="button" class="country-set-btn" data-id="${u.id}">Set</button>
         </div>`;
 
+      // Staff-only: reset this user's password with no need for their old
+      // one (e.g. they're locked out). Plain text so Staff can read back
+      // what they just typed before sending it; nothing here is ever
+      // pre-filled with the user's actual current password (we never know
+      // it — only its hash is stored).
+      const passwordControl = `
+        <div class="level-control" style="display:flex; gap:4px;">
+          <input type="text" class="password-reset-input" data-id="${u.id}" placeholder="New password (4+ chars)" style="flex:1;" />
+          <button type="button" class="password-reset-btn" data-id="${u.id}">Reset</button>
+        </div>`;
+
       card.innerHTML = `
         <div class="staff-user-head">
           <div class="staff-user-id">#${u.id}</div>
@@ -4037,6 +4048,10 @@ async function runAdminSearch() {
           <div class="staff-control-group">
             <div class="staff-control-label">Country</div>
             ${countryControl}
+          </div>
+          <div class="staff-control-group">
+            <div class="staff-control-label">Password</div>
+            ${passwordControl}
           </div>
         </div>
         <div class="staff-roles-section">
@@ -4092,6 +4107,20 @@ async function runAdminSearch() {
       btn.addEventListener('click', async () => {
         const select = document.querySelector(`.country-select[data-id="${btn.dataset.id}"]`);
         await applyCountry(btn.dataset.id, select.value);
+      });
+    });
+    $$('.password-reset-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const input = document.querySelector(`.password-reset-input[data-id="${btn.dataset.id}"]`);
+        const password = input.value;
+        if (!password || password.length < 4) return toast('New password must be at least 4 characters');
+        try {
+          await api(`/admin/users/${btn.dataset.id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) });
+          toast('Password reset');
+          input.value = '';
+        } catch (err) {
+          toast(err.message);
+        }
       });
     });
   } catch (err) {
