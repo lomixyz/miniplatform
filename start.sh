@@ -35,6 +35,24 @@ else
     # curl has its own 15s cap and never blocks the boot either way.
     echo "ℹ️  Probing LITESTREAM_ENDPOINT reachability: $LITESTREAM_ENDPOINT"
     curl -sS -o /dev/null -w "ℹ️  Endpoint probe result: HTTP %{http_code}, connect=%{time_connect}s, tls=%{time_appconnect}s, total=%{time_total}s\n" --max-time 15 "$LITESTREAM_ENDPOINT" || echo "❌ Endpoint probe FAILED or timed out after 15s — this strongly suggests a network/DNS/TLS reachability issue from this Render instance to Backblaze, not a slow/large replica."
+    # Second diagnostic: ask litestream itself to just LIST the generations
+    # on the replica (a cheap metadata call — no data download) with its own
+    # tight 20s cap. If this prints a generation/lag table quickly, basic
+    # connectivity + credentials + bucket listing are all fine, and the real
+    # `restore` below is hanging during actual WAL/snapshot data transfer. If
+    # THIS hangs or errors too, the problem is earlier — bad credentials,
+    # wrong bucket/path, or a listing-permission issue — not a slow restore.
+    echo "ℹ️  Probing replica generations (metadata only, no data download)..."
+    if timeout 20s "$LITESTREAM_BIN" generations -config litestream.yml "$DB_PATH"; then
+      echo "ℹ️  Generations listing succeeded above — connectivity/credentials/listing are fine; if restore still hangs below, the issue is in the data-transfer phase."
+    else
+      GEN_EXIT=$?
+      if [ "$GEN_EXIT" -eq 124 ]; then
+        echo "❌ Generations listing itself TIMED OUT after 20s — this points to a credentials/permissions or bucket-listing problem (not just a slow restore), since this call does no data download at all."
+      else
+        echo "❌ Generations listing FAILED (exit $GEN_EXIT, see error above) — check LITESTREAM_BUCKET/ACCESS_KEY/SECRET_KEY."
+      fi
+    fi
     # Capped at 90s with `timeout` — a bad/unreachable LITESTREAM_* endpoint or
     # revoked credentials can make `litestream restore` hang silently instead
     # of erroring out, which used to block the app from ever starting (no
