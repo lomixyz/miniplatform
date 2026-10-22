@@ -11,6 +11,14 @@ LITESTREAM_BIN="./bin/litestream"
 
 mkdir -p data
 
+# Clock skew is a classic, silent cause of "hangs" with S3-style signed
+# requests: if this container's system clock is badly wrong, Backblaze
+# rejects every signed request with RequestTimeTooSkewed, and some clients
+# retry/backoff repeatedly without ever printing a clear error. Printing
+# the container's own clock here costs nothing and rules this in or out —
+# compare it to Render's own log timestamps on the left.
+echo "ℹ️  Container clock (UTC): $(date -u)"
+
 # Backblaze B2 (unlike Cloudflare R2) rejects/mishandles region: "auto" — it
 # needs the EXACT region string from its own endpoint hostname
 # (s3.<region>.backblazeb2.com). A wrong region breaks the S3 request
@@ -53,6 +61,15 @@ else
     # curl has its own 15s cap and never blocks the boot either way.
     echo "ℹ️  Probing LITESTREAM_ENDPOINT reachability: $LITESTREAM_ENDPOINT"
     curl -sS -o /dev/null -w "ℹ️  Endpoint probe result: HTTP %{http_code}, connect=%{time_connect}s, tls=%{time_appconnect}s, total=%{time_total}s\n" --max-time 15 "$LITESTREAM_ENDPOINT" || echo "❌ Endpoint probe FAILED or timed out after 15s — this strongly suggests a network/DNS/TLS reachability issue from this Render instance to Backblaze, not a slow/large replica."
+    # Second probe: hit the ACTUAL bucket/path (unsigned — no credentials),
+    # unlike the probe above which only hits the bare host. An unsigned
+    # request here still gets a fast 403/404 from Backblaze if the path is
+    # reachable; if THIS one hangs while the bare-host probe above was fast,
+    # the problem is specific to this bucket/path/region combination, not
+    # general network/DNS/TLS reachability to Backblaze.
+    BUCKET_PROBE_URL="${LITESTREAM_ENDPOINT%/}/${LITESTREAM_BUCKET}/miniplatform/generations/"
+    echo "ℹ️  Probing bucket/path reachability (unsigned): $BUCKET_PROBE_URL"
+    curl -sS -o /dev/null -w "ℹ️  Bucket probe result: HTTP %{http_code}, connect=%{time_connect}s, tls=%{time_appconnect}s, total=%{time_total}s\n" --max-time 15 "$BUCKET_PROBE_URL" || echo "❌ Bucket probe FAILED or timed out after 15s — the problem is specific to this bucket/path, not general Backblaze reachability."
     # Capped at 90s with `timeout` — a bad/unreachable LITESTREAM_* endpoint or
     # revoked credentials can make `litestream restore` hang silently instead
     # of erroring out, which used to block the app from ever starting (no
