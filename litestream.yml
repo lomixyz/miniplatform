@@ -8,5 +8,5 @@ dbs:
         bucket: ${LITESTREAM_BUCKET}
         path: miniplatform
         endpoint: ${LITESTREAM_ENDPOINT}
-        region: auto
+        region: ${LITESTREAM_REGION}
         force-path-style: true
