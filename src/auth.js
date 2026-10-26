@@ -59,6 +59,14 @@ function publicUser(row) {
     is_exec_board: !!row.is_exec_board,
     is_country_rep: !!row.is_country_rep,
     is_elite: !!row.is_elite,
+    // VIP Subscription (rainbow username) — only true while BOTH the flag is
+    // set AND it hasn't run past vip_rainbow_expires_at yet, same
+    // "server-trusted snapshot" pattern used elsewhere in this function
+    // (e.g. username_color_locked_until below) rather than a separate sweep
+    // job. See usernameStyleAttr() in public/app.js for why this one
+    // overrides every other color, including Staff's.
+    is_vip_rainbow: !!row.is_vip_rainbow && (!row.vip_rainbow_expires_at || new Date(row.vip_rainbow_expires_at) > new Date()),
+    vip_rainbow_expires_at: row.vip_rainbow_expires_at || null,
     coins: row.coins,
     xp: row.xp || 0,
     level,

@@ -70,15 +70,19 @@ else
     BUCKET_PROBE_URL="${LITESTREAM_ENDPOINT%/}/${LITESTREAM_BUCKET}/miniplatform/generations/"
     echo "ℹ️  Probing bucket/path reachability (unsigned): $BUCKET_PROBE_URL"
     curl -sS -o /dev/null -w "ℹ️  Bucket probe result: HTTP %{http_code}, connect=%{time_connect}s, tls=%{time_appconnect}s, total=%{time_total}s\n" --max-time 15 "$BUCKET_PROBE_URL" || echo "❌ Bucket probe FAILED or timed out after 15s — the problem is specific to this bucket/path, not general Backblaze reachability."
-    # Capped at 90s with `timeout` — a bad/unreachable LITESTREAM_* endpoint or
-    # revoked credentials can make `litestream restore` hang silently instead
-    # of erroring out, which used to block the app from ever starting (no
-    # port ever opens, so Render's deploy eventually times out at ~5-10min
-    # with "Port scan timeout reached", stuck on the OLD build anyway, just
-    # much slower). Failing fast here gets Render to the SAME end state —
-    # this deploy marked failed, previous one still live — in 90s instead of
-    # 5-10min, and surfaces the real reason via the probe + messages above.
-    if timeout 90s "$LITESTREAM_BIN" restore -if-replica-exists -config litestream.yml "$DB_PATH"; then
+    # Capped with `timeout` as a safety net — a bad/unreachable LITESTREAM_*
+    # endpoint or revoked credentials can make `litestream restore` hang
+    # forever instead of erroring out, which used to block the app from ever
+    # starting. BUT: every deploy is a brand-new, empty container (Render
+    # free tier has no persistent disk), so restore must re-download and
+    # replay EVERY WAL segment since the last snapshot, every single time —
+    # with thousands of WAL segments (confirmed via `b2 ls` on the bucket)
+    # this can legitimately take several minutes, not seconds. The old 90s
+    # cap was killing a slow-but-working restore, not a genuinely hung one.
+    # 600s (10min) stays safely under Render's own ~15-17min platform
+    # port-scan timeout, so a real hang still fails fast-ish and a slow (but
+    # working) restore now has room to actually finish.
+    if timeout 600s "$LITESTREAM_BIN" restore -if-replica-exists -config litestream.yml "$DB_PATH"; then
       if [ -f "$DB_PATH" ]; then
         echo "✅ Restore finished — data/app.db is back."
       else
@@ -95,7 +99,7 @@ else
       # while this one shows as failed, and no data is ever at risk.
       rm -f "$DB_PATH"
       if [ "$RESTORE_EXIT" -eq 124 ]; then
-        echo "❌ Litestream restore TIMED OUT after 90s (it never returned — see the endpoint probe result above). Refusing to boot with an empty database — failing this deploy instead, so Render keeps serving the previous working version. Fix LITESTREAM_ENDPOINT/BUCKET/credentials or network reachability, then redeploy."
+        echo "❌ Litestream restore TIMED OUT after 600s (10min) — see the probe results above. If those were fast, this is a genuinely slow/stuck restore (huge WAL backlog) rather than a connectivity problem. Refusing to boot with an empty database — failing this deploy instead, so Render keeps serving the previous working version."
       else
         echo "❌ Litestream restore FAILED (see the error above — usually wrong bucket/endpoint/credentials). Refusing to boot with an empty database — failing this deploy instead, so Render keeps serving the previous working version. Fix the LITESTREAM_* env vars, then redeploy."
       fi

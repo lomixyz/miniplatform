@@ -131,7 +131,7 @@ function attachSocket(io, sessionMiddleware) {
   function freshRoleFlags(userId) {
     db.clearExpiredActiveColor(userId);
     const row = db.prepare(`
-      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient, active_color_key, gender
+      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient, active_color_key, gender, is_vip_rainbow, vip_rainbow_expires_at
       FROM users WHERE id = ?
     `).get(userId);
     return row
@@ -140,8 +140,13 @@ function attachSocket(io, sessionMiddleware) {
           is_exec_board: !!row.is_exec_board, is_country_rep: !!row.is_country_rep, is_elite: !!row.is_elite,
           username_color: row.username_color || null, username_gradient: row.username_gradient || null,
           active_color_key: row.active_color_key || null, gender: row.gender || null,
+          // VIP Subscription rainbow name — overrides every other color
+          // above, Staff's gradient included (see usernameStyleAttr() in
+          // public/app.js). Same "trust the snapshot" expiry check as
+          // auth.js publicUser().
+          is_vip_rainbow: !!row.is_vip_rainbow && (!row.vip_rainbow_expires_at || new Date(row.vip_rainbow_expires_at) > new Date()),
         }
-      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null, active_color_key: null, gender: null };
+      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null, active_color_key: null, gender: null, is_vip_rainbow: false };
   }
 
   // Same priority list resolveActiveColor()/roleIcon() use client-side (and
@@ -308,7 +313,8 @@ function attachSocket(io, sessionMiddleware) {
              COALESCE(u.is_staff, 0) AS is_staff, COALESCE(u.is_global_admin, 0) AS is_global_admin,
              COALESCE(u.is_mentor, 0) AS is_mentor, COALESCE(u.is_merchant, 0) AS is_merchant,
              COALESCE(u.is_exec_board, 0) AS is_exec_board, COALESCE(u.is_country_rep, 0) AS is_country_rep,
-             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient, u.active_color_key, u.gender
+             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient, u.active_color_key, u.gender,
+             COALESCE(u.is_vip_rainbow, 0) AS is_vip_rainbow, u.vip_rainbow_expires_at
       FROM messages m LEFT JOIN users u ON u.id = m.user_id
       WHERE m.room_id = ? AND m.created_at > ?
       ORDER BY m.id ASC LIMIT 300
@@ -321,6 +327,7 @@ function attachSocket(io, sessionMiddleware) {
       is_merchant: !!r.is_merchant, is_exec_board: !!r.is_exec_board, is_country_rep: !!r.is_country_rep,
       is_elite: !!r.is_elite, is_moderator: r.user_id != null && moderatorIds.has(r.user_id), username_color: r.username_color || null,
       username_gradient: r.username_gradient || null, active_color_key: r.active_color_key || null, gender: r.gender || null,
+      is_vip_rainbow: !!r.is_vip_rainbow && (!r.vip_rainbow_expires_at || new Date(r.vip_rainbow_expires_at) > new Date()),
     }));
   }
 
@@ -422,7 +429,7 @@ function attachSocket(io, sessionMiddleware) {
     return db.prepare(`
       SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
              u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status, u.active_color_key, u.gender,
-             u.avatar_photo_url
+             u.avatar_photo_url, u.is_vip_rainbow, u.vip_rainbow_expires_at
       FROM room_memberships rm JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? AND rm.active = 1
     `).all(roomId);
@@ -517,6 +524,7 @@ function attachSocket(io, sessionMiddleware) {
       active_color_key: r.active_color_key || null,
       gender: r.gender || null,
       avatar_photo_url: r.avatar_photo_url || null,
+      is_vip_rainbow: !!r.is_vip_rainbow && (!r.vip_rainbow_expires_at || new Date(r.vip_rainbow_expires_at) > new Date()),
       invisible: !!invisibleByUser.get(r.id) || !!r.ghost_mode,
       ghost_mode: !!r.ghost_mode,
       online: presence.isOnline(r.id),
@@ -2170,6 +2178,7 @@ function attachSocket(io, sessionMiddleware) {
         is_exec_board: !!target.is_exec_board,
         is_country_rep: !!target.is_country_rep,
         is_elite: !!target.is_elite,
+        is_vip_rainbow: !!target.is_vip_rainbow && (!target.vip_rainbow_expires_at || new Date(target.vip_rainbow_expires_at) > new Date()),
         username_color: target.username_color || null,
         active_color_key: target.active_color_key || null,
         gender: target.gender || null,

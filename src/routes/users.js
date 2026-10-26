@@ -34,6 +34,7 @@ function publicProfileCard(row) {
     is_exec_board: !!row.is_exec_board,
     is_country_rep: !!row.is_country_rep,
     is_elite: !!row.is_elite,
+    is_vip_rainbow: !!row.is_vip_rainbow && (!row.vip_rainbow_expires_at || new Date(row.vip_rainbow_expires_at) > new Date()),
     level,
     xpIntoLevel,
     xpForNextLevel,
@@ -63,7 +64,8 @@ router.get('/me/footprint', requireLogin, (req, res) => {
   const meId = req.session.user.id;
   const rows = db.prepare(`
     SELECT pv.visited_at, u.id, u.username, u.xp, u.country, u.status, u.username_color, u.username_gradient,
-           u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant, u.is_exec_board, u.is_country_rep, u.is_elite
+           u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant, u.is_exec_board, u.is_country_rep, u.is_elite,
+           u.is_vip_rainbow, u.vip_rainbow_expires_at
     FROM profile_visits pv
     JOIN users u ON u.id = pv.visitor_id
     WHERE pv.visited_id = ?
@@ -83,6 +85,7 @@ router.get('/me/footprint', requireLogin, (req, res) => {
     is_exec_board: !!r.is_exec_board,
     is_country_rep: !!r.is_country_rep,
     is_elite: !!r.is_elite,
+    is_vip_rainbow: !!r.is_vip_rainbow && (!r.vip_rainbow_expires_at || new Date(r.vip_rainbow_expires_at) > new Date()),
     visited_at: r.visited_at,
   }));
   res.json({ count: visitors.length, visitors });

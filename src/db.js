@@ -240,6 +240,23 @@ CREATE TABLE IF NOT EXISTS merchant_applications (
   reviewed_at TEXT
 );
 
+-- Self-service "VIP Subscription" (rainbow username) requests (Explore ->
+-- VIP Subscription). Only VIP_RAINBOW_MAX_SLOTS (routes/vip.js) accounts can
+-- hold the rainbow slot at once — Staff review each application and only
+-- approve one if a slot is actually free at that moment; approving sets
+-- users.is_vip_rainbow = 1 and starts a fixed-length period
+-- (users.vip_rainbow_expires_at). One pending application per user at a
+-- time (enforced in the route, same pattern as merchant_applications).
+CREATE TABLE IF NOT EXISTS vip_rainbow_applications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+  reviewed_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  reviewed_at TEXT
+);
+
 -- Self-service "Become a Global Administrator" requests (Explore -> Become a
 -- Global Administrator) — same shape and flow as merchant_applications
 -- above. Approving sets is_global_admin = 1 AND credits 1,000,000 coins in
@@ -491,6 +508,8 @@ const newUserColumns = [
   ['total_online_seconds', 'INTEGER NOT NULL DEFAULT 0'], // Cumulative lifetime seconds this account has had at least one open socket — accrued in whole-seconds chunks each time their LAST open socket disconnects (see presence.endOnlineSession, called from socket.js's disconnect handler). Feeds the Elite auto-grant eligibility check (db.checkEliteEligibility) alongside gifts_sent_count. A session still open when the server restarts doesn't get its in-progress time counted — same in-memory-presence trade-off as the rest of src/presence.js.
   ['mentor_id', 'INTEGER'], // Merchant role only: which Mentor (users.id, is_mentor = 1) this merchant belongs to — see db.checkEliteEligibility's neighboring Mentor/Merchant helpers below and routes/merchant.js. NULL for a non-merchant, or a merchant whose mentor was removed/demoted.
   ['merchant_trial_expires_at', 'TEXT'], // Merchant role only: when this merchant's current trial period runs out — set on approval, extended on every approved renewal request (see routes/merchant.js MERCHANT_TRIAL_DAYS). NULL for a non-merchant. Past this date, the Mentor Dashboard flags the merchant as "Trial expired" — renewal is a request/approval flow (like the original application), never automatic, and an expired trial does NOT by itself strip is_merchant.
+  ['is_vip_rainbow', 'INTEGER NOT NULL DEFAULT 0'], // VIP Subscription (Explore -> VIP Subscription): holds one of only VIP_RAINBOW_MAX_SLOTS (routes/vip.js) concurrent rainbow-animated username slots. Granted by Staff approving a vip_rainbow_applications row (apply -> approve flow, like Merchant). The rainbow color OVERRIDES every other username color, including Staff's own gradient — see usernameStyleAttr() in public/app.js, which checks this before anything else. Expires at vip_rainbow_expires_at; past that date this flag is left as-is (not auto-cleared) but publicUser() reports is_vip_rainbow:false once expired, same "trust the server snapshot" pattern as every other color/role here.
+  ['vip_rainbow_expires_at', 'TEXT'], // When this account's current VIP Subscription rainbow slot runs out. NULL if never granted one. See is_vip_rainbow above.
 ];
 for (const [col, def] of newUserColumns) {
   if (!userColumns.includes(col)) {
@@ -908,6 +927,75 @@ if (existingBotCount < BOT_TARGET_COUNT) {
     const xp = Math.floor(Math.random() * 300_000); // spreads bots across a wide range of levels
     insertBot.run(username, BOT_PASSWORD_HASH, xp, gender, country);
     toCreate--;
+  }
+}
+
+// One-time cleanup: real accounts created during feature testing (or signed
+// up with a throwaway/phone-number-style handle) got left with unreadable
+// names like "whoistest3", "merchant7", or a bare number like "12313515631"
+// (visible to every real user in chat, the whois popup, Staff Control's
+// Manage Users search, etc.). Renames any account matching one of those
+// patterns to a readable name drawn from READABLE_NAME_POOL below, picking
+// one not already taken by any existing username (case-insensitive) and
+// only falling back to a themed name + short numeric suffix if the whole
+// pool is exhausted. Self-limiting: once a row is renamed it no longer
+// matches the patterns below (pure digits, or whoistest/merchant + digits),
+// so this never touches it again on a later boot — safe to leave running
+// on every boot.
+{
+  const READABLE_NAME_POOL = [
+    'rains', 'rainbow', 'country_flag', 'love_cat', 'catty', 'wolf.dog', 'sunny', 'breeze', 'moonlight', 'stardust',
+    'honeybee', 'ocean.blue', 'sky_walker', 'silver_fox', 'night_owl', 'golden_eagle', 'blue_jay', 'crimson_rose',
+    'violet_sky', 'amber_wave', 'coral_reef', 'misty_morning', 'winter_frost', 'autumn_leaf', 'spring_bloom',
+    'summer_breeze', 'forest_whisper', 'desert_rose', 'mountain_peak', 'river_song', 'lunar_glow', 'solar_flare',
+    'cosmic_dust', 'velvet_night', 'ivory_moon', 'jade_garden', 'ruby_heart', 'sapphire_sky', 'emerald_isle',
+    'pearl_shine', 'crystal_lake', 'diamond_dust', 'thunder_cloud', 'snow_flake', 'fire_fly', 'water_lily',
+    'wind_chime', 'cloud_nine', 'star_light', 'moon_beam', 'sun_ray', 'sea_breeze', 'forest_fox', 'desert_wolf',
+    'arctic_fox', 'tiger_lily', 'panda_bear', 'koala_bear', 'lion_heart', 'eagle_eye', 'dove_wing', 'swan_lake',
+    'falcon_fly', 'hawk_eye', 'fox_trot', 'wolf_pack', 'bear_hug', 'deer_run', 'rabbit_hop', 'otter_pup',
+    'dolphin_jump', 'whale_song', 'turtle_shell', 'butterfly_wing', 'dragonfly_blue', 'bee_hive', 'ladybug_red',
+    'firefly_glow', 'maple_leaf', 'cherry_blossom', 'willow_tree', 'lotus_flower', 'daisy_field', 'tulip_garden',
+  ];
+  const testAccounts = db.prepare('SELECT id, username FROM users')
+    .all()
+    // Catches every shape of throwaway/seed name seen in practice:
+    //   - "whoistest3", "merchant7"                 → exact name + optional digits
+    //   - "whoistestB1792067758", "merchtest1792065552",
+    //     "nova1792052846", "caplvl301_1792063804714" → any username
+    //     containing a long (6+) run of digits, which is how every ad-hoc
+    //     test/seed script in this codebase has stamped a timestamp onto a
+    //     name. Real, human-picked usernames essentially never contain a
+    //     run that long, so this is safe to apply broadly.
+    //   - "12313515631", "0501234567"                → entirely digits
+    //     (e.g. a phone number typed in as a handle)
+    // Deliberately does NOT touch something like "7eleven" or "merchanttt"
+    // that merely starts with/contains those words without the pattern.
+    .filter((u) => (
+      /^(whoistest|merchant)\d*$/i.test(u.username)
+      || /^\d+$/.test(u.username)
+      || /\d{6,}/.test(u.username)
+    ));
+  if (testAccounts.length) {
+    const usernameTaken = db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE');
+    const renameUser = db.prepare('UPDATE users SET username = ? WHERE id = ?');
+    const shuffled = [...READABLE_NAME_POOL].sort(() => Math.random() - 0.5);
+    let poolIdx = 0;
+    for (const { id } of testAccounts) {
+      let newName = null;
+      while (poolIdx < shuffled.length) {
+        const candidate = shuffled[poolIdx++];
+        if (!usernameTaken.get(candidate)) { newName = candidate; break; }
+      }
+      if (!newName) {
+        // Pool exhausted (lots of test accounts) — fall back to a themed
+        // name plus a short random suffix so it still reads naturally.
+        do {
+          const base = READABLE_NAME_POOL[Math.floor(Math.random() * READABLE_NAME_POOL.length)];
+          newName = `${base}${randomToken(2)}`;
+        } while (usernameTaken.get(newName));
+      }
+      renameUser.run(newName, id);
+    }
   }
 }
 

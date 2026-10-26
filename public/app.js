@@ -514,6 +514,16 @@ function roleIcon(u) {
 // 2) The resolved active color (role or purchased tier, or a legacy flat
 //    username_color) from resolveActiveColor() above.
 function usernameStyleAttr(u) {
+  // VIP Subscription (rainbow name) checked FIRST, before even Staff's own
+  // gradient — it overrides every other username color on the account,
+  // Staff included, per how VIP Subscription is sold. Inline style here
+  // naturally wins over any CSS class (.role-staff, etc.) applied alongside
+  // it, so nothing else needs to change for the override to take effect.
+  // Staff's crown badge/icon (roleIcon()) and Staff-only UI elsewhere are
+  // untouched — only the username text color is affected.
+  if (u.is_vip_rainbow) {
+    return ' style="background-image:linear-gradient(90deg,#ff3b3b,#ffa63b,#ffe93b,#3bff57,#3bdcff,#3b6bff,#b23bff,#ff3b9e,#ff3b3b);background-size:300% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:800;animation:rainbowNameShift 4s linear infinite;"';
+  }
   if (u.is_staff && u.username_gradient) {
     let colors = null;
     try { colors = JSON.parse(u.username_gradient); } catch (e) { /* ignore malformed value */ }
@@ -1830,6 +1840,12 @@ function buildMessageEl(msg) {
     const rest = spaceIdx === -1 ? '' : content.slice(spaceIdx + 1);
     div.innerHTML = `<span class="effect-bar-icon">${escapeHtml(icon)}</span> ${escapeHtml(rest)}`;
   } else if (msg.type === 'system' || msg.type === 'voucher') {
+    // GIFT SHOWER lines get the bold centered magenta treatment instead of
+    // the plain italic system-notice look — they're a celebration moment,
+    // not a quiet "user has entered" notice.
+    if (msg.type === 'system' && typeof msg.content === 'string' && msg.content.includes('GIFT SHOWER')) {
+      div.classList.add('gift-shower-line');
+    }
     div.textContent = msg.content;
   } else if (msg.type === 'gift') {
     div.innerHTML = styleGiftText(msg.content);
@@ -4503,7 +4519,8 @@ function renderExplore(box) {
 
   // COMMUNITY
   const communityWrap = sectionWrap('COMMUNITY');
-  communityWrap.appendChild(listRow({ icon: '👥', iconBg: '#3b82f6', title: 'Members', subtitle: 'Staff, global mods, mentors & merchants', onClick: () => pushSubScreen('Members', renderMembersGroups) }));
+  communityWrap.appendChild(listRow({ icon: '👥', iconBg: '#3b82f6', title: 'Community', subtitle: 'Staff, global mods, mentors & merchants', onClick: () => pushSubScreen('Community', renderMembersGroups) }));
+  communityWrap.appendChild(listRow({ icon: '👑', iconBg: '#f59e0b', title: 'VIP Subscription', subtitle: 'Get the rainbow name — limited slots', onClick: () => pushSubScreen('VIP Subscription', renderVipSubscription) }));
   communityWrap.appendChild(listRow({ icon: '🧑‍💼', iconBg: '#10b981', title: 'Merchant', subtitle: 'Become a merchant or manage your merchant role', onClick: () => pushSubScreen('Merchant', renderMerchantApply) }));
   communityWrap.appendChild(listRow({ icon: '⌨️', iconBg: '#64748b', title: 'Command List', subtitle: 'All chat commands and their responses', onClick: () => pushSubScreen('Command List', renderCommandList) }));
   if (!currentUser.is_global_admin) {
@@ -4605,27 +4622,58 @@ function renderMembersList(key, label) {
     try {
       const { users } = await api(`/members/${key}`);
       box.innerHTML = '';
-      if (!users.length) { box.innerHTML = `<div class="empty-note">No ${escapeHtml(label)} yet.</div>`; }
-      users.forEach((u) => {
-        const row = document.createElement('div');
-        row.className = 'member-row';
-        row.innerHTML = `
-          ${avatarPreviewHtml(u).replace('avatar-maker-preview', 'avatar-maker-preview member-row-avatar')}
-          <div class="member-row-body">
-            <div class="member-row-name">${usernameHtml(u)}</div>
-            <div class="member-row-sub">Level ${u.level}${u.country ? ` · ${escapeHtml(u.country)}` : ''}</div>
+      const meta = MEMBER_GROUP_META[key] || { icon: '👤' };
+
+      // Sky-blue backdrop + a mini header (icon, group label, small-caps
+      // subtitle) that lives INSIDE the scrollable content, matching the
+      // reference design — separate from the shared purple #subScreenTitle
+      // bar above it, which still shows the plain "Staff"/"Mentor"/etc title.
+      const wrap = document.createElement('div');
+      wrap.className = 'member-list-sky';
+      wrap.innerHTML = `
+        <div class="member-list-heading">
+          <span class="member-list-heading-icon">${meta.icon || '👤'}</span>
+          <div class="member-list-heading-text">
+            <div class="member-list-heading-title">${escapeHtml(label)}</div>
+            <div class="member-list-heading-subtitle">${escapeHtml((meta.subtitle || label).toUpperCase())}</div>
           </div>
-          ${u.country ? `<div class="member-row-pill">${countryFlag(u.country)} ${escapeHtml(u.country)}</div>` : ''}
-          <div class="list-chevron">›</div>
+        </div>
+      `;
+      const grid = document.createElement('div');
+      grid.className = 'member-card-grid';
+      wrap.appendChild(grid);
+
+      if (!users.length) {
+        grid.innerHTML = `<div class="empty-note">No ${escapeHtml(label)} yet.</div>`;
+      }
+      users.forEach((u) => {
+        const card = document.createElement('div');
+        card.className = 'member-card';
+        const genderBit = u.gender ? `${u.gender === 'female' ? '♀' : '♂'} ${u.gender === 'female' ? 'Female' : 'Male'}` : '';
+        const countryBit = u.country ? `${countryFlag(u.country)} ${escapeHtml(u.country)}` : '';
+        const subBits = [genderBit, countryBit].filter(Boolean).join(' · ');
+        card.innerHTML = `
+          ${avatarPreviewHtml(u).replace('avatar-maker-preview', 'avatar-maker-preview member-card-avatar')}
+          <div class="member-card-body">
+            <div class="member-card-name">${usernameHtml(u)}</div>
+            ${subBits ? `<div class="member-card-sub">${subBits}</div>` : ''}
+          </div>
+          <div class="member-card-badge">
+            <span class="member-card-level">Lv ${u.level}</span>
+            <span class="member-card-chevron">›</span>
+          </div>
         `;
-        row.addEventListener('click', () => openUserProfile(u.username));
-        box.appendChild(row);
+        card.addEventListener('click', () => openUserProfile(u.username));
+        grid.appendChild(card);
       });
+
       const back = document.createElement('div');
       back.className = 'member-list-back-btn';
       back.textContent = '← All categories';
       back.addEventListener('click', () => subScreenBack());
-      box.appendChild(back);
+      wrap.appendChild(back);
+
+      box.appendChild(wrap);
     } catch (err) {
       box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     }
@@ -5803,6 +5851,39 @@ function renderPostsScreen(type) {
           return;
         }
         posts.forEach((p) => {
+          if (!isBlog) {
+            // Announcements get their own styled card (icon badge, full
+            // date/time, bold headline, clamped body with Read more/less)
+            // instead of the plain notif-row Blog still uses.
+            const date = parseServerDate(p.created_at);
+            const dateLabel = `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+            const card = document.createElement('div');
+            card.className = 'announcement-card';
+            card.innerHTML = `
+              <div class="announcement-card-icon">📣</div>
+              <div class="announcement-card-body">
+                <div class="announcement-card-date">${escapeHtml(dateLabel)}</div>
+                <div class="announcement-card-title">🌐 ${escapeHtml(p.title)}</div>
+                <div class="announcement-card-content clamped">${escapeHtml(p.content)}</div>
+                <button type="button" class="announcement-read-more">Read more ▾</button>
+                ${currentUser.is_staff ? '<button class="post-delete-btn announcement-delete-btn" title="Delete">🗑️</button>' : ''}
+              </div>
+            `;
+            const contentEl = card.querySelector('.announcement-card-content');
+            const toggleBtn = card.querySelector('.announcement-read-more');
+            toggleBtn.addEventListener('click', () => {
+              const expanded = contentEl.classList.toggle('clamped') === false;
+              toggleBtn.textContent = expanded ? 'Read less ▴' : 'Read more ▾';
+            });
+            const delBtn = card.querySelector('.announcement-delete-btn');
+            if (delBtn) delBtn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              await api(`/posts/${p.id}`, { method: 'DELETE' });
+              draw();
+            });
+            box.appendChild(card);
+            return;
+          }
           const { relative, exact } = formatAlertTime(p.created_at);
           const row = document.createElement('div');
           row.className = 'notif-row';
@@ -6624,6 +6705,140 @@ async function renderMerchantApplications(box) {
     });
   };
   draw();
+}
+
+// ---------- VIP SUBSCRIPTION (Explore -> VIP Subscription) ----------
+// A rainbow-animated username, capped at a handful of concurrent holders —
+// same apply -> Staff-approve shape as Become a Merchant (see
+// routes/vip.js). A live preview up top renders the CURRENT user's own name
+// through the same rainbow style the real chat will show once approved.
+async function renderVipSubscription(box) {
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+  let status;
+  try {
+    status = await api('/vip/status');
+  } catch (err) {
+    box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  box.innerHTML = '';
+
+  const preview = document.createElement('div');
+  preview.className = 'vip-preview-card';
+  preview.innerHTML = `
+    <div class="vip-preview-label">Your name in the room</div>
+    <div class="vip-preview-name"><span style="background-image:linear-gradient(90deg,#ff3b3b,#ffa63b,#ffe93b,#3bff57,#3bdcff,#3b6bff,#b23bff,#ff3b9e,#ff3b3b);background-size:300% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:800;animation:rainbowNameShift 4s linear infinite;">${escapeHtml(currentUser.username)}</span>: hello everyone 👋</div>
+    <div class="vip-preview-note">Only ${status.slotsTotal} people can have it — each one gets the same rainbow animation. Picture and voice sharing stay as they are on your account.</div>
+  `;
+  box.appendChild(preview);
+
+  const infoRow = document.createElement('div');
+  infoRow.className = 'vip-info-row';
+  infoRow.innerHTML = `
+    <div class="vip-info-box"><div class="vip-info-label">⏱ Duration</div><div class="vip-info-value">30 days</div></div>
+    <div class="vip-info-box ${status.slotsUsed >= status.slotsTotal ? 'vip-info-box-full' : ''}"><div class="vip-info-label">🎟️ Places left</div><div class="vip-info-value">${status.slotsUsed} / ${status.slotsTotal}</div></div>
+    <div class="vip-info-box"><div class="vip-info-label">🌈 Your status</div><div class="vip-info-value">${status.isVip ? 'Active' : 'Not active'}</div></div>
+  `;
+  box.appendChild(infoRow);
+
+  const perks = document.createElement('div');
+  perks.className = 'vip-perks-box';
+  perks.innerHTML = `
+    <div class="vip-perks-title">What you get</div>
+    <div class="vip-perk-line">🌈 Your own rainbow animation on your name (rooms + profile)</div>
+    <div class="vip-perk-line">👑 Overrides every other name color on your account, Staff included</div>
+    <div class="vip-perk-line">⏳ Lasts 30 days from approval</div>
+    <div class="vip-perk-line">🎟️ Only ${status.slotsTotal} people at a time — a slot frees up as soon as one expires</div>
+  `;
+  box.appendChild(perks);
+
+  // 3-step progress: Choose (always done, this page) -> Apply -> Approve.
+  const applied = !!status.application;
+  const approved = status.isVip;
+  const steps = document.createElement('div');
+  steps.className = 'vip-steps';
+  steps.innerHTML = `
+    <div class="vip-step vip-step-done"><div class="vip-step-dot">1</div><div class="vip-step-label">Choose</div></div>
+    <div class="vip-step-line ${applied || approved ? 'vip-step-line-done' : ''}"></div>
+    <div class="vip-step ${applied || approved ? 'vip-step-done' : ''}"><div class="vip-step-dot">2</div><div class="vip-step-label">Apply</div></div>
+    <div class="vip-step-line ${approved ? 'vip-step-line-done' : ''}"></div>
+    <div class="vip-step ${approved ? 'vip-step-done' : ''}"><div class="vip-step-dot">3</div><div class="vip-step-label">Approve</div></div>
+  `;
+  box.appendChild(steps);
+
+  const statusBox = document.createElement('div');
+  statusBox.className = 'vip-status-box';
+  if (approved) {
+    statusBox.innerHTML = `
+      <div class="vip-status-title">🌈 You're VIP!</div>
+      <div class="vip-status-note">Your rainbow name is active${status.expiresAt ? ` until ${new Date(status.expiresAt).toLocaleDateString()}` : ''}.</div>
+    `;
+  } else if (applied && status.application.status === 'pending') {
+    statusBox.innerHTML = `
+      <div class="vip-status-title">⏳ Application pending</div>
+      <div class="vip-status-note">Staff will review it — check back soon.</div>
+    `;
+  } else if (status.slotsUsed >= status.slotsTotal) {
+    statusBox.innerHTML = `
+      <div class="vip-status-title">🔒 Applications are closed right now</div>
+      <div class="vip-status-note">All ${status.slotsTotal} VIP slots are taken — check back later as they free up.</div>
+    `;
+  } else {
+    statusBox.innerHTML = `
+      ${applied && status.application.status === 'rejected' ? '<div class="vip-status-note" style="margin-bottom:8px;">Your last application was declined — you can apply again below.</div>' : ''}
+      <textarea id="vipApplyMessage" class="vip-apply-message" placeholder="Why would you like the VIP rainbow name? (optional)" rows="2" maxlength="500"></textarea>
+      <button id="vipApplyBtn" class="primary-btn" style="width:100%; margin-top:8px;">Apply for VIP Subscription</button>
+    `;
+  }
+  box.appendChild(statusBox);
+  const applyBtn = statusBox.querySelector('#vipApplyBtn');
+  if (applyBtn) applyBtn.addEventListener('click', async () => {
+    const message = statusBox.querySelector('#vipApplyMessage').value.trim();
+    try {
+      await api('/vip/apply', { method: 'POST', body: JSON.stringify({ message }) });
+      toast('Application submitted!');
+      renderVipSubscription(box);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  if (currentUser.is_staff) {
+    box.appendChild(sectionLabel('STAFF — PENDING APPLICATIONS'));
+    const queueBox = document.createElement('div');
+    box.appendChild(queueBox);
+    const drawQueue = async () => {
+      let pending;
+      try { ({ applications: pending } = await api('/vip/pending')); }
+      catch (err) { queueBox.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`; return; }
+      queueBox.innerHTML = '';
+      if (!pending.length) { queueBox.innerHTML = '<div class="empty-note">No pending VIP applications.</div>'; return; }
+      pending.forEach((a) => {
+        const row = document.createElement('div');
+        row.className = 'list-row';
+        row.style.flexDirection = 'column';
+        row.style.alignItems = 'stretch';
+        row.innerHTML = `
+          <div class="list-row-title">${escapeHtml(a.username)}</div>
+          ${a.message ? `<div class="list-row-subtitle">"${escapeHtml(a.message)}"</div>` : ''}
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button class="primary-btn vip-approve-btn" data-id="${a.id}">Approve</button>
+            <button class="secondary-btn vip-reject-btn" data-id="${a.id}">Reject</button>
+          </div>
+        `;
+        row.querySelector('.vip-approve-btn').addEventListener('click', async () => {
+          try { await api(`/vip/${a.id}/approve`, { method: 'POST' }); toast(`${a.username} now has the VIP rainbow name`); drawQueue(); renderVipSubscription(box); }
+          catch (err) { toast(err.message); }
+        });
+        row.querySelector('.vip-reject-btn').addEventListener('click', async () => {
+          try { await api(`/vip/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); drawQueue(); }
+          catch (err) { toast(err.message); }
+        });
+        queueBox.appendChild(row);
+      });
+    };
+    drawQueue();
+  }
 }
 
 // ---------- MENTOR DASHBOARD (Explore -> Mentor Dashboard, Mentor only) ----------
