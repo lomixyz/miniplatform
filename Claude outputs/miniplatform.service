@@ -1,0 +1,26 @@
+[Unit]
+Description=MiniPlatform (Node.js chat + games app)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/miniplatform
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+EnvironmentFile=/opt/miniplatform/.env
+# Keep the process from eating all memory on a small Always-Free instance
+MemoryMax=1500M
+
+# Basic hardening — relax if your app needs to write elsewhere
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/miniplatform
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=miniplatform
+
+[Install]
+WantedBy=multi-user.target

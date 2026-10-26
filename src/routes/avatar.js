@@ -11,8 +11,16 @@ const router = express.Router();
 // companion emoji (the "pet"), and a backdrop emoji shown on the profile
 // card (the "scene").
 const FRAME_COLORS = ['#0891b2', '#f97316', '#ec4899', '#8b5cf6', '#22c55e', '#eab308', '#ef4444', '#94a3b8'];
-const PETS = ['🐶', '🐱', '🐰', '🐼', '🦊', '🐧', '🐲', '🦄', '🐢', '🦋'];
-const SCENES = ['🌆', '🌃', '🏖️', '🌌', '🌸', '⛰️', '🌧️', '☀️'];
+const PETS = [
+  '🐶', '🐱', '🐰', '🐼', '🦊', '🐧', '🐲', '🦄', '🐢', '🦋',
+  '🐯', '🦁', '🐸', '🐨', '🐵', '🐺', '🦝', '🐻', '🐹', '🐭',
+  '🐮', '🐷', '🦉', '🦅', '🦆', '🐬', '🐳', '🦈', '🐙', '🦖',
+];
+const SCENES = [
+  '🌆', '🌃', '🏖️', '🌌', '🌸', '⛰️', '🌧️', '☀️',
+  '🌊', '🌴', '🌋', '🏔️', '🌅', '🌇', '🌲', '🍁', '❄️', '🌈',
+  '🌵', '🗻', '🏝️', '🌉', '🎆', '🌠',
+];
 
 router.get('/options', requireLogin, (req, res) => {
   res.json({ frameColors: FRAME_COLORS, pets: PETS, scenes: SCENES });

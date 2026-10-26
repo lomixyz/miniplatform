@@ -442,6 +442,27 @@ if (!appSettingsColumns.includes('min_room_create_level')) {
   db.exec('ALTER TABLE app_settings ADD COLUMN min_room_create_level INTEGER NOT NULL DEFAULT 0');
 }
 
+// VIP Subscription's coin price — Staff-editable (see PATCH /api/vip/price
+// in routes/vip.js), same singleton-row pattern as min_room_create_level
+// above. Default 300,000 is just a starting point; Staff can change it
+// anytime from the VIP Subscription screen.
+if (!appSettingsColumns.includes('vip_rainbow_price')) {
+  db.exec('ALTER TABLE app_settings ADD COLUMN vip_rainbow_price INTEGER NOT NULL DEFAULT 300000');
+}
+
+// VIP Subscription went back to requiring Staff approval (apply -> Staff
+// reviews -> approve/reject, same shape as Merchant/Global Admin) instead of
+// an instant self-serve buy — see routes/vip.js. `price` locks in whatever
+// the coin price was AT THE TIME of the application, so a later Staff price
+// change doesn't retroactively change what a pending applicant already
+// agreed to pay.
+{
+  const vipAppColumns = db.prepare('PRAGMA table_info(vip_rainbow_applications)').all().map((c) => c.name);
+  if (!vipAppColumns.includes('price')) {
+    db.exec('ALTER TABLE vip_rainbow_applications ADD COLUMN price INTEGER NOT NULL DEFAULT 300000');
+  }
+}
+
 // Migrate older databases created before Blog posts could carry a picture.
 const postColumns = db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name);
 if (!postColumns.includes('image')) {
@@ -824,15 +845,17 @@ for (const t of COLOR_TIERS) {
 
 // Seed a themed gift for every country in the app's country list (the same
 // list used for the profile/registration country dropdown — see COUNTRIES
-// in public/app.js). Sudan is deliberately #1: it gets the lowest cost of
-// any gift in the catalog, so it always sorts first everywhere gifts are
-// listed (both /api/gifts and the giftstore route order by cost ASC).
-// This block runs on every boot, not just when the catalog is empty, so it
-// also backfills a database that was seeded before this feature existed —
-// and it upserts by name, so re-running it never creates duplicates (this
-// also cleans up the older plain 'Sudan' gift some earlier seeds included).
+// in public/app.js). Sudan is deliberately #1 in this list so it always
+// sorts first in the admin seed order (the live catalog itself sorts by
+// cost ASC, same as every other gift — see /api/gifts and the giftstore
+// route). This block runs on every boot, not just when the catalog is
+// empty, so it also backfills a database that was seeded before this
+// feature existed — and it upserts by name (cost included), so re-running
+// it never creates duplicates and a cost change here takes effect on the
+// next boot even for an existing database (this also cleans up the older
+// plain 'Sudan' gift some earlier seeds included).
 const COUNTRY_GIFTS = [
-  ['🇸🇩', 'Sudan', 5],
+  ['🇸🇩', 'Sudan', 100],
   ['🇺🇸', 'United States', 60], ['🇨🇦', 'Canada', 60], ['🇲🇽', 'Mexico', 60], ['🇧🇷', 'Brazil', 60], ['🇦🇷', 'Argentina', 60],
   ['🇬🇧', 'United Kingdom', 60], ['🇮🇪', 'Ireland', 60], ['🇫🇷', 'France', 60], ['🇩🇪', 'Germany', 60], ['🇪🇸', 'Spain', 60],
   ['🇵🇹', 'Portugal', 60], ['🇮🇹', 'Italy', 60], ['🇳🇱', 'Netherlands', 60], ['🇧🇪', 'Belgium', 60], ['🇨🇭', 'Switzerland', 60],

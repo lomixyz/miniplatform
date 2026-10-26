@@ -465,14 +465,13 @@
 <!-- Bottom action sheet (mobile-style), opened from the chat input's ⋮ button -->
 <div id="actionSheetOverlay" class="hidden">
   <div id="actionSheet">
-    <div class="sheet-handle"></div>
-    <div class="sheet-item" id="sheetParticipants">👥 Participants</div>
-    <div class="sheet-item" id="sheetRoomInfo">⚙️ Room Settings</div>
-    <div class="sheet-item hidden" id="sheetInvisible">👻 Go Invisible</div>
-    <div class="sheet-item" id="sheetBalance">💰 Check Balance</div>
-    <div class="sheet-item" id="sheetSendGift">🎁 Send Gift</div>
-    <div class="sheet-item" id="sheetClearChat">🧹 Clear Chat</div>
-    <div class="sheet-item danger" id="sheetLeaveRoom">🚪 Leave Room</div>
+    <div class="sheet-item" id="sheetParticipants"><span class="sheet-item-icon" style="background:color-mix(in srgb, #3b82f6 18%, var(--panel-alt));">👥</span><span class="sheet-item-label">Participants</span></div>
+    <div class="sheet-item" id="sheetRoomInfo"><span class="sheet-item-icon" style="background:color-mix(in srgb, #8b5cf6 18%, var(--panel-alt));">⚙️</span><span class="sheet-item-label">Room Settings</span></div>
+    <div class="sheet-item hidden" id="sheetInvisible"><span class="sheet-item-icon" style="background:color-mix(in srgb, #64748b 18%, var(--panel-alt));">👻</span><span class="sheet-item-label">Go Invisible</span></div>
+    <div class="sheet-item" id="sheetBalance"><span class="sheet-item-icon" style="background:color-mix(in srgb, #f59e0b 18%, var(--panel-alt));">💰</span><span class="sheet-item-label">Check Balance</span></div>
+    <div class="sheet-item" id="sheetSendGift"><span class="sheet-item-icon" style="background:color-mix(in srgb, #ec4899 18%, var(--panel-alt));">🎁</span><span class="sheet-item-label">Send Gift</span></div>
+    <div class="sheet-item" id="sheetClearChat"><span class="sheet-item-icon" style="background:color-mix(in srgb, #64748b 18%, var(--panel-alt));">🧹</span><span class="sheet-item-label">Clear Chat</span></div>
+    <div class="sheet-item danger" id="sheetLeaveRoom"><span class="sheet-item-icon" style="background:color-mix(in srgb, #ef4444 18%, var(--panel-alt));">🚪</span><span class="sheet-item-label">Leave Room</span></div>
   </div>
 </div>
 
@@ -570,6 +569,39 @@
       <button class="icon-btn" id="roomInfoModalCloseBtn">✕</button>
     </div>
     <div id="roomInfoModalBody" class="room-info-modal-body"></div>
+  </div>
+</div>
+
+<!-- Check Balance popup (⋮ → Check Balance) — small centered card instead of
+     a toast, see openBalanceModal() in app.js. -->
+<div id="balanceModal" class="modal-overlay hidden">
+  <div class="balance-modal-panel">
+    <div class="balance-modal-icon">💰</div>
+    <div class="balance-modal-label">Your Balance</div>
+    <div class="balance-modal-amount" id="balanceModalAmount">0</div>
+    <div class="balance-modal-sub" id="balanceModalSub"></div>
+    <button class="balance-modal-ok-btn" id="balanceModalOkBtn">OK</button>
+  </div>
+</div>
+
+<!-- Send Gift recipient popup (Send Gift picker -> pick a gift -> who to?)
+     replaces the old browser prompt() with an in-app modal — see
+     sendGiftFlow() in app.js. -->
+<div id="giftRecipientModal" class="modal-overlay hidden">
+  <div class="gift-recipient-modal-panel">
+    <div class="gift-recipient-modal-header">
+      <span>🎁 Send to…</span>
+      <button class="icon-btn" id="giftRecipientModalCloseBtn">✕</button>
+    </div>
+    <div class="gift-recipient-modal-body">
+      <div id="giftRecipientModalGiftPreview" class="gift-recipient-preview"></div>
+      <label for="giftRecipientModalInput">Username</label>
+      <input type="text" id="giftRecipientModalInput" placeholder="Enter a username…" autocomplete="off" />
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="giftRecipientModalCancelBtn">Cancel</button>
+        <button type="button" class="primary-btn" id="giftRecipientModalSendBtn" style="width:auto;">Send Gift</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -710,6 +742,17 @@
   <div id="whoisPanel" class="modal-panel whois-panel">
     <div id="whoisContent"></div>
     <button type="button" class="whois-close-btn" id="closeWhoisBtn">Close</button>
+  </div>
+</div>
+
+<!-- Shown once after sign-in when there's a newer Announcement than this
+     browser has already seen (see maybeShowAnnouncementPopup() in app.js) —
+     a lightweight "what's new" nudge separate from the full Explore ->
+     Announcements feed. -->
+<div id="announcementPopupModal" class="modal-overlay hidden">
+  <div class="modal-panel announcement-popup-panel">
+    <div id="announcementPopupContent"></div>
+    <button type="button" class="whois-close-btn" id="closeAnnouncementPopupBtn">Got it</button>
   </div>
 </div>
 

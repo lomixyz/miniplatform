@@ -29,16 +29,26 @@ function canReview(application, sessionUser) {
 // Explore card's "Apply" vs "Pending review" vs "Already a Merchant" state.
 router.get('/status', requireLogin, (req, res) => {
   const me = req.session.user.id;
-  const user = db.prepare('SELECT is_merchant, mentor_id, merchant_trial_expires_at FROM users WHERE id = ?').get(me);
+  const user = db.prepare('SELECT is_merchant, is_mentor, mentor_id, merchant_trial_expires_at FROM users WHERE id = ?').get(me);
   const application = db.prepare(
     'SELECT id, type, mentor_id, message, status, created_at, reviewed_at FROM merchant_applications WHERE user_id = ? ORDER BY id DESC LIMIT 1'
   ).get(me);
   const mentor = user && user.mentor_id ? db.prepare('SELECT username FROM users WHERE id = ?').get(user.mentor_id) : null;
+  // The original (type='new') approved application — its reviewed_at is
+  // "became a Merchant under this Mentor on" for the overview card, distinct
+  // from `application` above which is the MOST RECENT one (could be a later
+  // renewal) and drives the apply/pending UI instead.
+  const firstApproval = user && user.is_merchant
+    ? db.prepare("SELECT reviewed_at FROM merchant_applications WHERE user_id = ? AND type = 'new' AND status = 'approved' ORDER BY id ASC LIMIT 1").get(me)
+    : null;
   res.json({
     isMerchant: !!(user && user.is_merchant),
+    isMentor: !!(user && user.is_mentor),
     mentorUsername: mentor ? mentor.username : null,
     trialExpiresAt: (user && user.merchant_trial_expires_at) || null,
     trialExpired: !!(user && user.merchant_trial_expires_at && new Date(user.merchant_trial_expires_at) < new Date()),
+    trialDays: MERCHANT_TRIAL_DAYS, // lets the client draw a Term/progress bar without hardcoding the server's trial length
+    mentorSince: firstApproval ? firstApproval.reviewed_at : null,
     application: application || null,
   });
 });
@@ -52,7 +62,8 @@ router.get('/mentors', requireLogin, (req, res) => {
 
 router.post('/apply', requireLogin, (req, res) => {
   const me = req.session.user.id;
-  const user = db.prepare('SELECT is_merchant FROM users WHERE id = ?').get(me);
+  const user = db.prepare('SELECT is_merchant, is_mentor FROM users WHERE id = ?').get(me);
+  if (user && user.is_mentor) return res.status(400).json({ error: "Mentors can't apply to become a Merchant" });
   if (user && user.is_merchant) return res.status(400).json({ error: 'You are already a Merchant' });
   const pending = db.prepare("SELECT 1 FROM merchant_applications WHERE user_id = ? AND status = 'pending'").get(me);
   if (pending) return res.status(400).json({ error: 'You already have a pending application' });

@@ -110,6 +110,16 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// "30.34M coins" / "842K coins" style abbreviation for the Check Balance
+// popup's subtitle — the big number above it already shows the exact,
+// comma-separated amount, so this is just a quick-read summary under it.
+function formatCoinsAbbrev(n) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B coins`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M coins`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K coins`;
+  return `${n} coins`;
+}
+
 // Chat text can contain simple **bold** markdown (a couple of roleplay/
 // special commands lean on it for emphasis) — escape first (so this never
 // opens an HTML injection route), then turn any **pair** into real <strong>
@@ -395,6 +405,7 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
   // right away — it's persistent across screens, unlike the Rooms screen
   // it mirrors, so it shouldn't wait for the user to open Rooms first.
   refreshRooms();
+  maybeShowAnnouncementPopup();
 
   const saved = restoreRoom ? readSavedRoom() : null;
   if (!restoreRoom) clearSavedRoom();
@@ -409,6 +420,42 @@ function onLoggedIn(user, { restoreRoom = true } = {}) {
     refreshHome();
   }
 }
+
+// Pops up the newest Announcement right after sign-in — separate from the
+// full Explore -> Announcements feed, this is a quick "here's what's new"
+// nudge. Only shows once per announcement per browser (tracked in
+// localStorage, per-username since a shared browser may sign into more than
+// one account) so it doesn't nag on every page refresh — only when Staff has
+// actually posted something newer than the last one this browser saw.
+async function maybeShowAnnouncementPopup() {
+  try {
+    const { posts } = await api('/posts?type=announcement');
+    const latest = posts && posts[0];
+    if (!latest) return;
+    const seenKey = `announcement_seen_${currentUser.username}`;
+    let lastSeenId = 0;
+    try { lastSeenId = Number(localStorage.getItem(seenKey)) || 0; } catch (e) { /* ignore */ }
+    if (latest.id <= lastSeenId) return;
+
+    const date = new Date(latest.created_at);
+    const dateLabel = Number.isNaN(date.getTime()) ? '' : `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+    $('#announcementPopupContent').innerHTML = `
+      <div class="announcement-card announcement-popup-card">
+        <div class="announcement-card-icon">📣</div>
+        <div class="announcement-card-body">
+          ${dateLabel ? `<div class="announcement-card-date">${escapeHtml(dateLabel)}</div>` : ''}
+          <div class="announcement-card-title">🌐 ${escapeHtml(latest.title)}</div>
+          <div class="announcement-card-content">${escapeHtml(latest.content)}</div>
+        </div>
+      </div>
+    `;
+    $('#announcementPopupModal').classList.remove('hidden');
+    try { localStorage.setItem(seenKey, String(latest.id)); } catch (e) { /* ignore */ }
+  } catch (err) {
+    // Announcements popup is a nice-to-have — never block login over it.
+  }
+}
+$('#closeAnnouncementPopupBtn').addEventListener('click', () => $('#announcementPopupModal').classList.add('hidden'));
 
 // ---------- COLOR SHOP (tiered redesign) ----------
 // Mirrors src/colorCatalog.js's COLOR_TIERS and src/routes/colors.js's
@@ -599,6 +646,8 @@ const LEVEL_MILESTONES = [
   { level: 500, icon: '🌌', name: 'Mythic status' },
   { level: 750, icon: '⚡', name: 'Immortal' },
   { level: 1000, icon: '🏛️', name: 'Hall of Fame' },
+  { level: 1500, icon: '🔮', name: 'Celestial' },
+  { level: 2000, icon: '✨', name: 'Transcendent Crown' },
 ];
 
 // Current-level tile, an always-present "next level" tile (a themed
@@ -636,13 +685,26 @@ const GROWTH_STAGES = [
   { min: 61, max: 70, name: 'Supernova', icon: '💥', grad: 'linear-gradient(135deg,#fed7aa,#ea580c)' },
   { min: 71, max: 80, name: 'Nebula', icon: '🌌', grad: 'linear-gradient(135deg,#e9d5ff,#9333ea)' },
   { min: 81, max: 90, name: 'Black Hole', icon: '🕳️', grad: 'linear-gradient(135deg,#475569,#0f172a)' },
-  { min: 91, max: Infinity, name: 'Galaxy', icon: '🌠', grad: 'linear-gradient(135deg,#312e81,#6d28d9)' },
+  { min: 91, max: 120, name: 'Galaxy', icon: '🌠', grad: 'linear-gradient(135deg,#312e81,#6d28d9)' },
+  { min: 121, max: 160, name: 'Galaxy Cluster', icon: '🌀', grad: 'linear-gradient(135deg,#a5f3fc,#0891b2)' },
+  { min: 161, max: 220, name: 'Quasar', icon: '💠', grad: 'linear-gradient(135deg,#fbcfe8,#db2777)' },
+  { min: 221, max: 300, name: 'Wormhole', icon: '🌪️', grad: 'linear-gradient(135deg,#c7d2fe,#4338ca)' },
+  { min: 301, max: 400, name: 'Event Horizon', icon: '🔮', grad: 'linear-gradient(135deg,#1e1b4b,#000000)' },
+  { min: 401, max: 600, name: 'Dark Matter', icon: '🖤', grad: 'linear-gradient(135deg,#334155,#020617)' },
+  { min: 601, max: 900, name: 'Cosmic Deity', icon: '👁️', grad: 'linear-gradient(135deg,#fde047,#b45309)' },
+  { min: 901, max: Infinity, name: 'Transcendent', icon: '✨', grad: 'linear-gradient(135deg,#ffffff,#a855f7)' },
 ];
 function growthStageForLevel(level) {
   return GROWTH_STAGES.find((s) => level >= s.min && level <= s.max) || GROWTH_STAGES[GROWTH_STAGES.length - 1];
 }
 function growthStageIndex(level) {
   return GROWTH_STAGES.findIndex((s) => level >= s.min && level <= s.max);
+}
+// Once a veteran account is deep into the ranks, showing every single stage
+// since Meteor is just clutter — drop a passed stage once its whole range
+// ended more than 20 levels ago (future/locked stages always stay visible).
+function visibleGrowthStages(level) {
+  return GROWTH_STAGES.filter((s) => s.max === Infinity || s.max >= level - 20 || s.min > level);
 }
 
 // Daily xp-earn cap (Sudan calendar day — see src/xp.js) rendered as its own
@@ -776,7 +838,8 @@ function renderLevelScreen(box) {
   }, 60_000);
 
   const growthScroll = box.querySelector('#growthScroll');
-  GROWTH_STAGES.forEach((s, i) => {
+  visibleGrowthStages(level).forEach((s) => {
+    const i = GROWTH_STAGES.indexOf(s);
     const reached = i <= stageIdx;
     const tile = document.createElement('div');
     tile.className = 'growth-tile' + (i === stageIdx ? ' current' : '') + (reached ? '' : ' locked');
@@ -3208,10 +3271,40 @@ async function loadGifts() {
 
 function sendGiftFlow(gift) {
   if (!currentRoomId) return toast('Join a room first');
-  const target = prompt('Send to which username?');
-  if (!target) return;
-  socket.emit('send_gift_by_username', { roomId: currentRoomId, toUsername: target, giftId: gift.id });
+  openGiftRecipientModal(gift);
 }
+
+// Picking a gift from the in-chat "Send Gift" picker used to fall straight
+// through to the browser's native prompt() for a recipient — jarring next
+// to the rest of the app's own modals, and impossible to style/resize. This
+// is that same "who to?" step as a normal in-app popup instead.
+function openGiftRecipientModal(gift) {
+  const preview = $('#giftRecipientModalGiftPreview');
+  preview.innerHTML = `
+    <div class="gift-recipient-preview-icon">${gift.emoji}</div>
+    <div>
+      <div class="gift-recipient-preview-name">${escapeHtml(gift.name)}</div>
+      <div class="gift-recipient-preview-cost">🪙 ${gift.cost.toLocaleString()} coins</div>
+    </div>
+  `;
+  const input = $('#giftRecipientModalInput');
+  input.value = '';
+  $('#giftRecipientModal').classList.remove('hidden');
+  setTimeout(() => input.focus(), 50);
+
+  function send() {
+    const target = input.value.trim();
+    if (!target) return toast('Enter a username');
+    socket.emit('send_gift_by_username', { roomId: currentRoomId, toUsername: target, giftId: gift.id });
+    closeGiftRecipientModal();
+  }
+  $('#giftRecipientModalSendBtn').onclick = send;
+  input.onkeydown = (e) => { if (e.key === 'Enter') send(); };
+}
+function closeGiftRecipientModal() { $('#giftRecipientModal').classList.add('hidden'); }
+$('#giftRecipientModalCloseBtn').addEventListener('click', closeGiftRecipientModal);
+$('#giftRecipientModalCancelBtn').addEventListener('click', closeGiftRecipientModal);
+$('#giftRecipientModal').addEventListener('click', (e) => { if (e.target === $('#giftRecipientModal')) closeGiftRecipientModal(); });
 
 // "Gift Gallery" card grid — one circular icon badge + name + coin-cost pill
 // per gift, shared by the in-chat Send Gift picker and the Explore -> Gift
@@ -3246,7 +3339,9 @@ function renderSendGiftPicker(box) {
     <div class="gift-gallery-subtitle">Coins · Pick a gift to send in this room</div>
   `;
   box.appendChild(header);
-  box.appendChild(buildGiftGalleryGrid(allGiftsCache, (g) => sendGiftFlow(g)));
+  const grid = buildGiftGalleryGrid(allGiftsCache, (g) => sendGiftFlow(g));
+  grid.classList.add('compact'); // this picker opens as a small popup (see renderSubScreen) — denser cards fit it better than the full-screen Gift Store's
+  box.appendChild(grid);
 }
 
 // ---------- ACTION SHEET (⋮ button in chat) ----------
@@ -3300,10 +3395,23 @@ function closeRoomInfoModal() { $('#roomInfoModal').classList.add('hidden'); }
 $('#roomInfoModalCloseBtn').addEventListener('click', closeRoomInfoModal);
 $('#roomInfoModal').addEventListener('click', (e) => { if (e.target === $('#roomInfoModal')) closeRoomInfoModal(); });
 
+// Check Balance popup (⋮ → Check Balance) — a small centered card instead
+// of a plain toast, showing the exact amount plus an abbreviated read-out.
+function openBalanceModal() {
+  $('#balanceModalAmount').textContent = currentUser.coins.toLocaleString();
+  $('#balanceModalSub').textContent = formatCoinsAbbrev(currentUser.coins);
+  $('#balanceModal').classList.remove('hidden');
+}
+function closeBalanceModal() { $('#balanceModal').classList.add('hidden'); }
+$('#balanceModalOkBtn').addEventListener('click', closeBalanceModal);
+$('#balanceModal').addEventListener('click', (e) => { if (e.target === $('#balanceModal')) closeBalanceModal(); });
+
 $('#actionSheetBtn').addEventListener('click', () => {
   $('#sheetInvisible').classList.add('hidden'); // Go Invisible now lives in the user status picker — see openStatusPicker
   const title = roomSettingsOrInfoTitle();
-  $('#sheetRoomInfo').textContent = title === 'Room Settings' ? '⚙️ Room Settings' : 'ℹ️ Room Info';
+  const sheetRoomInfo = $('#sheetRoomInfo');
+  sheetRoomInfo.querySelector('.sheet-item-icon').textContent = title === 'Room Settings' ? '⚙️' : 'ℹ️';
+  sheetRoomInfo.querySelector('.sheet-item-label').textContent = title;
   $('#actionSheetOverlay').classList.remove('hidden');
 });
 $('#actionSheetOverlay').addEventListener('click', (e) => {
@@ -3331,7 +3439,7 @@ $('#sheetRoomInfo').addEventListener('click', () => {
 });
 $('#sheetBalance').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
-  toast(`💰 Balance: ${currentUser.coins} coins`);
+  openBalanceModal();
 });
 $('#sheetSendGift').addEventListener('click', () => {
   $('#actionSheetOverlay').classList.add('hidden');
@@ -4294,6 +4402,11 @@ function renderSubScreen() {
   $('#subScreenTitle').textContent = top.title;
   const box = $('#subScreenContent');
   box.innerHTML = '';
+  box.className = 'notif-list'; // reset any screen-specific wrapper class (e.g. explore-hub-wrap) left over from the previous screen
+  // Room Settings and the in-chat Send Gift picker open as a small centered
+  // popup card instead of the usual full-screen sub-screen — everything
+  // else (Explore, Members, Profile, ...) keeps the normal full-screen shell.
+  $('#subScreenOverlay').classList.toggle('subscreen-modal', top.render === renderRoomSettings || top.render === renderSendGiftPicker);
   top.render(box);
 }
 
@@ -4303,6 +4416,13 @@ function subScreenBack() {
   else $('#subScreenOverlay').classList.add('hidden');
 }
 $('#subScreenBackBtn').addEventListener('click', subScreenBack);
+// Room Settings' popup card (see renderSubScreen's subscreen-modal toggle) can
+// also be dismissed by tapping the dimmed backdrop around it, like any other
+// popup/modal in the app — harmless for the normal full-screen sub-screens
+// too, since there's no visible backdrop there to tap.
+$('#subScreenOverlay').addEventListener('click', (e) => {
+  if (e.target === $('#subScreenOverlay') && $('#subScreenOverlay').classList.contains('subscreen-modal')) subScreenBack();
+});
 
 // Closes the nav drawer, resets the sub-screen stack, and opens a fresh screen —
 // used by every drawer item that leads into the Explore-style shell.
@@ -4457,100 +4577,127 @@ function effectShopGrid(box, effects, tab) {
   return grid;
 }
 
-// ---------- EXPLORE HUB ----------
-// Sectioned layout: a full-width Announcements banner, then STORE (compact
-// icon tiles), CONTEST (a 2-column grid of list rows), COMMUNITY (a plain
-// list), and MORE (another compact 2-up row) — plus any staff-only tools
-// grouped into their own trailing STAFF section so nothing existing is lost.
+// ---------- EXPLORE HUB (v2 — miGlife-style sky card grid) ----------
+// Sky-blue backdrop, a row of filter pills (All/Events/Shop/Community), and
+// every destination as a 2-column grid of pastel-gradient cards grouped
+// under a colored-bar section header — replaces the old mixed layout
+// (store tiles row / 2-col list rows / plain list) with one consistent card
+// everywhere. Each item declares a `tab` (shop/events/community) that the
+// filter pills filter on; Announcements always shows regardless of filter,
+// same as the reference design keeps it pinned under "All".
+let exploreTab = 'all';
+
+function exploreGridCard({ icon, c1, c2, iconBg, title, subtitle, onClick }) {
+  const card = document.createElement('div');
+  card.className = 'explore-sky-card';
+  card.style.setProperty('--sky-c1', c1);
+  card.style.setProperty('--sky-c2', c2);
+  card.innerHTML = `
+    <div class="explore-sky-card-icon" style="background:${iconBg}">${icon}</div>
+    <div class="explore-sky-card-body">
+      <div class="explore-sky-card-title">${escapeHtml(title)}</div>
+      <div class="explore-sky-card-subtitle">${escapeHtml(subtitle || '')}</div>
+    </div>
+    <div class="explore-sky-card-chevron" style="color:${iconBg}">›</div>
+  `;
+  if (onClick) card.addEventListener('click', onClick);
+  return card;
+}
+
 function renderExplore(box) {
   box.innerHTML = '';
+  box.classList.add('explore-sky-wrap');
 
-  const announcement = document.createElement('div');
-  announcement.className = 'explore-announcement-banner';
-  announcement.innerHTML = `
-    <div class="list-icon" style="background:#eab30822; color:#eab308">📣</div>
-    <div class="list-row-body">
-      <div class="list-row-title">Announcements</div>
-      <div class="list-row-subtitle">News & updates from Staff</div>
-    </div>
-    <div class="list-chevron">›</div>
-  `;
-  announcement.addEventListener('click', () => pushSubScreen('Announcements', renderPostsScreen('announcement')));
-  box.appendChild(announcement);
+  const tabs = document.createElement('div');
+  tabs.className = 'explore-filter-tabs';
+  [['all', 'All'], ['events', 'Events'], ['shop', 'Shop'], ['community', 'Community']].forEach(([key, label]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'explore-filter-tab' + (exploreTab === key ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => { exploreTab = key; renderExplore(box); });
+    tabs.appendChild(btn);
+  });
+  box.appendChild(tabs);
 
-  function sectionWrap(label) {
-    box.appendChild(sectionLabel(label));
-    const wrap = document.createElement('div');
-    wrap.className = 'explore-section-wrap';
-    box.appendChild(wrap);
-    return wrap;
+  function sectionHeader(emoji, label) {
+    const h = document.createElement('div');
+    h.className = 'explore-sky-section-label';
+    h.innerHTML = `<span class="explore-sky-section-bar"></span>${emoji} ${escapeHtml(label.toUpperCase())}`;
+    box.appendChild(h);
   }
-  function storeTile({ icon, iconBg, title, onClick }) {
-    const tile = document.createElement('div');
-    tile.className = 'explore-store-tile';
-    tile.innerHTML = `
-      <div class="explore-store-tile-icon" style="background:${iconBg}22; color:${iconBg}">${icon}</div>
-      <div class="explore-store-tile-title">${escapeHtml(title)}</div>
-    `;
-    tile.addEventListener('click', onClick);
-    return tile;
+  function sectionGrid() {
+    const grid = document.createElement('div');
+    grid.className = 'explore-sky-grid';
+    box.appendChild(grid);
+    return grid;
+  }
+  const showTab = (t) => exploreTab === 'all' || exploreTab === t;
+
+  // ANNOUNCEMENTS — always shown, same as the reference keeps it pinned
+  sectionHeader('📣', 'Announcements');
+  const annGrid = sectionGrid();
+  annGrid.appendChild(exploreGridCard({
+    icon: '📣', c1: '#dbeafe', c2: '#eff6ff', iconBg: '#3b82f6',
+    title: 'Announcements', subtitle: 'News & updates from Staff',
+    onClick: () => pushSubScreen('Announcements', renderPostsScreen('announcement')),
+  }));
+
+  // SHOP
+  if (showTab('shop')) {
+    sectionHeader('🛍️', 'Shop');
+    const shopGrid = sectionGrid();
+    shopGrid.appendChild(exploreGridCard({ icon: '🎁', c1: '#fecaca', c2: '#fff1f2', iconBg: '#ef4444', title: 'Gift Store', subtitle: 'Send gifts to your friends', onClick: () => pushSubScreen('Gift Store', renderGiftStore) }));
+    shopGrid.appendChild(exploreGridCard({ icon: '👑', c1: '#fde68a', c2: '#fffbeb', iconBg: '#f59e0b', title: 'VIP Subscription', subtitle: 'Rainbow name — limited slots', onClick: () => pushSubScreen('VIP Subscription', renderVipSubscription) }));
+    shopGrid.appendChild(exploreGridCard({ icon: '🎨', c1: '#bfdbfe', c2: '#eff6ff', iconBg: '#3b82f6', title: 'Color Shop', subtitle: 'Premium username colors', onClick: () => pushSubScreen('Color Shop', renderColorShop) }));
+    shopGrid.appendChild(exploreGridCard({ icon: '🎖️', c1: '#bbf7d0', c2: '#f0fdf4', iconBg: '#22c55e', title: 'Badge Store', subtitle: 'Collect profile badges', onClick: () => pushSubScreen('Badge Store', renderBadgeStore) }));
+    shopGrid.appendChild(exploreGridCard({ icon: '✨', c1: '#fed7aa', c2: '#fff7ed', iconBg: '#f97316', title: 'Entry Effects', subtitle: 'Everyone sees it when you enter', onClick: openEffectShop }));
+    shopGrid.appendChild(exploreGridCard({ icon: '🌟', c1: '#e9d5ff', c2: '#faf5ff', iconBg: '#a855f7', title: 'Sticker Store', subtitle: 'Fun sticker packs for chat', onClick: () => pushSubScreen('Sticker Store', renderStickerStore) }));
   }
 
-  // STORE
-  const storeWrap = sectionWrap('STORE');
-  const storeRow = document.createElement('div');
-  storeRow.className = 'explore-store-row';
-  storeRow.appendChild(storeTile({ icon: '🎁', iconBg: '#ec4899', title: 'Gift Store', onClick: () => pushSubScreen('Gift Store', renderGiftStore) }));
-  storeRow.appendChild(storeTile({ icon: '🎨', iconBg: '#8b5cf6', title: 'Color Shop', onClick: () => pushSubScreen('Color Shop', renderColorShop) }));
-  storeRow.appendChild(storeTile({ icon: '✨', iconBg: '#f97316', title: 'Effect Shop', onClick: openEffectShop }));
-  storeRow.appendChild(storeTile({ icon: '🎖️', iconBg: '#a855f7', title: 'Badge Store', onClick: () => pushSubScreen('Badge Store', renderBadgeStore) }));
-  storeRow.appendChild(storeTile({ icon: '🌟', iconBg: '#f43f5e', title: 'Sticker Store', onClick: () => pushSubScreen('Sticker Store', renderStickerStore) }));
-  storeWrap.appendChild(storeRow);
-
-  // CONTEST
-  const contestWrap = sectionWrap('CONTEST');
-  const contestGrid = document.createElement('div');
-  contestGrid.className = 'explore-2col-grid';
-  contestGrid.appendChild(listRow({ icon: '🎁', iconBg: '#ef4444', title: 'Gift Contest', subtitle: 'Top gifters', onClick: () => pushSubScreen('Gift Contest', renderLeaderboardScreen('gifts')) }));
-  contestGrid.appendChild(listRow({ icon: '🏆', iconBg: '#eab308', title: 'Legendary Contest', subtitle: 'Top players by spend', onClick: () => pushSubScreen('Legendary Contest', renderLeaderboardScreen('spend')) }));
-  contestGrid.appendChild(listRow({ icon: '🚩', iconBg: '#10b981', title: 'Tournament Arena', subtitle: "Tonight's tournament and results", onClick: () => pushSubScreen('Tournament Arena', renderTournamentArena) }));
-  contestGrid.appendChild(listRow({ icon: '📊', iconBg: '#06b6d4', title: 'Leader Board', subtitle: 'Top game winners', onClick: () => pushSubScreen('Leader Board', renderLeaderboardScreen('wins')) }));
-  contestWrap.appendChild(contestGrid);
+  // EVENTS
+  if (showTab('events')) {
+    sectionHeader('🎉', 'Events');
+    const eventsGrid = sectionGrid();
+    eventsGrid.appendChild(exploreGridCard({ icon: '📊', c1: '#fef08a', c2: '#fefce8', iconBg: '#eab308', title: 'Leader Board', subtitle: 'Top game winners across rooms', onClick: () => pushSubScreen('Leader Board', renderLeaderboardScreen('wins')) }));
+    eventsGrid.appendChild(exploreGridCard({ icon: '🏆', c1: '#bae6fd', c2: '#f0f9ff', iconBg: '#0ea5e9', title: 'Legendary Contest', subtitle: 'Top players by spend', onClick: () => pushSubScreen('Legendary Contest', renderLeaderboardScreen('spend')) }));
+    eventsGrid.appendChild(exploreGridCard({ icon: '🎁', c1: '#fbcfe8', c2: '#fdf2f8', iconBg: '#ec4899', title: 'Gift Contest', subtitle: 'Top gifters', onClick: () => pushSubScreen('Gift Contest', renderLeaderboardScreen('gifts')) }));
+    eventsGrid.appendChild(exploreGridCard({ icon: '🚩', c1: '#bbf7d0', c2: '#f0fdf4', iconBg: '#10b981', title: 'Tournament Arena', subtitle: "Tonight's tournament and results", onClick: () => pushSubScreen('Tournament Arena', renderTournamentArena) }));
+  }
 
   // COMMUNITY
-  const communityWrap = sectionWrap('COMMUNITY');
-  communityWrap.appendChild(listRow({ icon: '👥', iconBg: '#3b82f6', title: 'Community', subtitle: 'Staff, global mods, mentors & merchants', onClick: () => pushSubScreen('Community', renderMembersGroups) }));
-  communityWrap.appendChild(listRow({ icon: '👑', iconBg: '#f59e0b', title: 'VIP Subscription', subtitle: 'Get the rainbow name — limited slots', onClick: () => pushSubScreen('VIP Subscription', renderVipSubscription) }));
-  communityWrap.appendChild(listRow({ icon: '🧑‍💼', iconBg: '#10b981', title: 'Merchant', subtitle: 'Become a merchant or manage your merchant role', onClick: () => pushSubScreen('Merchant', renderMerchantApply) }));
-  communityWrap.appendChild(listRow({ icon: '⌨️', iconBg: '#64748b', title: 'Command List', subtitle: 'All chat commands and their responses', onClick: () => pushSubScreen('Command List', renderCommandList) }));
-  if (!currentUser.is_global_admin) {
-    communityWrap.appendChild(listRow({ icon: '🛡️', iconBg: '#dc2626', title: 'Become a Global Administrator', subtitle: 'Apply for Global Administrator permissions', onClick: () => pushSubScreen('Become a Global Administrator', renderGlobalAdminApply) }));
-  }
-  communityWrap.appendChild(listRow({ icon: '🛡️', iconBg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your earned badges', onClick: () => pushSubScreen('Badge Panel', renderBadgePanel) }));
+  if (showTab('community')) {
+    sectionHeader('👥', 'Community');
+    const commGrid = sectionGrid();
+    commGrid.appendChild(exploreGridCard({ icon: '👥', c1: '#ddd6fe', c2: '#f5f3ff', iconBg: '#7c3aed', title: 'Community', subtitle: 'Staff, Mentors & Merchants', onClick: () => pushSubScreen('Community', renderMembersGroups) }));
+    commGrid.appendChild(exploreGridCard({ icon: '🧑‍💼', c1: '#bbf7d0', c2: '#f0fdf4', iconBg: '#16a34a', title: 'Merchant', subtitle: 'Become or manage a Merchant', onClick: () => pushSubScreen('Merchant', renderMerchantApply) }));
+    commGrid.appendChild(exploreGridCard({ icon: '⌨️', c1: '#e2e8f0', c2: '#f8fafc', iconBg: '#64748b', title: 'Command List', subtitle: 'All chat commands and replies', onClick: () => pushSubScreen('Command List', renderCommandList) }));
+    commGrid.appendChild(exploreGridCard({ icon: '🛡️', c1: '#e2e8f0', c2: '#f8fafc', iconBg: '#64748b', title: 'Badge Panel', subtitle: 'Manage and equip your badges', onClick: () => pushSubScreen('Badge Panel', renderBadgePanel) }));
+    commGrid.appendChild(exploreGridCard({ icon: '🎰', c1: '#ddd6fe', c2: '#f5f3ff', iconBg: '#8b5cf6', title: 'Daily Spin', subtitle: 'One free spin every day', onClick: () => pushSubScreen('Daily Spin', renderSpin) }));
+    commGrid.appendChild(exploreGridCard({ icon: '🧑‍🎨', c1: '#bbf7d0', c2: '#f0fdf4', iconBg: '#22c55e', title: 'Avatar Maker', subtitle: 'Build your character', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
+    if (!currentUser.is_global_admin) {
+      commGrid.appendChild(exploreGridCard({ icon: '🛡️', c1: '#fecaca', c2: '#fff1f2', iconBg: '#dc2626', title: 'Become a Global Administrator', subtitle: 'Apply for Global Admin permissions', onClick: () => pushSubScreen('Become a Global Administrator', renderGlobalAdminApply) }));
+    }
 
-  // MORE
-  const moreWrap = sectionWrap('MORE');
-  const moreGrid = document.createElement('div');
-  moreGrid.className = 'explore-2col-grid';
-  moreGrid.appendChild(listRow({ icon: '🎰', iconBg: '#8b5cf6', title: 'Daily Spin', subtitle: 'One free spin every day', onClick: () => pushSubScreen('Daily Spin', renderSpin) }));
-  moreGrid.appendChild(listRow({ icon: '🧑‍🎨', iconBg: '#22c55e', title: 'Avatar Maker', subtitle: 'Build your character', onClick: () => pushSubScreen('Avatar Maker', renderAvatarMaker) }));
-  moreWrap.appendChild(moreGrid);
+    // MENTOR (only shown to Mentor accounts) — their own merchants + requests,
+    // scoped server-side to just this mentor (see GET /api/mentor/dashboard
+    // and GET /api/merchant/pending's mentor-only queue).
+    if (currentUser.is_mentor) {
+      sectionHeader('📋', 'Mentor');
+      const mentorGrid = sectionGrid();
+      mentorGrid.appendChild(exploreGridCard({ icon: '📊', c1: '#fecaca', c2: '#fff1f2', iconBg: '#ef4444', title: 'Mentor Dashboard', subtitle: 'Your merchants, daily gain & trial', onClick: () => pushSubScreen('Mentor Dashboard', renderMentorDashboard) }));
+      mentorGrid.appendChild(exploreGridCard({ icon: '📋', c1: '#fecaca', c2: '#fff1f2', iconBg: '#ef4444', title: 'Merchant Requests', subtitle: 'Accept or reject requests', onClick: () => pushSubScreen('Merchant Requests', renderMerchantApplications) }));
+    }
 
-  // MENTOR (only shown to Mentor accounts) — their own merchants + requests,
-  // scoped server-side to just this mentor (see GET /api/mentor/dashboard
-  // and GET /api/merchant/pending's mentor-only queue).
-  if (currentUser.is_mentor) {
-    const mentorWrap = sectionWrap('MENTOR');
-    mentorWrap.appendChild(listRow({ icon: '📊', iconBg: '#ef4444', title: 'Mentor Dashboard', subtitle: 'Your merchants, daily gain & trial status', onClick: () => pushSubScreen('Mentor Dashboard', renderMentorDashboard) }));
-    mentorWrap.appendChild(listRow({ icon: '📋', iconBg: '#ef4444', title: 'Merchant Requests', subtitle: 'Accept or reject your merchants’ requests', onClick: () => pushSubScreen('Merchant Requests', renderMerchantApplications) }));
-  }
-
-  // STAFF (unchanged tools, just grouped into their own section)
-  if (currentUser.is_staff) {
-    const staffWrap = sectionWrap('STAFF');
-    staffWrap.appendChild(listRow({ icon: '🛠️', iconBg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts', onClick: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) }));
-    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests (all Mentors)', onClick: () => pushSubScreen('Merchant Applications', renderMerchantApplications) }));
-    staffWrap.appendChild(listRow({ icon: '📋', iconBg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Administrator requests', onClick: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) }));
+    // STAFF (unchanged tools, just restyled into the same card grid)
+    if (currentUser.is_staff) {
+      sectionHeader('🛠️', 'Staff');
+      const staffGrid = sectionGrid();
+      staffGrid.appendChild(exploreGridCard({ icon: '🛠️', c1: '#e2e8f0', c2: '#f8fafc', iconBg: '#64748b', title: 'Gift Store Admin', subtitle: 'Add, edit, or remove gifts', onClick: () => pushSubScreen('Gift Store Admin', renderGiftStoreAdmin) }));
+      staffGrid.appendChild(exploreGridCard({ icon: '📋', c1: '#e2e8f0', c2: '#f8fafc', iconBg: '#64748b', title: 'Merchant Applications', subtitle: 'Review pending Merchant requests', onClick: () => pushSubScreen('Merchant Applications', renderMerchantApplications) }));
+      staffGrid.appendChild(exploreGridCard({ icon: '📋', c1: '#fecaca', c2: '#fff1f2', iconBg: '#dc2626', title: 'Global Administrator Applications', subtitle: 'Review pending Global Admin requests', onClick: () => pushSubScreen('Global Administrator Applications', renderGlobalAdminApplications) }));
+      staffGrid.appendChild(exploreGridCard({ icon: '🌈', c1: '#fde68a', c2: '#fffbeb', iconBg: '#f59e0b', title: 'VIP Subscription Applications', subtitle: 'Review pending VIP requests', onClick: () => pushSubScreen('VIP Subscription Applications', renderVipApplications) }));
+    }
   }
 }
 function openDrawerExplore() { openSubScreenFromDrawer('Explore', renderExplore); }
@@ -6198,6 +6345,39 @@ function renderHomeFeed(box) {
 let giftStoreCatalog = null;
 let giftStoreSelectedUser = null;
 let giftStoreSelectedGift = null;
+let giftStorePage = 0;
+const GIFT_STORE_PAGE_SIZE = 50;
+
+// Renders (or re-renders, on Previous/Next) just the grid + pager for the
+// current page — pulled out of renderGiftStore so paging doesn't have to
+// rebuild the search box/recipient state around it.
+function renderGiftStorePage(box) {
+  const pageCount = Math.max(1, Math.ceil(giftStoreCatalog.length / GIFT_STORE_PAGE_SIZE));
+  giftStorePage = Math.max(0, Math.min(giftStorePage, pageCount - 1));
+  const pageItems = giftStoreCatalog.slice(giftStorePage * GIFT_STORE_PAGE_SIZE, (giftStorePage + 1) * GIFT_STORE_PAGE_SIZE);
+
+  const gridHost = box.querySelector('#giftStoreGrid');
+  const grid = buildGiftGalleryGrid(pageItems, (g, card) => {
+    giftStoreSelectedGift = g;
+    grid.querySelectorAll('.gift-gallery-card').forEach((c) => c.classList.remove('selected'));
+    card.classList.add('selected');
+  });
+  grid.id = 'giftStoreGrid';
+  gridHost.replaceWith(grid);
+
+  const pagerHost = box.querySelector('#giftStorePager');
+  const pager = document.createElement('div');
+  pager.id = 'giftStorePager';
+  pager.className = 'gift-store-pager';
+  pager.innerHTML = `
+    <button type="button" class="gift-store-pager-btn" id="giftStorePrevBtn" ${giftStorePage === 0 ? 'disabled' : ''}>← Previous</button>
+    <span class="gift-store-pager-label">Page ${giftStorePage + 1} of ${pageCount}</span>
+    <button type="button" class="gift-store-pager-btn" id="giftStoreNextBtn" ${giftStorePage >= pageCount - 1 ? 'disabled' : ''}>Next →</button>
+  `;
+  pagerHost.replaceWith(pager);
+  pager.querySelector('#giftStorePrevBtn').addEventListener('click', () => { giftStorePage -= 1; renderGiftStorePage(box); });
+  pager.querySelector('#giftStoreNextBtn').addEventListener('click', () => { giftStorePage += 1; renderGiftStorePage(box); });
+}
 
 async function renderGiftStore(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
@@ -6206,6 +6386,7 @@ async function renderGiftStore(box) {
   }
   giftStoreSelectedUser = null;
   giftStoreSelectedGift = null;
+  giftStorePage = 0;
   box.innerHTML = `
     <div class="gift-gallery-header">
       <div class="gift-gallery-title">🎁 Gift Gallery</div>
@@ -6218,16 +6399,10 @@ async function renderGiftStore(box) {
     <div id="giftStoreSelectedUserBox" class="empty-note">No recipient selected yet.</div>
     <div class="list-section-label">CHOOSE A GIFT</div>
     <div id="giftStoreGrid"></div>
+    <div id="giftStorePager"></div>
     <button id="giftStoreSendBtn" class="primary-btn" style="margin-top:12px;" disabled>Send Gift</button>
   `;
-  const gridHost = box.querySelector('#giftStoreGrid');
-  const grid = buildGiftGalleryGrid(giftStoreCatalog, (g, card) => {
-    giftStoreSelectedGift = g;
-    grid.querySelectorAll('.gift-gallery-card').forEach((c) => c.classList.remove('selected'));
-    card.classList.add('selected');
-  });
-  gridHost.replaceWith(grid);
-  grid.id = 'giftStoreGrid';
+  renderGiftStorePage(box);
 
   const input = box.querySelector('#giftStoreSearchInput');
   const results = box.querySelector('#giftStoreSearchResults');
@@ -6296,6 +6471,21 @@ function badgeRingCardHtml(owned, total, title, sub) {
 }
 
 let badgeStoreFilter = 'all';
+
+// Each badge gets its own ring-color + a theme-fitting icon (replacing the
+// old one-size-fits-all purple square + the catalog's plain emoji) so the
+// store reads as a set of distinct tiers, same visual language as the Color
+// Shop's .color-tier-card. Matched by name — falls back to a neutral violet
+// for anything added later that isn't in this table.
+const BADGE_STORE_THEME = {
+  'Rising Star': { icon: '🌟', ring1: '#fbbf24', ring2: '#f59e0b' },
+  'Night Owl': { icon: '🦉', ring1: '#6366f1', ring2: '#4338ca' },
+  'Firestarter': { icon: '🔥', ring1: '#f97316', ring2: '#dc2626' },
+  'Trendsetter': { icon: '⚡', ring1: '#06b6d4', ring2: '#3b82f6' },
+  'Champion': { icon: '🏆', ring1: '#eab308', ring2: '#b45309' },
+  'Legend': { icon: '🐉', ring1: '#22c55e', ring2: '#15803d' },
+};
+
 // ---------- BADGE STORE (Explore -> Badge Store) ----------
 async function renderBadgeStore(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
@@ -6321,24 +6511,34 @@ async function renderBadgeStore(box) {
   box.appendChild(tabs);
 
   const grid = document.createElement('div');
-  grid.className = 'explore-grid';
+  grid.className = 'color-catalog-grid';
   data.catalog
     .filter((b) => badgeStoreFilter === 'all' || (badgeStoreFilter === 'owned' ? b.owned : !b.owned))
     .forEach((b) => {
-      const card = exploreCard({
-        icon: b.emoji, iconBg: '#a855f7',
-        title: b.name,
-        subtitle: b.owned ? 'Owned — manage it in Badge Panel' : `${b.cost.toLocaleString()} coins`,
-        linkLabel: b.owned ? 'OWNED' : 'BUY',
-        onClick: b.owned ? null : async () => {
+      const theme = BADGE_STORE_THEME[b.name] || { icon: b.emoji, ring1: '#a855f7', ring2: '#7c3aed' };
+      const card = document.createElement('div');
+      card.className = 'color-tier-card badge-tier-card';
+      card.style.setProperty('--tier-ring1', theme.ring1);
+      card.style.setProperty('--tier-ring2', theme.ring2);
+      card.innerHTML = `
+        <div class="color-tier-strip"></div>
+        <div class="color-tier-badge-wrap">
+          <span class="color-badge huge" style="background:linear-gradient(135deg, ${theme.ring1}, ${theme.ring2}); border-color:${theme.ring1}">${theme.icon}</span>
+        </div>
+        <div class="color-tier-name">${escapeHtml(b.name)}</div>
+        <div class="color-tier-price">${b.owned ? '✓ Owned' : b.cost.toLocaleString()}</div>
+        <div class="color-tier-tag">${b.owned ? 'Manage in Badge Panel' : 'coins'}</div>
+        <button class="color-tier-buy-btn" ${b.owned ? 'disabled' : ''}>${b.owned ? 'Owned' : 'Buy'}</button>
+      `;
+      if (!b.owned) {
+        card.querySelector('.color-tier-buy-btn').addEventListener('click', async () => {
           try {
             await api(`/badges/${b.id}/buy`, { method: 'POST' });
             toast(`Bought ${b.name}!`);
             renderBadgeStore(box);
           } catch (err) { toast(err.message); }
-        },
-      });
-      if (b.owned) card.style.opacity = '0.6';
+        });
+      }
       grid.appendChild(card);
     });
   box.appendChild(grid);
@@ -6574,7 +6774,13 @@ async function renderStickerStore(box) {
   });
 }
 
-// ---------- BECOME A MERCHANT (Explore -> Become a Merchant) ----------
+// ---------- BECOME A MERCHANT (Explore -> Merchant) ----------
+// Modernized sky-card look (same fixed light-gradient treatment as
+// explore-sky-wrap/member-list-sky — not theme-driven, deliberately looks
+// the same in light and dark mode) with three states: apply (card-based
+// Mentor picker instead of a plain <select>), pending review, and a full
+// Merchant Overview once approved (status card + progress bar + a real
+// "Your Mentor" card + Request Renewal).
 async function renderMerchantApply(box) {
   box.innerHTML = '<div class="empty-note">Loading…</div>';
   let status;
@@ -6584,38 +6790,33 @@ async function renderMerchantApply(box) {
     box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     return;
   }
+  box.className = 'merchant-sky-wrap';
   box.innerHTML = '';
 
   if (status.isMerchant) {
-    const pendingRenewal = status.application && status.application.status === 'pending' && status.application.type === 'renewal';
-    box.innerHTML = `
-      <div class="empty-note">💼 You're a Merchant, under Mentor <b>${escapeHtml(status.mentorUsername || '—')}</b>.</div>
-      <div class="list-row">
-        <div class="list-row-body">
-          <div class="list-row-title">${status.trialExpired ? '🔴 Trial expired' : '🟢 Trial active'}</div>
-          <div class="list-row-subtitle">${status.trialExpiresAt ? `${status.trialExpired ? 'Expired' : 'Renews/expires'} ${new Date(status.trialExpiresAt).toLocaleDateString()}` : 'No trial date on file'}</div>
-        </div>
-      </div>
-    `;
-    if (pendingRenewal) {
-      box.innerHTML += '<div class="empty-note">⏳ Your renewal request is pending review by your Mentor.</div>';
-    } else {
-      const renewBtn = document.createElement('button');
-      renewBtn.className = 'primary-btn';
-      renewBtn.style.marginTop = '10px';
-      renewBtn.textContent = status.trialExpired ? 'Request renewal from your Mentor' : 'Request early renewal';
-      renewBtn.addEventListener('click', async () => {
-        try { await api('/merchant/renew', { method: 'POST', body: JSON.stringify({}) }); toast('Renewal requested!'); renderMerchantApply(box); }
-        catch (err) { toast(err.message); }
-      });
-      box.appendChild(renewBtn);
-    }
+    renderMerchantOverview(box, status);
     return;
   }
+
+  if (status.isMentor) {
+    box.innerHTML = `
+      <div class="merchant-note-card">
+        <div class="merchant-note-icon">🧭</div>
+        <div class="merchant-note-title">Mentors don't apply as Merchants</div>
+        <div class="merchant-note-text">You're already a Mentor — Mentors review Merchant applications, so they can't apply to become one themselves.</div>
+      </div>
+    `;
+    return;
+  }
+
   if (status.application && status.application.status === 'pending') {
     box.innerHTML = `
-      <div class="empty-note">⏳ Your application is pending review by your chosen Mentor.</div>
-      <div class="list-row"><div class="list-row-body"><div class="list-row-subtitle">"${escapeHtml(status.application.message || '')}"</div></div></div>
+      <div class="merchant-note-card">
+        <div class="merchant-note-icon">⏳</div>
+        <div class="merchant-note-title">Application pending</div>
+        <div class="merchant-note-text">Your application is waiting on review by your chosen Mentor.</div>
+        ${status.application.message ? `<div class="merchant-note-quote">"${escapeHtml(status.application.message)}"</div>` : ''}
+      </div>
     `;
     return;
   }
@@ -6623,41 +6824,146 @@ async function renderMerchantApply(box) {
   let mentors = [];
   try { ({ mentors } = await api('/merchant/mentors')); } catch (err) { /* fall through — box below still renders, just with an empty picker */ }
 
-  const note = document.createElement('div');
-  note.className = 'empty-note';
-  note.textContent = status.application && status.application.status === 'rejected'
-    ? 'Your last application was declined — you can apply again below.'
-    : "Every Merchant belongs to a Mentor — choose one, tell them why you'd like to become a Merchant, then submit.";
-  box.appendChild(note);
+  const card = document.createElement('div');
+  card.className = 'merchant-apply-card';
+  card.innerHTML = `
+    <div class="merchant-apply-title">💼 Become a Merchant</div>
+    <div class="merchant-apply-sub">${status.application && status.application.status === 'rejected'
+      ? 'Your last application was declined — you can apply again below.'
+      : "Every Merchant belongs to a Mentor — pick one, tell them why you'd like to become a Merchant, then submit."}</div>
+  `;
+  box.appendChild(card);
 
   if (!mentors.length) {
-    box.innerHTML += '<div class="empty-note">No Mentors are available to apply under right now — check back later.</div>';
+    card.innerHTML += '<div class="empty-note">No Mentors are available to apply under right now — check back later.</div>';
     return;
   }
 
-  const composer = document.createElement('div');
-  composer.className = 'post-composer';
-  composer.innerHTML = `
-    <select id="merchantApplyMentor" style="width:100%; margin-bottom:8px;">
-      <option value="">Choose a Mentor…</option>
-      ${mentors.map((m) => `<option value="${m.id}">${escapeHtml(m.username)}</option>`).join('')}
-    </select>
-    <textarea id="merchantApplyMessage" placeholder="Why should you become a Merchant?" maxlength="500" rows="4" style="width:100%;"></textarea>
-    <button id="merchantApplySubmitBtn" class="primary-btn">Submit Application</button>
-  `;
-  box.appendChild(composer);
-  $('#merchantApplySubmitBtn').addEventListener('click', async () => {
-    const mentorId = $('#merchantApplyMentor').value;
-    const message = $('#merchantApplyMessage').value.trim();
-    if (!mentorId) return toast('Choose a Mentor first');
+  const label = document.createElement('div');
+  label.className = 'merchant-apply-label';
+  label.textContent = 'CHOOSE A MENTOR';
+  card.appendChild(label);
+
+  let selectedMentorId = null;
+  const mentorGrid = document.createElement('div');
+  mentorGrid.className = 'merchant-mentor-grid';
+  mentors.forEach((m) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'merchant-mentor-chip';
+    chip.innerHTML = `
+      <div class="merchant-mentor-avatar">${escapeHtml(m.username.slice(0, 1).toUpperCase())}</div>
+      <div class="merchant-mentor-name">${escapeHtml(m.username)}</div>
+    `;
+    chip.addEventListener('click', () => {
+      selectedMentorId = m.id;
+      mentorGrid.querySelectorAll('.merchant-mentor-chip').forEach((c) => c.classList.remove('selected'));
+      chip.classList.add('selected');
+    });
+    mentorGrid.appendChild(chip);
+  });
+  card.appendChild(mentorGrid);
+
+  const msgLabel = document.createElement('div');
+  msgLabel.className = 'merchant-apply-label';
+  msgLabel.textContent = 'WHY SHOULD YOU BECOME A MERCHANT?';
+  card.appendChild(msgLabel);
+
+  const textarea = document.createElement('textarea');
+  textarea.id = 'merchantApplyMessage';
+  textarea.className = 'merchant-apply-textarea';
+  textarea.maxLength = 500;
+  textarea.rows = 4;
+  textarea.placeholder = "Tell your Mentor why you'd be a good Merchant…";
+  card.appendChild(textarea);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'merchant-submit-btn';
+  submitBtn.textContent = 'Submit Application';
+  submitBtn.addEventListener('click', async () => {
+    const message = textarea.value.trim();
+    if (!selectedMentorId) return toast('Choose a Mentor first');
     try {
-      await api('/merchant/apply', { method: 'POST', body: JSON.stringify({ mentorId: Number(mentorId), message }) });
+      await api('/merchant/apply', { method: 'POST', body: JSON.stringify({ mentorId: Number(selectedMentorId), message }) });
       toast('Application submitted!');
       renderMerchantApply(box);
     } catch (err) {
       toast(err.message);
     }
   });
+  card.appendChild(submitBtn);
+}
+
+// Already a Merchant — the overview half of renderMerchantApply(), split out
+// since it has its own several pieces (status hero, Mentor card, Renew
+// button). `status` is whatever GET /merchant/status just returned.
+function renderMerchantOverview(box, status) {
+  const pendingRenewal = status.application && status.application.status === 'pending' && status.application.type === 'renewal';
+
+  const hero = document.createElement('div');
+  hero.className = 'merchant-hero-card';
+  const totalMs = status.trialDays * 24 * 3600 * 1000;
+  const remainMs = status.trialExpiresAt ? new Date(status.trialExpiresAt).getTime() - Date.now() : 0;
+  const pct = status.trialExpiresAt ? Math.max(0, Math.min(100, (remainMs / totalMs) * 100)) : 0;
+  const daysRemaining = Math.max(0, Math.ceil(remainMs / (24 * 3600 * 1000)));
+  hero.innerHTML = `
+    <div class="merchant-hero-top">
+      <div class="merchant-hero-icon">💼</div>
+      <div class="merchant-hero-status${status.trialExpired ? ' expired' : ''}">
+        <span class="merchant-status-dot ${status.trialExpired ? 'expired' : 'active'}"></span>
+        ${status.trialExpired ? 'TRIAL EXPIRED' : 'ACTIVE'}
+      </div>
+      <div class="merchant-hero-title">Merchant</div>
+    </div>
+    <div class="merchant-hero-stats">
+      <div>
+        <div class="merchant-hero-stat-label">Days remaining</div>
+        <div class="merchant-hero-stat-value">${status.trialExpired ? '0 days' : `${daysRemaining} days`}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="merchant-hero-stat-label">Mentor</div>
+        <div class="merchant-hero-stat-value accent">@${escapeHtml(status.mentorUsername || '—')}</div>
+      </div>
+    </div>
+    <div class="merchant-hero-bar-track"><div class="merchant-hero-bar-fill" style="width:${pct}%;"></div></div>
+    <div class="merchant-hero-bar-foot">
+      <span>Term · ${status.trialDays} days</span>
+      <span>${status.trialExpiresAt ? (status.trialExpired ? `expired ${new Date(status.trialExpiresAt).toLocaleDateString()}` : `ends ${new Date(status.trialExpiresAt).toLocaleDateString()}`) : 'no trial date on file'}</span>
+    </div>
+  `;
+  box.appendChild(hero);
+
+  const mentorCard = document.createElement('div');
+  mentorCard.className = 'merchant-mentor-card';
+  mentorCard.innerHTML = `
+    <div class="merchant-mentor-card-avatar">${escapeHtml((status.mentorUsername || '?').slice(0, 1).toUpperCase())}</div>
+    <div>
+      <div class="merchant-mentor-card-label">Your Mentor</div>
+      <div class="merchant-mentor-card-name">@${escapeHtml(status.mentorUsername || '—')}</div>
+      ${status.mentorSince ? `<div class="merchant-mentor-card-sub">Approved ${new Date(status.mentorSince).toLocaleDateString()}</div>` : ''}
+    </div>
+  `;
+  box.appendChild(mentorCard);
+
+  if (pendingRenewal) {
+    const note = document.createElement('div');
+    note.className = 'merchant-note-card';
+    note.innerHTML = `
+      <div class="merchant-note-icon">⏳</div>
+      <div class="merchant-note-title">Renewal pending</div>
+      <div class="merchant-note-text">Your renewal request is waiting on review by your Mentor.</div>
+    `;
+    box.appendChild(note);
+  } else {
+    const renewBtn = document.createElement('button');
+    renewBtn.className = 'merchant-renew-btn';
+    renewBtn.textContent = status.trialExpired ? '🔄 Request renewal from your Mentor' : '🔄 Request early renewal';
+    renewBtn.addEventListener('click', async () => {
+      try { await api('/merchant/renew', { method: 'POST', body: JSON.stringify({}) }); toast('Renewal requested!'); renderMerchantApply(box); }
+      catch (err) { toast(err.message); }
+    });
+    box.appendChild(renewBtn);
+  }
 }
 
 // ---------- MERCHANT APPLICATIONS (Explore -> Merchant Requests/Applications — Mentors see
@@ -6735,9 +7041,9 @@ async function renderVipSubscription(box) {
   const infoRow = document.createElement('div');
   infoRow.className = 'vip-info-row';
   infoRow.innerHTML = `
-    <div class="vip-info-box"><div class="vip-info-label">⏱ Duration</div><div class="vip-info-value">30 days</div></div>
+    <div class="vip-info-box"><div class="vip-info-label">⏱ Duration</div><div class="vip-info-value">${status.days} days</div></div>
     <div class="vip-info-box ${status.slotsUsed >= status.slotsTotal ? 'vip-info-box-full' : ''}"><div class="vip-info-label">🎟️ Places left</div><div class="vip-info-value">${status.slotsUsed} / ${status.slotsTotal}</div></div>
-    <div class="vip-info-box"><div class="vip-info-label">🌈 Your status</div><div class="vip-info-value">${status.isVip ? 'Active' : 'Not active'}</div></div>
+    <div class="vip-info-box"><div class="vip-info-label">🌈 Your status</div><div class="vip-info-value">${status.isVip ? 'Active' : (status.application && status.application.status === 'pending') ? 'Pending' : 'Not active'}</div></div>
   `;
   box.appendChild(infoRow);
 
@@ -6747,98 +7053,185 @@ async function renderVipSubscription(box) {
     <div class="vip-perks-title">What you get</div>
     <div class="vip-perk-line">🌈 Your own rainbow animation on your name (rooms + profile)</div>
     <div class="vip-perk-line">👑 Overrides every other name color on your account, Staff included</div>
-    <div class="vip-perk-line">⏳ Lasts 30 days from approval</div>
+    <div class="vip-perk-line">⏳ Lasts ${status.days} days from purchase</div>
     <div class="vip-perk-line">🎟️ Only ${status.slotsTotal} people at a time — a slot frees up as soon as one expires</div>
   `;
   box.appendChild(perks);
 
-  // 3-step progress: Choose (always done, this page) -> Apply -> Approve.
-  const applied = !!status.application;
-  const approved = status.isVip;
-  const steps = document.createElement('div');
-  steps.className = 'vip-steps';
-  steps.innerHTML = `
-    <div class="vip-step vip-step-done"><div class="vip-step-dot">1</div><div class="vip-step-label">Choose</div></div>
-    <div class="vip-step-line ${applied || approved ? 'vip-step-line-done' : ''}"></div>
-    <div class="vip-step ${applied || approved ? 'vip-step-done' : ''}"><div class="vip-step-dot">2</div><div class="vip-step-label">Apply</div></div>
-    <div class="vip-step-line ${approved ? 'vip-step-line-done' : ''}"></div>
-    <div class="vip-step ${approved ? 'vip-step-done' : ''}"><div class="vip-step-dot">3</div><div class="vip-step-label">Approve</div></div>
+  // Coin-priced, Staff-editable (see the price field below for Staff) —
+  // same shape as a Color Shop tier: show the price, buy instantly with
+  // coins, no apply/approve step.
+  const priceBox = document.createElement('div');
+  priceBox.className = 'vip-info-row';
+  priceBox.innerHTML = `
+    <div class="vip-info-box vip-info-box-full-width"><div class="vip-info-label">🪙 Price</div><div class="vip-info-value">${status.price.toLocaleString()} coins</div></div>
   `;
-  box.appendChild(steps);
+  box.appendChild(priceBox);
+
+  const pendingApplication = status.application && status.application.status === 'pending';
 
   const statusBox = document.createElement('div');
   statusBox.className = 'vip-status-box';
-  if (approved) {
+  if (status.isVip) {
     statusBox.innerHTML = `
       <div class="vip-status-title">🌈 You're VIP!</div>
       <div class="vip-status-note">Your rainbow name is active${status.expiresAt ? ` until ${new Date(status.expiresAt).toLocaleDateString()}` : ''}.</div>
     `;
-  } else if (applied && status.application.status === 'pending') {
+  } else if (pendingApplication) {
     statusBox.innerHTML = `
       <div class="vip-status-title">⏳ Application pending</div>
-      <div class="vip-status-note">Staff will review it — check back soon.</div>
+      <div class="vip-status-note">Your application for VIP Subscription (${status.application.price.toLocaleString()} coins) is waiting on Staff review — nothing is charged until it's approved.</div>
     `;
   } else if (status.slotsUsed >= status.slotsTotal) {
     statusBox.innerHTML = `
-      <div class="vip-status-title">🔒 Applications are closed right now</div>
+      <div class="vip-status-title">🔒 Sold out right now</div>
       <div class="vip-status-note">All ${status.slotsTotal} VIP slots are taken — check back later as they free up.</div>
     `;
   } else {
+    const canAfford = status.coins >= status.price;
+    const wasRejected = status.application && status.application.status === 'rejected';
     statusBox.innerHTML = `
-      ${applied && status.application.status === 'rejected' ? '<div class="vip-status-note" style="margin-bottom:8px;">Your last application was declined — you can apply again below.</div>' : ''}
-      <textarea id="vipApplyMessage" class="vip-apply-message" placeholder="Why would you like the VIP rainbow name? (optional)" rows="2" maxlength="500"></textarea>
-      <button id="vipApplyBtn" class="primary-btn" style="width:100%; margin-top:8px;">Apply for VIP Subscription</button>
+      ${wasRejected ? '<div class="vip-status-note" style="margin-bottom:8px;">Your last application was declined — you can apply again below.</div>' : ''}
+      <button id="vipApplyBtn" class="primary-btn" style="width:100%;" ${canAfford ? '' : 'disabled'}>
+        ${canAfford ? `Apply for ${status.price.toLocaleString()} coins` : '🔒 Not enough coins'}
+      </button>
+      <div class="vip-status-note" style="margin-top:8px; text-align:center;">Requires Staff approval — coins are only charged once approved.</div>
     `;
   }
   box.appendChild(statusBox);
   const applyBtn = statusBox.querySelector('#vipApplyBtn');
   if (applyBtn) applyBtn.addEventListener('click', async () => {
-    const message = statusBox.querySelector('#vipApplyMessage').value.trim();
     try {
-      await api('/vip/apply', { method: 'POST', body: JSON.stringify({ message }) });
-      toast('Application submitted!');
+      await api('/vip/apply', { method: 'POST' });
+      toast('🌈 Application submitted — waiting on Staff approval!');
       renderVipSubscription(box);
     } catch (err) {
       toast(err.message);
     }
   });
 
+  // Staff — see who currently holds a slot (with a Reset button per holder)
+  // and set the coin price everyone pays from here on.
   if (currentUser.is_staff) {
-    box.appendChild(sectionLabel('STAFF — PENDING APPLICATIONS'));
-    const queueBox = document.createElement('div');
-    box.appendChild(queueBox);
-    const drawQueue = async () => {
-      let pending;
-      try { ({ applications: pending } = await api('/vip/pending')); }
-      catch (err) { queueBox.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`; return; }
-      queueBox.innerHTML = '';
-      if (!pending.length) { queueBox.innerHTML = '<div class="empty-note">No pending VIP applications.</div>'; return; }
-      pending.forEach((a) => {
+    box.appendChild(sectionLabel(`VIP MEMBERS — ${status.slotsUsed}/${status.slotsTotal}`));
+    const holdersBox = document.createElement('div');
+    holdersBox.className = 'vip-holders-box';
+    holdersBox.innerHTML = '<div class="empty-note">Loading…</div>';
+    box.appendChild(holdersBox);
+    (async () => {
+      let holders;
+      try {
+        ({ holders } = await api('/vip/holders'));
+      } catch (err) {
+        holdersBox.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+        return;
+      }
+      holdersBox.innerHTML = '';
+      if (!holders.length) {
+        holdersBox.appendChild(infoRow('🌈', '#64748b', 'No VIP members yet', 'Every slot is free right now.'));
+        return;
+      }
+      holders.forEach((h) => {
         const row = document.createElement('div');
         row.className = 'list-row';
-        row.style.flexDirection = 'column';
-        row.style.alignItems = 'stretch';
+        const expiresLabel = h.expiresAt ? `Expires ${new Date(h.expiresAt).toLocaleDateString()}` : 'No expiry on record';
         row.innerHTML = `
-          <div class="list-row-title">${escapeHtml(a.username)}</div>
-          ${a.message ? `<div class="list-row-subtitle">"${escapeHtml(a.message)}"</div>` : ''}
-          <div style="display:flex; gap:8px; margin-top:8px;">
-            <button class="primary-btn vip-approve-btn" data-id="${a.id}">Approve</button>
-            <button class="secondary-btn vip-reject-btn" data-id="${a.id}">Reject</button>
+          <div class="list-icon" style="background:linear-gradient(135deg,#ff3b3b,#3bdcff);">🌈</div>
+          <div class="list-row-body">
+            <div class="list-row-title">${escapeHtml(h.username)}</div>
+            <div class="list-row-subtitle">${expiresLabel}</div>
           </div>
         `;
-        row.querySelector('.vip-approve-btn').addEventListener('click', async () => {
-          try { await api(`/vip/${a.id}/approve`, { method: 'POST' }); toast(`${a.username} now has the VIP rainbow name`); drawQueue(); renderVipSubscription(box); }
-          catch (err) { toast(err.message); }
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'danger';
+        resetBtn.textContent = 'Reset';
+        resetBtn.addEventListener('click', async () => {
+          if (!confirm(`Remove ${h.username}'s VIP Subscription and free up their slot?`)) return;
+          try {
+            await api(`/vip/${h.id}/reset`, { method: 'POST' });
+            toast(`🌈 Reset ${h.username}'s VIP Subscription`);
+            renderVipSubscription(box);
+          } catch (err) {
+            toast(err.message);
+          }
         });
-        row.querySelector('.vip-reject-btn').addEventListener('click', async () => {
-          try { await api(`/vip/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); drawQueue(); }
-          catch (err) { toast(err.message); }
-        });
-        queueBox.appendChild(row);
+        row.appendChild(resetBtn);
+        holdersBox.appendChild(row);
       });
-    };
-    drawQueue();
+    })();
+
+    box.appendChild(sectionLabel('STAFF — SET PRICE'));
+    const priceEditBox = document.createElement('div');
+    priceEditBox.className = 'vip-status-box';
+    priceEditBox.innerHTML = `
+      <div style="display:flex; gap:8px;">
+        <input type="number" id="vipPriceInput" class="color-price-input" value="${status.price}" min="1" max="50000000" style="flex:1;" />
+        <button id="vipPriceSaveBtn" class="primary-btn">Save</button>
+      </div>
+    `;
+    priceEditBox.querySelector('#vipPriceSaveBtn').addEventListener('click', async () => {
+      const price = Math.round(Number(priceEditBox.querySelector('#vipPriceInput').value));
+      if (!price || price < 1) return toast('Enter a valid price');
+      try {
+        await api('/vip/price', { method: 'POST', body: JSON.stringify({ price }) });
+        toast('VIP Subscription price updated');
+        renderVipSubscription(box);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    box.appendChild(priceEditBox);
   }
+}
+
+// ---------- VIP SUBSCRIPTION APPLICATIONS (Explore -> VIP Subscription
+// Applications, Staff only) ---------- Same review-queue shape as Merchant/
+// Global Admin Applications — each row shows the price locked in at apply
+// time (not necessarily today's price) plus the applicant's current coins,
+// so Staff can see at a glance whether they can still afford it.
+async function renderVipApplications(box) {
+  if (!currentUser.is_staff) { box.innerHTML = '<div class="empty-note">Staff only.</div>'; return; }
+  box.innerHTML = '<div class="empty-note">Loading…</div>';
+
+  const draw = async () => {
+    let applications;
+    try {
+      ({ applications } = await api('/vip/pending'));
+    } catch (err) {
+      box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    box.innerHTML = '';
+    if (!applications.length) {
+      box.innerHTML = '<div class="empty-note">No pending applications.</div>';
+      return;
+    }
+    applications.forEach((a) => {
+      const canAfford = a.coins >= a.price;
+      const row = document.createElement('div');
+      row.className = 'list-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.innerHTML = `
+        <div class="list-row-title">${escapeHtml(a.username)}</div>
+        <div class="list-row-subtitle">🪙 ${a.price.toLocaleString()} coins — ${canAfford ? `has ${a.coins.toLocaleString()}` : `⚠️ only has ${a.coins.toLocaleString()}`}</div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="primary-btn vip-approve-btn" data-id="${a.id}" ${canAfford ? '' : 'disabled'}>Approve</button>
+          <button class="secondary-btn vip-reject-btn" data-id="${a.id}">Reject</button>
+        </div>
+      `;
+      row.querySelector('.vip-approve-btn').addEventListener('click', async () => {
+        try { await api(`/vip/${a.id}/approve`, { method: 'POST' }); toast(`🌈 ${a.username} is now VIP`); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      row.querySelector('.vip-reject-btn').addEventListener('click', async () => {
+        try { await api(`/vip/${a.id}/reject`, { method: 'POST' }); toast('Application rejected'); draw(); }
+        catch (err) { toast(err.message); }
+      });
+      box.appendChild(row);
+    });
+  };
+  draw();
 }
 
 // ---------- MENTOR DASHBOARD (Explore -> Mentor Dashboard, Mentor only) ----------
@@ -6856,46 +7249,57 @@ async function renderMentorDashboard(box) {
     box.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     return;
   }
+  box.className = 'mentor-dash-wrap';
   box.innerHTML = '';
 
-  const summaryRow = document.createElement('div');
-  summaryRow.className = 'explore-2col-grid';
-  summaryRow.style.marginBottom = '14px';
-  const summaryTile = (label, value) => `
-    <div class="list-row" style="flex-direction:column; align-items:flex-start; gap:2px;">
-      <div class="list-row-subtitle">${escapeHtml(label)}</div>
-      <div class="list-row-title" style="font-size:18px;">${value}</div>
+  const statGrid = document.createElement('div');
+  statGrid.className = 'mentor-stat-grid';
+  const statCard = (icon, iconBg, label, value, valueClass) => `
+    <div class="mentor-stat-card">
+      <div class="mentor-stat-icon" style="background:${iconBg}">${icon}</div>
+      <div class="mentor-stat-label">${escapeHtml(label)}</div>
+      <div class="mentor-stat-value${valueClass ? ' ' + valueClass : ''}">${value}</div>
     </div>
   `;
-  summaryRow.innerHTML =
-    summaryTile('Merchants', data.summary.merchantCount) +
-    summaryTile('Pending requests', data.summary.pendingCount) +
-    summaryTile('Trials expired', data.summary.trialsExpired) +
-    summaryTile("Today's total XP gain", data.summary.totalDailyGainXp.toLocaleString());
-  box.appendChild(summaryRow);
+  statGrid.innerHTML =
+    statCard('🧑‍💼', '#ede9fe', 'Merchants', data.summary.merchantCount) +
+    statCard('📋', '#fef3c7', 'Pending requests', data.summary.pendingCount, data.summary.pendingCount > 0 ? 'accent' : '') +
+    statCard('⏳', '#fee2e2', 'Trials expired', data.summary.trialsExpired, data.summary.trialsExpired > 0 ? 'danger' : '') +
+    statCard('⚡', '#dcfce7', "Today's total XP gain", data.summary.totalDailyGainXp.toLocaleString(), 'accent');
+  box.appendChild(statGrid);
 
   if (data.summary.pendingCount > 0) {
     const pendingBtn = document.createElement('button');
-    pendingBtn.className = 'primary-btn';
-    pendingBtn.style.marginBottom = '14px';
-    pendingBtn.textContent = `Review ${data.summary.pendingCount} pending request${data.summary.pendingCount === 1 ? '' : 's'}`;
+    pendingBtn.className = 'mentor-pending-btn';
+    pendingBtn.innerHTML = `📋 Review ${data.summary.pendingCount} pending request${data.summary.pendingCount === 1 ? '' : 's'}`;
     pendingBtn.addEventListener('click', () => pushSubScreen('Merchant Requests', renderMerchantApplications));
     box.appendChild(pendingBtn);
   }
 
-  box.appendChild(sectionLabel('Your merchants'));
+  const label = document.createElement('div');
+  label.className = 'mentor-section-label';
+  label.textContent = 'YOUR MERCHANTS';
+  box.appendChild(label);
+
   if (!data.merchants.length) {
-    box.innerHTML += '<div class="empty-note">No merchants under you yet.</div>';
+    const empty = document.createElement('div');
+    empty.className = 'mentor-empty-card';
+    empty.textContent = 'No merchants under you yet.';
+    box.appendChild(empty);
     return;
   }
   data.merchants.forEach((m) => {
     const row = document.createElement('div');
-    row.className = 'list-row';
+    row.className = 'mentor-merchant-card';
     row.innerHTML = `
-      <div class="avatar-circle small" style="background:${colorFor(m.username)}">${(m.username || '?').charAt(0).toUpperCase()}</div>
-      <div class="list-row-body">
-        <div class="list-row-title">${escapeHtml(m.username)}</div>
-        <div class="list-row-subtitle">Level ${m.level} · Daily gain ${m.dailyGainXp.toLocaleString()} XP · ${m.trialExpired ? '🔴 Trial expired' : '🟢 Trial active'}${m.trialExpiresAt ? ` (${new Date(m.trialExpiresAt).toLocaleDateString()})` : ''}</div>
+      <div class="mentor-merchant-avatar">${escapeHtml((m.username || '?').charAt(0).toUpperCase())}</div>
+      <div class="mentor-merchant-body">
+        <div class="mentor-merchant-name">${escapeHtml(m.username)}</div>
+        <div class="mentor-merchant-meta">
+          <span class="mentor-merchant-level">Lv ${m.level}</span>
+          <span>Daily gain ${m.dailyGainXp.toLocaleString()} XP</span>
+          <span class="mentor-trial-pill ${m.trialExpired ? 'expired' : 'active'}">${m.trialExpired ? '🔴 Trial expired' : '🟢 Trial active'}${m.trialExpiresAt ? ` · ${new Date(m.trialExpiresAt).toLocaleDateString()}` : ''}</span>
+        </div>
       </div>
     `;
     box.appendChild(row);
