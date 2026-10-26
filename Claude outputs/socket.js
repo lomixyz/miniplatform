@@ -1,0 +1,2779 @@
+const fs = require('fs');
+const path = require('path');
+const db = require('./db');
+const { levelFromXp, XP_REWARDS } = require('./level');
+const xpStore = require('./xp');
+const presence = require('./presence');
+const voucher = require('./voucher');
+const chatbots = require('./chatbots');
+const roomSilence = require('./roomSilence');
+const { ROLEPLAY_COMMANDS, BENGALI_COMMANDS } = require('./roleplayCommands');
+const { EFFECTS, EFFECTS_BY_KEY } = require('./effectsCatalog');
+const { publicUser } = require('./auth');
+const { COLOR_TIERS_BY_KEY } = require('./colorCatalog');
+
+// Voice notes and shared pictures (see canSendMedia below) are written to
+// disk under public/uploads and served back out by express.static (already
+// mounted on the public/ folder in server.js) — no separate static route
+// needed. One flat folder; filenames are random so nobody can guess or
+// collide with another upload.
+const UPLOAD_DIR = path.join(__dirname, '..', 'public', 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const MEDIA_MAX_BYTES = 6 * 1024 * 1024; // 6MB — comfortably under the 8MB socket.io payload cap
+const MEDIA_EXT = { image: { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }, voice: { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' } };
+
+// In-memory state: which room each socket is currently FOCUSED on (i.e.
+// receiving live messages for). "Focused" on a room is separate from being a
+// MEMBER of it — membership lives in the room_memberships table and
+// survives disconnects/refreshes/switching to another room; only an
+// explicit leave, a kick/ban, or 5 hours of inactivity removes someone from
+// a room's participant list.
+
+// A member stays listed until they leave manually, get kicked, or go idle.
+const ROOM_IDLE_TIMEOUT_MS = 5 * 60 * 60 * 1000; // 5 hours
+
+// A disconnect+reconnect within this window (page refresh, a brief network
+// blip) is treated as still-present rather than "came back after being
+// away" — see wasReachableBefore / announcedEntryThisConnection below.
+const RECONNECT_GRACE_MS = 10_000;
+
+// "/gift all" or "/gift all <gift name>" — a shower to everyone currently in the room.
+const GIFT_ALL_COMMAND = /^\/gift\s+all(?:\s+(.+))?\s*$/i;
+// "/gift <username> <gift name>" — a targeted gift sent via chat command.
+const GIFT_TO_COMMAND = /^\/gift\s+(\S+)\s+(.+)$/i;
+// "/pick <code>" — claim an active room voucher.
+const PICK_COMMAND = /^\/pick\s+(\S+)\s*$/i;
+// "/kick <username>" / "/bump <username>" — Staff or Global Admin room moderation.
+const KICK_COMMAND = /^\/kick\s+(\S+)\s*$/i;
+const BUMP_COMMAND = /^\/bump\s+(\S+)\s*$/i;
+// "/silence <seconds>" / "/unsilence" — Staff or Global Admin only; see canBypassSilence.
+const SILENCE_COMMAND = /^\/silence\s+(\d+)\s*$/i;
+const UNSILENCE_COMMAND = /^\/unsilence\s*$/i;
+// "/mod <username>" / "/unmod" — the room owner (or Staff/Global Admin) only.
+const MOD_COMMAND = /^\/mod\s+(\S+)\s*$/i;
+const UNMOD_COMMAND = /^\/unmod\s+(\S+)\s*$/i;
+// "/ban <username>" / "/unban <username>" — same permission tier and effect
+// as the Room Settings Banned tab, just reachable from chat.
+const BAN_COMMAND = /^\/ban\s+(\S+)\s*$/i;
+const UNBAN_COMMAND = /^\/unban\s+(\S+)\s*$/i;
+// "/whois <username>" — quick info popup (level, country, online/away/busy/offline
+// status), open to every user, not just Staff.
+const WHOIS_COMMAND = /^\/whois\s+(\S+)\s*$/i;
+// "/announcement <text>" / "/announcement clear" — Staff or Global Admin
+// only; a mig66/mig33-style site-wide announcement, broadcast immediately to
+// everyone online and shown again to anyone entering any room while it's
+// still active. See trySetAnnouncement/tryClearAnnouncement below.
+const ANNOUNCEMENT_COMMAND = /^\/announcement\s+clear\s*$/i;
+const ANNOUNCEMENT_SET_COMMAND = /^\/announcement\s+(.+)$/is;
+// "/broadcast <text>" — Staff or Global Admin only; a one-time flash push to
+// everyone online right now (the blue "📣 Broadcast" banner). Unlike
+// "/announcement", it's never persisted and never replayed to someone
+// entering a room later — it's a moment, not a standing notice. See
+// tryBroadcast below.
+const BROADCAST_COMMAND = /^\/broadcast\s+(.+)$/is;
+// A silence never lasts longer than this, whatever's typed after /silence —
+// a sane ceiling against a fat-fingered "/silence 999999999".
+const MAX_SILENCE_SECONDS = 24 * 60 * 60;
+
+// Roleplay/emote commands ("/hug", "/dance", "/8ball", ...) — matches "/word"
+// optionally followed by an argument (a target username, a free-text
+// argument for /act, etc). Only acts if the word is a known command; an
+// unknown "/word" still falls through to the "Unrecognized command" error.
+const ROLEPLAY_COMMAND = /^\/([a-z0-9_]+)(?:\s+(.+))?\s*$/i;
+const ROLEPLAY_MAP = new Map();
+for (const [cmd, selfTpl, targetTpl] of ROLEPLAY_COMMANDS) {
+  ROLEPLAY_MAP.set(cmd, { selfTpl, targetTpl, isFreeform: cmd === 'act' });
+}
+for (const [cmd, selfTpl] of BENGALI_COMMANDS) {
+  ROLEPLAY_MAP.set(cmd, { selfTpl, targetTpl: null, isFreeform: false });
+}
+// Commands with real custom logic rather than a canned text template — kept
+// out of ROLEPLAY_MAP and handled explicitly in the "Special" block below.
+const SPECIAL_COMMANDS = new Set(['8ball', 'coffee', 'cupid', 'findmymatch', 'flame', 'whackit']);
+const EIGHT_BALL_ANSWERS = [
+  'Yes, definitely!', 'It is certain.', 'Without a doubt.', 'You may rely on it.',
+  'Most likely.', 'Signs point to yes.', 'Ask again later.', 'Cannot predict now.',
+  'Better not tell you now.', 'Concentrate and ask again.', "Don't count on it.",
+  'My reply is no.', 'My sources say no.', 'Outlook not so good.', 'Very doubtful.',
+];
+const FLAME_LINES = [
+  '{target} is so slow, their WiFi has a WiFi. 🔥',
+  "{target} brought a spoon to a gunfight and still missed. 🔥",
+  '{target} has never won an argument in their life. 🔥',
+  "{target}'s comebacks are still loading... 🔥",
+  '{target} called, they said the roast was free. 🔥',
+];
+
+// "/purchase ..." — the chat effect store (see effectsCatalog.js). A bare
+// "/purchase" or "/purchase effect" lists what's on sale; "/purchase
+// <effect>" (or "/purchase effect <effect>") stages a purchase that must be
+// confirmed with a plain "/purchase confirm" within PURCHASE_CONFIRM_MS, same
+// "type it again to mean it" shape as any other irreversible spend in the
+// app. "/purchase effect info" lists the caller's own owned effects. Staged
+// purchases live only in memory (per connected user id) — a server restart
+// or a stale stage just means the player has to start over, never a
+// half-charged purchase.
+const PURCHASE_CONFIRM_MS = 60_000;
+const pendingEffectPurchases = new Map(); // userId -> { key, expiresAt }
+
+function attachSocket(io, sessionMiddleware) {
+  // Share express-session with socket.io
+  io.engine.use(sessionMiddleware);
+
+  // Always read xp/level and role flags fresh from the DB rather than trusting
+  // the socket's cached session user — that cache is only as fresh as the last
+  // login/me call, and roles/levels can change while a socket stays connected.
+  function currentLevel(userId) {
+    const row = db.prepare('SELECT xp FROM users WHERE id = ?').get(userId);
+    return row ? levelFromXp(row.xp || 0).level : 1;
+  }
+
+  function freshRoleFlags(userId) {
+    db.clearExpiredActiveColor(userId);
+    const row = db.prepare(`
+      SELECT is_staff, is_global_admin, is_mentor, is_merchant, is_exec_board, is_country_rep, is_elite, username_color, username_gradient, active_color_key, gender, is_vip_rainbow, vip_rainbow_expires_at
+      FROM users WHERE id = ?
+    `).get(userId);
+    return row
+      ? {
+          is_staff: !!row.is_staff, is_global_admin: !!row.is_global_admin, is_mentor: !!row.is_mentor, is_merchant: !!row.is_merchant,
+          is_exec_board: !!row.is_exec_board, is_country_rep: !!row.is_country_rep, is_elite: !!row.is_elite,
+          username_color: row.username_color || null, username_gradient: row.username_gradient || null,
+          active_color_key: row.active_color_key || null, gender: row.gender || null,
+          // VIP Subscription rainbow name — overrides every other color
+          // above, Staff's gradient included (see usernameStyleAttr() in
+          // public/app.js). Same "trust the snapshot" expiry check as
+          // auth.js publicUser().
+          is_vip_rainbow: !!row.is_vip_rainbow && (!row.vip_rainbow_expires_at || new Date(row.vip_rainbow_expires_at) > new Date()),
+        }
+      : { is_staff: false, is_global_admin: false, is_mentor: false, is_merchant: false, is_exec_board: false, is_country_rep: false, is_elite: false, username_color: null, username_gradient: null, active_color_key: null, gender: null, is_vip_rainbow: false };
+  }
+
+  // Same priority list resolveActiveColor()/roleIcon() use client-side (and
+  // myOwnedColors() in routes/colors.js, minus Moderator which is a
+  // per-room, not account-level, flag — see is_moderator below).
+  const ROLE_BADGE_DEFS = [
+    { key: 'exec_board', flag: 'is_exec_board', icon: '🎖️' },
+    { key: 'global_admin', flag: 'is_global_admin', icon: '🛡️' },
+    { key: 'moderator', flag: 'is_moderator', icon: '🔰' },
+    { key: 'country_rep', flag: 'is_country_rep', icon: '🌐' },
+    { key: 'elite', flag: 'is_elite', icon: '🏅' },
+    { key: 'mentor', flag: 'is_mentor', icon: '🧭' },
+    { key: 'merchant', flag: 'is_merchant', icon: '🅼' },
+  ];
+
+  // Small inline icon shown after a bracketed level in system/gift text
+  // ("has entered"/"has left") — this is plain text, so it's just the bare
+  // icon, not the full colored-ring badge chat/participants show, but it
+  // needs to resolve to the SAME thing that's actually showing on the
+  // user's name right now: whichever Color Shop tier or role color is
+  // currently ACTIVE (flags.active_color_key), a purchased tier included —
+  // not just "any role held", which is all this used to check before the
+  // Color Shop redesign (so a Merchant who'd toggled their badge off, or a
+  // King/Queen/Diamond/... buyer with no role at all, showed nothing here).
+  // Mirrors resolveActiveColor() in app.js exactly: Staff always wins; then
+  // the active purchased tier or role; then the automatic top-priority held
+  // role when nothing's been explicitly toggled; otherwise nothing (a plain
+  // legacy username_color has no icon to show, same as colorBadgeHtml()).
+  function roleBadge(flags) {
+    if (flags.is_staff) return ' 👑';
+    if (flags.active_color_key) {
+      const tier = COLOR_TIERS_BY_KEY.get(flags.active_color_key);
+      if (tier) return ' ' + tier.icon;
+      const activeRole = ROLE_BADGE_DEFS.find((d) => d.key === flags.active_color_key);
+      if (activeRole && flags[activeRole.flag]) return ' ' + activeRole.icon;
+    }
+    const topRole = ROLE_BADGE_DEFS.find((d) => flags[d.flag]);
+    if (topRole) return ' ' + topRole.icon;
+    return '';
+  }
+
+  // roleBadge() needs is_moderator too (a per-room flag, not one
+  // freshRoleFlags() returns) for the "has entered"/"has left" text to show
+  // a Moderator icon correctly — this is the one spot that actually knows
+  // which room is involved, so it looks moderator status up fresh here.
+  function roleBadgeForRoom(userId, roomId) {
+    const flags = freshRoleFlags(userId);
+    flags.is_moderator = isRoomModerator(userId, roomId);
+    return roleBadge(flags);
+  }
+
+  function roomName(roomId) {
+    const row = db.prepare('SELECT name FROM rooms WHERE id = ?').get(roomId);
+    return row ? row.name : 'Room';
+  }
+
+  // ---- Persistent room membership (survives refresh/disconnect) ----
+  // Marks a user as an active member of a room. Returns { isNew: true } only
+  // when they weren't already an active member — that's the signal for
+  // whether to post a "has joined" message (a reconnect/refresh/re-focus on
+  // a room you're already in should NOT re-announce you).
+  function ensureMembership(userId, roomId) {
+    const existing = db.prepare('SELECT active FROM room_memberships WHERE user_id = ? AND room_id = ?').get(userId, roomId);
+    const wasActive = !!(existing && existing.active);
+    db.prepare(`
+      INSERT INTO room_memberships (user_id, room_id, active, joined_at, last_activity_at)
+      VALUES (?, ?, 1, datetime('now'), datetime('now'))
+      ON CONFLICT(user_id, room_id) DO UPDATE SET active = 1, last_activity_at = datetime('now')
+    `).run(userId, roomId);
+    return { isNew: !wasActive };
+  }
+
+  // Any action a member takes in a room (chat, gift, pick, ...)
+  // resets their 5-hour idle clock. No-op if they aren't an active member.
+  function touchActivity(userId, roomId) {
+    db.prepare(`UPDATE room_memberships SET last_activity_at = datetime('now') WHERE user_id = ? AND room_id = ? AND active = 1`)
+      .run(userId, roomId);
+  }
+
+  // Explicit removal — a manual "Leave Room", a kick, a bump, or the idle
+  // sweep. Also stamps history_cleared_at, so if/when this user comes back
+  // to this room their chat view starts fresh instead of replaying
+  // everything posted while they were gone (GET /rooms/:id/messages reads
+  // this). Returns true only if they were actually an active member.
+  function leaveMembership(userId, roomId) {
+    const info = db.prepare(`
+      UPDATE room_memberships SET active = 0, history_cleared_at = datetime('now')
+      WHERE user_id = ? AND room_id = ? AND active = 1
+    `).run(userId, roomId);
+    return info.changes > 0;
+  }
+
+  // Whether this user is a currently-active member of this room, straight
+  // from the persistent membership table — used to gate chat so a bumped or
+  // kicked user can't keep posting just because their socket is still
+  // sitting focused on the room (e.g. a stale tab, or a "kicked" event that
+  // hadn't reached their client yet).
+  function isActiveMember(userId, roomId) {
+    const row = db.prepare('SELECT active FROM room_memberships WHERE user_id = ? AND room_id = ?').get(userId, roomId);
+    return !!(row && row.active);
+  }
+
+  // Stamps the moment this user genuinely (re-)entered this room — see the
+  // last_entered_at column comment in db.js. Only called for a real entry
+  // (brand new join, rejoin after leaving, or coming back after being fully
+  // away), never for a plain refresh or a tab switch to a room already
+  // active — those must keep showing exactly what was on screen before.
+  function markEntered(userId, roomId) {
+    db.prepare('UPDATE room_memberships SET last_entered_at = datetime(\'now\') WHERE user_id = ? AND room_id = ?').run(userId, roomId);
+  }
+
+  // Everything posted in this room since the user's last genuine entry — a
+  // fresh entry means last_entered_at was just stamped to "now" (see
+  // markEntered above), so this correctly returns nothing for it; a
+  // mid-session refresh/reconnect leaves last_entered_at untouched, so this
+  // returns exactly what would still be on screen if the page hadn't reloaded.
+  // Resolves a batch of messages' reply-to targets (username/content/type of
+  // the original, if any) and their aggregated reactions — shared by the
+  // history backlog below and by postMessage's live broadcast, so a reply
+  // quote/reaction chip renders identically whether it arrived live or was
+  // loaded on room entry.
+  function attachReplyAndReactions(rows, viewerId) {
+    const ids = rows.map((r) => r.id);
+    const replyIds = [...new Set(rows.map((r) => r.reply_to_id).filter(Boolean))];
+    const replyMap = new Map();
+    if (replyIds.length) {
+      const placeholders = replyIds.map(() => '?').join(',');
+      db.prepare(`SELECT id, username, content, type FROM messages WHERE id IN (${placeholders})`)
+        .all(...replyIds)
+        .forEach((r) => replyMap.set(r.id, r));
+    }
+    const reactionsByMsg = new Map();
+    const myReactionByMsg = new Map();
+    if (ids.length) {
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`SELECT message_id, emoji, COUNT(*) c FROM message_reactions WHERE message_id IN (${placeholders}) GROUP BY message_id, emoji`)
+        .all(...ids)
+        .forEach((r) => {
+          if (!reactionsByMsg.has(r.message_id)) reactionsByMsg.set(r.message_id, {});
+          reactionsByMsg.get(r.message_id)[r.emoji] = r.c;
+        });
+      if (viewerId != null) {
+        db.prepare(`SELECT message_id, emoji FROM message_reactions WHERE message_id IN (${placeholders}) AND user_id = ?`)
+          .all(...ids, viewerId)
+          .forEach((r) => myReactionByMsg.set(r.message_id, r.emoji));
+      }
+    }
+    return rows.map((r) => {
+      const replyTo = r.reply_to_id ? replyMap.get(r.reply_to_id) : null;
+      return {
+        ...r,
+        replyTo: replyTo ? { id: replyTo.id, username: replyTo.username, content: replyTo.content, type: replyTo.type } : null,
+        reactions: reactionsByMsg.get(r.id) || {},
+        myReaction: myReactionByMsg.get(r.id) || null,
+      };
+    });
+  }
+
+  function historySinceEntry(userId, roomId) {
+    const membership = db.prepare('SELECT last_entered_at FROM room_memberships WHERE user_id = ? AND room_id = ?').get(userId, roomId);
+    if (!membership || !membership.last_entered_at) return [];
+    const rows = db.prepare(`
+      SELECT m.id, m.user_id, m.username, m.content, m.type, m.created_at, m.reply_to_id,
+             COALESCE(u.is_staff, 0) AS is_staff, COALESCE(u.is_global_admin, 0) AS is_global_admin,
+             COALESCE(u.is_mentor, 0) AS is_mentor, COALESCE(u.is_merchant, 0) AS is_merchant,
+             COALESCE(u.is_exec_board, 0) AS is_exec_board, COALESCE(u.is_country_rep, 0) AS is_country_rep,
+             COALESCE(u.is_elite, 0) AS is_elite, u.username_color, u.username_gradient, u.active_color_key, u.gender,
+             COALESCE(u.is_vip_rainbow, 0) AS is_vip_rainbow, u.vip_rainbow_expires_at
+      FROM messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.room_id = ? AND m.created_at > ?
+      ORDER BY m.id ASC LIMIT 300
+    `).all(roomId, membership.last_entered_at);
+    const moderatorIds = new Set(getRoomModerators(roomId).map((m) => m.id));
+    const withExtras = attachReplyAndReactions(rows, userId);
+    return withExtras.map((r) => ({
+      ...r,
+      is_staff: !!r.is_staff, is_global_admin: !!r.is_global_admin, is_mentor: !!r.is_mentor,
+      is_merchant: !!r.is_merchant, is_exec_board: !!r.is_exec_board, is_country_rep: !!r.is_country_rep,
+      is_elite: !!r.is_elite, is_moderator: r.user_id != null && moderatorIds.has(r.user_id), username_color: r.username_color || null,
+      username_gradient: r.username_gradient || null, active_color_key: r.active_color_key || null, gender: r.gender || null,
+      is_vip_rainbow: !!r.is_vip_rainbow && (!r.vip_rainbow_expires_at || new Date(r.vip_rainbow_expires_at) > new Date()),
+    }));
+  }
+
+  // A room can have any number of moderators (room_moderators table) — see
+  // /mod, /unmod below. Checked fresh against the DB every time, same as
+  // every other permission check in this file.
+  function isRoomModerator(userId, roomId) {
+    if (userId == null) return false;
+    return !!db.prepare('SELECT 1 FROM room_moderators WHERE room_id = ? AND user_id = ?').get(roomId, userId);
+  }
+
+  // Voice notes and picture sharing are reserved for trusted roles — Staff,
+  // Global Admin, a room's own owner and moderators, plus the platform-wide
+  // Mentor/Merchant flags — everyone else can only send plain text (and the
+  // existing gift/voucher commands). Checked both here (server-side, the
+  // real gate) and client-side (public/app.js hides the icons), same tier
+  // Room Settings already uses for "who can manage this room".
+  function canSendMedia(userId, roomId) {
+    const flags = freshRoleFlags(userId);
+    if (flags.is_staff || flags.is_global_admin || flags.is_mentor || flags.is_merchant) return true;
+    const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
+    if (room && room.created_by === userId) return true;
+    return isRoomModerator(userId, roomId);
+  }
+
+  function getRoomModerators(roomId) {
+    return db.prepare(`
+      SELECT u.id, u.username FROM room_moderators rm JOIN users u ON u.id = rm.user_id
+      WHERE rm.room_id = ? ORDER BY u.username COLLATE NOCASE
+    `).all(roomId);
+  }
+
+  // Who's allowed to talk through a room silence: Staff and Global Admin
+  // (whoever imposed it, or any other Staff/Global Admin), the room's owner
+  // (created_by), and any of the room's moderators — everyone else is a
+  // "normal user" for silence purposes and is fully blocked from typing.
+  function canBypassSilence(userId, roomId) {
+    const flags = freshRoleFlags(userId);
+    if (flags.is_staff || flags.is_global_admin) return true;
+    const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
+    if (room && room.created_by === userId) return true;
+    return isRoomModerator(userId, roomId);
+  }
+
+  // Puts (or re-puts) a room under silence for `seconds`, auto-lifting it on
+  // its own when the timer runs out — same as if someone had typed
+  // /unsilence, just without an actor to credit. Re-silencing an
+  // already-silenced room simply resets the clock (see roomSilence.setSilence).
+  function silenceRoomFor(roomId, seconds, byUsername) {
+    const until = Date.now() + seconds * 1000;
+    const timer = setTimeout(() => unsilenceRoomFor(roomId, null), seconds * 1000);
+    timer.unref?.();
+    roomSilence.setSilence(roomId, { until, by: byUsername, timer });
+    io.to(`room:${roomId}`).emit('room_silenced', { roomId, until, by: byUsername, seconds });
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🔇 ${roomName(roomId)} has been silenced by ${byUsername} for ${seconds}s — only Staff, Global Admin, the room owner, and its moderators can talk until it lifts.` });
+  }
+
+  function unsilenceRoomFor(roomId, byUsername) {
+    roomSilence.clearSilence(roomId);
+    io.to(`room:${roomId}`).emit('room_unsilenced', { roomId });
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: byUsername
+      ? `🔊 ${roomName(roomId)}'s silence was lifted by ${byUsername}.`
+      : `🔊 ${roomName(roomId)}'s silence has expired — chat is open again.` });
+  }
+
+  // ---- Rejoin cooldowns (kick = 10 minutes, bump = 5 minutes) ----
+  // Blocks one user from rejoining one specific room for a while. Checked in
+  // join_room before membership is (re-)established; harmless once expired.
+  function blockFromRoom(userId, roomId, minutes, reason) {
+    db.prepare(`
+      INSERT INTO room_blocks (user_id, room_id, reason, blocked_until)
+      VALUES (?, ?, ?, datetime('now', '+' || ? || ' minutes'))
+      ON CONFLICT(user_id, room_id) DO UPDATE SET reason = excluded.reason, blocked_until = excluded.blocked_until
+    `).run(userId, roomId, reason, minutes);
+  }
+
+  // Returns { blocked: false } or { blocked: true, reason, secondsLeft }.
+  function checkRoomBlock(userId, roomId) {
+    const row = db.prepare('SELECT reason, blocked_until FROM room_blocks WHERE user_id = ? AND room_id = ?').get(userId, roomId);
+    if (!row) return { blocked: false };
+    const secondsLeft = db.prepare("SELECT CAST((julianday(?) - julianday(datetime('now'))) * 86400 AS INTEGER) AS s").get(row.blocked_until).s;
+    if (secondsLeft <= 0) return { blocked: false };
+    return { blocked: true, reason: row.reason, secondsLeft };
+  }
+
+  // Every room this user is a persistent active member of right now — used
+  // to refresh member lists everywhere at once on a status/invisibility
+  // change or disconnect, since with multiple rooms open simultaneously
+  // (see join_room) a single "current room" no longer covers it.
+  function activeRoomIdsForUser(userId) {
+    return db.prepare('SELECT room_id FROM room_memberships WHERE user_id = ? AND active = 1').all(userId).map((r) => r.room_id);
+  }
+
+  function activeMemberRows(roomId) {
+    // Self-heal any lapsed purchased color before building the list that
+    // feeds the Participants panel/chat — see db.clearExpiredActiveColor.
+    const memberIds = db.prepare('SELECT user_id FROM room_memberships WHERE room_id = ? AND active = 1').all(roomId);
+    for (const { user_id } of memberIds) db.clearExpiredActiveColor(user_id);
+    return db.prepare(`
+      SELECT rm.user_id AS id, rm.ghost_mode, u.username, u.xp, u.is_staff, u.is_global_admin, u.is_mentor, u.is_merchant,
+             u.is_exec_board, u.is_country_rep, u.is_elite, u.username_color, u.username_gradient, u.status, u.active_color_key, u.gender,
+             u.avatar_photo_url, u.is_vip_rainbow, u.vip_rainbow_expires_at
+      FROM room_memberships rm JOIN users u ON u.id = rm.user_id
+      WHERE rm.room_id = ? AND rm.active = 1
+    `).all(roomId);
+  }
+
+  // Staff/Global Admin can go "invisible" (see toggle_invisible below) — this
+  // tracks it per user (not per socket) since membership is now decoupled
+  // from any one connection, and resets once their last socket disconnects.
+  const invisibleByUser = new Map();
+
+  // Award xp to a user, persist it, and push the new xp/level to every socket
+  // that user currently has open (they may be connected from more than one tab).
+  // (Shared with the Admin Panel's "set level" control in src/xp.js.)
+  function awardXp(userId, amount) {
+    return xpStore.awardXp(io, userId, amount);
+  }
+
+  // Real, persistent game-win counter — feeds the honest "Game Winner"
+  // Achievements tile (src/achievements.js). Always called alongside the
+  // existing awardXp(..., XP_REWARDS.GAME_WIN) at every win payout site
+  // (Legendary Bot, LowCard/Cricket split-pot and single-winner), never
+  // standalone, so it can't drift out of sync with "did this user actually
+  // win a round". Starts at 0 for every existing account — only counts wins
+  // from here forward, same honest-going-forward approach as xp_daily_earned.
+  function recordGameWin(userId) {
+    db.prepare('UPDATE users SET games_won_count = games_won_count + 1 WHERE id = ?').run(userId);
+  }
+
+  // Persist a "X sent you a gift!" notification (shown in the Notifications
+  // list, not just the live room chat/toast) for whoever receives a gift,
+  // whether from a direct send or a room-wide shower.
+  function notifyGiftReceived(recipientId, senderUsername, gift, roomId) {
+    db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)').run(
+      recipientId, 'gift', `${senderUsername} sent you a gift!`,
+      `${senderUsername} sent you a ${gift.name} ${gift.emoji} in ${roomName(roomId)}!`
+    );
+  }
+
+  // Persist a "X mentioned you" notification for a "@username" chat mention
+  // — same pattern as notifyGiftReceived above. The live highlight (orange
+  // "@name", see highlightMentions in app.js) is what the mentioned user
+  // sees immediately if they're watching the room; this is what still
+  // reaches them later via Notifications if they weren't.
+  function notifyMention(roomId, recipientId, mentionerUsername) {
+    db.prepare('INSERT INTO alerts (user_id, type, title, content) VALUES (?, ?, ?, ?)').run(
+      recipientId, 'mention', `${mentionerUsername} mentioned you`,
+      `${mentionerUsername} mentioned you in ${roomName(roomId)}`
+    );
+  }
+
+  function postMessage(roomId, { userId, username, type, content, replyToId }) {
+    const info = db.prepare('INSERT INTO messages (room_id, user_id, username, type, content, reply_to_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(roomId, userId, username, type, content, replyToId || null);
+    const replyTo = replyToId ? db.prepare('SELECT id, username, content, type FROM messages WHERE id = ?').get(replyToId) : null;
+    io.to(`room:${roomId}`).emit('chat_message', {
+      id: info.lastInsertRowid, roomId, user_id: userId, username, content, type, created_at: new Date().toISOString(),
+      ...freshRoleFlags(userId),
+      is_moderator: isRoomModerator(userId, roomId),
+      replyTo: replyTo ? { id: replyTo.id, username: replyTo.username, content: replyTo.content, type: replyTo.type } : null,
+      reactions: {},
+    });
+  }
+
+  // Broadcast the persistent member list of a room (from room_memberships,
+  // NOT from who's currently connected) — a refresh, a brief disconnect, or
+  // switching focus to another room does not drop anyone from this list.
+  // Also updates the shared presence module so REST endpoints (room browser,
+  // home screen) can show "X/Y in room" counts without touching socket internals.
+  //
+  // Staff / Global Administrators can go "invisible" in a room (see the
+  // toggle_invisible event below) — an invisible member is left out of the
+  // list sent to everyone else, but still appears (tagged `invisible: true`)
+  // in the copy sent back to their own socket, so their own participants
+  // panel confirms the stealth is active.
+  function broadcastRoomMembers(roomId) {
+    const rows = activeMemberRows(roomId);
+    const moderatorIds = new Set(getRoomModerators(roomId).map((m) => m.id));
+    const members = rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      level: levelFromXp(r.xp || 0).level,
+      is_staff: !!r.is_staff,
+      is_global_admin: !!r.is_global_admin,
+      is_mentor: !!r.is_mentor,
+      is_merchant: !!r.is_merchant,
+      is_exec_board: !!r.is_exec_board,
+      is_country_rep: !!r.is_country_rep,
+      is_elite: !!r.is_elite,
+      is_moderator: moderatorIds.has(r.id),
+      username_color: r.username_color || null,
+      username_gradient: r.username_gradient || null,
+      active_color_key: r.active_color_key || null,
+      gender: r.gender || null,
+      avatar_photo_url: r.avatar_photo_url || null,
+      is_vip_rainbow: !!r.is_vip_rainbow && (!r.vip_rainbow_expires_at || new Date(r.vip_rainbow_expires_at) > new Date()),
+      invisible: !!invisibleByUser.get(r.id) || !!r.ghost_mode,
+      ghost_mode: !!r.ghost_mode,
+      online: presence.isOnline(r.id),
+      status: presence.effectiveStatus(r.id, r.status),
+    }));
+    presence.setRoomCount(roomId, members.length);
+
+    // Send to every socket actually subscribed to this room's Socket.IO
+    // channel — NOT `s.data.roomId === roomId`, which only tracks the one
+    // room a connection most recently join_room'd. A socket can now be
+    // subscribed to several rooms at once (multi-room floating panels), so
+    // filtering on data.roomId would silently stop delivering member-list
+    // updates to every room except whichever was joined last.
+    const subscribed = io.sockets.adapter.rooms.get(`room:${roomId}`);
+    if (!subscribed) return;
+    for (const sid of subscribed) {
+      const s = io.sockets.sockets.get(sid);
+      if (s && s.data.user) {
+        const visibleToThisSocket = members.filter((m) => !m.invisible || m.id === s.data.user.id);
+        s.emit('room_members', { roomId, members: visibleToThisSocket });
+      }
+    }
+  }
+
+  // Leaves EVERY room this user is currently an active member of, in one
+  // shot — same effect as them hand-triggering "Leave Room" in each one
+  // (leaveMembership + "has left" system message + a Participants refresh),
+  // plus detaching every one of their currently-connected sockets from each
+  // room's live channel so they stop receiving its messages immediately,
+  // not just on next reconnect. Used on logout (see POST /auth/logout) so
+  // nobody — including Staff/Global Admin, no special-cased exception —
+  // stays "in" a room's chat once they've actually signed out; re-entering
+  // any of those rooms afterward starts fresh, same as any other re-join.
+  // Exposed on `io` itself (io.leaveAllRoomsForUser) so HTTP routes, which
+  // only have access to the shared `io` instance via req.app.get('io'), can
+  // call it without needing a reference to this whole closure.
+  function leaveAllRoomsForUser(userId, username) {
+    const roomIds = activeRoomIdsForUser(userId);
+    if (!roomIds.length) return;
+    const level = currentLevel(userId);
+    for (const roomId of roomIds) {
+      const wasActive = leaveMembership(userId, roomId);
+      if (!wasActive) continue;
+      const badge = roleBadgeForRoom(userId, roomId);
+      const name = roomName(roomId);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${username} [${level}]${badge} has left` });
+      broadcastRoomMembers(roomId);
+    }
+    // Detach every live socket this user currently has from each room's
+    // channel (socket.io keeps it subscribed until the next disconnect
+    // otherwise), and clear the "last focused" pointer so nothing on this
+    // connection still thinks one of these rooms is open.
+    for (const [, s] of io.sockets.sockets) {
+      if (!s.data.user || s.data.user.id !== userId) continue;
+      for (const roomId of roomIds) s.leave(`room:${roomId}`);
+      if (roomIds.includes(s.data.roomId)) s.data.roomId = null;
+    }
+  }
+  io.leaveAllRoomsForUser = leaveAllRoomsForUser;
+
+  function activeRoomIds() {
+    const ids = new Set();
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data.roomId && s.data.user) ids.add(s.data.roomId);
+    }
+    return Array.from(ids);
+  }
+
+  // Periodic voucher drops in whatever rooms currently have people in them —
+  // every 30 minutes (was 5).
+  voucher.startAutoSpawn({
+    getActiveRoomIds: activeRoomIds,
+    intervalMs: 30 * 60_000,
+    onSpawn: (roomId, v) => {
+      const text = `Hurray! A small gift for you. You have 40 seconds to pick the voucher [code] ${v.code}. Type /pick ${v.code} to get the voucher. (Amount ${v.amount} Coins).`;
+      postMessage(roomId, { userId: null, username: roomName(roomId), type: 'voucher', content: text });
+    },
+    onExpire: (roomId) => {
+      postMessage(roomId, { userId: null, username: roomName(roomId), type: 'system', content: 'The voucher has expired. Better luck next time!' });
+    },
+  });
+
+  // Ambient chatter from the is_bot-flagged member pool — see chatbots.js.
+  // Keeps every room feeling lived-in with casual, room-appropriate small
+  // talk even when no real person currently has it open.
+  chatbots.startAutoChat({ postMessage });
+
+  // Sweep for members who've gone quiet for 5 hours straight and remove
+  // them — the only other way (besides a manual leave or a kick) that
+  // someone drops off a room's participant list. Checked periodically
+  // rather than per-second since 5 hours is a long window.
+  function sweepIdleMembers() {
+    const idleHours = ROOM_IDLE_TIMEOUT_MS / 3_600_000;
+    const stale = db.prepare(`
+      SELECT rm.user_id, rm.room_id, u.username FROM room_memberships rm
+      JOIN users u ON u.id = rm.user_id
+      WHERE rm.active = 1 AND rm.last_activity_at < datetime('now', '-' || ? || ' hours')
+    `).all(idleHours);
+
+    for (const { user_id, room_id, username } of stale) {
+      if (!leaveMembership(user_id, room_id)) continue;
+
+      for (const [, s] of io.sockets.sockets) {
+        if (s.data.user && s.data.user.id === user_id && s.data.roomId === room_id) {
+          s.leave(`room:${room_id}`);
+          s.data.roomId = null;
+          s.emit('kicked', { roomId: room_id, reason: 'timeout' });
+        }
+      }
+
+      const name = roomName(room_id);
+      io.to(`room:${room_id}`).emit('system_message', { roomId: room_id, text: `${name}: ${username} left (inactive for 5 hours)` });
+      broadcastRoomMembers(room_id);
+    }
+  }
+  const idleSweepTimer = setInterval(sweepIdleMembers, 15 * 60_000); // check every 15 minutes
+  idleSweepTimer.unref?.();
+
+  // Ambient room presence: on top of the ambient chatter in chatbots.js, the
+  // is_bot pool now also drifts in and out of rooms entirely on its own —
+  // the exact same "has entered"/"has left" system messages, member-count
+  // and Participants-panel updates, and online dot a real person joining or
+  // leaving would produce — so a room looks like people are actually coming
+  // and going, not a static seeded list that only ever talks. Never touches
+  // a real (non-bot) account, and never fights an idle-timeout/kick/bump —
+  // it only ever picks among a bot's own currently-active/inactive rooms.
+  const BOT_ROOM_ACTIVITY_MIN_GAP_MS = 8_000;
+  const BOT_ROOM_ACTIVITY_MAX_GAP_MS = 25_000;
+  // A bot that "steps out" of a room always walks straight back in shortly
+  // after — never a real, lasting departure — so it reads as someone briefly
+  // stepping away rather than actually leaving for good.
+  const BOT_ROOM_REENTRY_MIN_MS = 5_000;
+  const BOT_ROOM_REENTRY_MAX_MS = 20_000;
+
+  // Shared "has entered" side-effects (membership, presence, system message,
+  // Participants-panel refresh) — used both for a bot's normal room pick and
+  // for its automatic walk-back-in after stepping out (see leave below).
+  function botEnterRoom(bot, roomId, name) {
+    ensureMembership(bot.id, roomId);
+    markEntered(bot.id, roomId);
+    presence.markOnline(bot.id);
+    const level = currentLevel(bot.id);
+    const badge = roleBadgeForRoom(bot.id, roomId);
+    io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has entered` });
+    broadcastRoomMembers(roomId);
+  }
+
+  function simulateOneBotRoomMove() {
+    const bots = db.prepare('SELECT id, username FROM users WHERE is_bot = 1').all();
+    if (!bots.length) return;
+    const bot = bots[Math.floor(Math.random() * bots.length)];
+
+    const rooms = db.prepare('SELECT id, name FROM rooms').all();
+    if (!rooms.length) return;
+
+    const activeRoomIds = db.prepare('SELECT room_id FROM room_memberships WHERE user_id = ? AND active = 1')
+      .all(bot.id).map((r) => r.room_id);
+
+    // A bot with nothing open always joins somewhere (rooms must never slowly
+    // drain to empty); one already in every room can only leave; otherwise
+    // it's a coin flip, leaning slightly toward joining for the same reason.
+    const canLeave = activeRoomIds.length > 0;
+    const canJoin = activeRoomIds.length < rooms.length;
+    const action = !canLeave ? 'join' : !canJoin ? 'leave' : (Math.random() < 0.55 ? 'join' : 'leave');
+
+    const level = currentLevel(bot.id);
+
+    if (action === 'leave') {
+      const roomId = activeRoomIds[Math.floor(Math.random() * activeRoomIds.length)];
+      const name = roomName(roomId);
+      const badge = roleBadgeForRoom(bot.id, roomId);
+      if (!leaveMembership(bot.id, roomId)) return;
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${bot.username} [${level}]${badge} has left` });
+      broadcastRoomMembers(roomId);
+      const stillSomewhere = db.prepare('SELECT 1 FROM room_memberships WHERE user_id = ? AND active = 1').get(bot.id);
+      if (!stillSomewhere) {
+        presence.markOffline(bot.id);
+        db.addOnlineSeconds(bot.id, presence.endOnlineSession(bot.id));
+      }
+
+      // Walk straight back into the SAME room a few seconds later — "out"
+      // is always momentary, never a real departure.
+      const rejoinDelay = BOT_ROOM_REENTRY_MIN_MS + Math.random() * (BOT_ROOM_REENTRY_MAX_MS - BOT_ROOM_REENTRY_MIN_MS);
+      const t = setTimeout(() => {
+        try { botEnterRoom(bot, roomId, name); } catch (e) { /* bot may have been deleted/room removed since */ }
+      }, rejoinDelay);
+      t.unref?.();
+    } else {
+      const candidates = rooms.filter((r) => !activeRoomIds.includes(r.id));
+      if (!candidates.length) return;
+      const room = candidates[Math.floor(Math.random() * candidates.length)];
+      botEnterRoom(bot, room.id, room.name);
+    }
+  }
+
+  function startBotRoomActivity() {
+    function tick() {
+      try { simulateOneBotRoomMove(); } catch (e) { /* never let a bad tick kill the loop */ }
+      const next = BOT_ROOM_ACTIVITY_MIN_GAP_MS + Math.random() * (BOT_ROOM_ACTIVITY_MAX_GAP_MS - BOT_ROOM_ACTIVITY_MIN_GAP_MS);
+      const t = setTimeout(tick, next);
+      t.unref?.();
+    }
+    const t = setTimeout(tick, 10_000);
+    t.unref?.();
+  }
+  startBotRoomActivity();
+
+  // Sync every room's live member count to what's actually in the DB right
+  // now (bots included) as soon as the server comes up, instead of leaving
+  // every room's count at 0 until the slow one-at-a-time ambient drift tick
+  // above (see simulateOneBotRoomMove, every ~8-25s) happens to touch it —
+  // which, with ~100 rooms, could otherwise take many minutes to catch up
+  // after a fresh boot. Safe to call with nobody actually connected yet:
+  // broadcastRoomMembers always sets presence.setRoomCount first and only
+  // then tries to emit to subscribed sockets, so an empty room just sees no
+  // emit and a correct count.
+  for (const { id: roomId } of db.prepare('SELECT id FROM rooms').all()) {
+    try { broadcastRoomMembers(roomId); } catch (e) { /* never let one bad room stop the rest */ }
+  }
+
+  // Ambient bot gift showers: on top of chatting and drifting between rooms,
+  // the bot pool now occasionally showers a room it's actually in with a
+  // gift too — the same visible gift-shower message + animation a real
+  // /gift all would produce, paid for out of the sending bot's own coin
+  // balance. Keeps this simulation-only (no live socket): it can't reuse
+  // the per-connection triggerGiftShower closure below, so it re-implements
+  // the same economy directly against room_memberships/gifts_catalog.
+  // Cheap gifts only, so one shower never drains a bot dry; a periodic
+  // top-up (further down) refills any bot that does run low anyway.
+  const BOT_GIFT_SHOWER_MIN_GAP_MS = 8_000;
+  const BOT_GIFT_SHOWER_MAX_GAP_MS = 20_000;
+  const BOT_GIFT_SHOWER_MAX_COST = 100;
+  const BOT_GIFT_SHOWER_MAX_RECIPIENTS = 8;
+
+  function simulateOneBotGiftShower() {
+    const rooms = db.prepare('SELECT id, name FROM rooms').all();
+    if (!rooms.length) return;
+    const room = rooms[Math.floor(Math.random() * rooms.length)];
+    if (roomSilence.isSilenced(room.id)) return;
+
+    const members = db.prepare(`
+      SELECT u.id, u.username, u.coins FROM room_memberships rm
+      JOIN users u ON u.id = rm.user_id
+      WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
+    `).all(room.id);
+    if (members.length < 2) return;
+
+    const sender = members[Math.floor(Math.random() * members.length)];
+    // Cap recipients to a handful rather than literally every bot in the
+    // room — a big official room can have 100+ bot members, and showering
+    // every single one would routinely blow past a bot's coin balance and
+    // silently no-op. A capped, shuffled subset keeps showers affordable
+    // (and thus actually happening) no matter how crowded the room is.
+    const shuffled = members.filter((m) => m.id !== sender.id).sort(() => Math.random() - 0.5);
+    const recipients = shuffled.slice(0, BOT_GIFT_SHOWER_MAX_RECIPIENTS);
+    const gifts = db.prepare('SELECT * FROM gifts_catalog WHERE cost <= ?').all(BOT_GIFT_SHOWER_MAX_COST);
+    if (!gifts.length) return;
+    const gift = gifts[Math.floor(Math.random() * gifts.length)];
+
+    const totalCost = gift.cost * recipients.length;
+    if (sender.coins < totalCost) return; // topped up periodically below — just skip this tick
+
+    db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
+      .run(totalCost, totalCost, recipients.length, sender.id);
+    db.checkEliteEligibility(sender.id);
+    db.logLeaderboardEvent(sender.id, 'spend', totalCost);
+    db.logLeaderboardEvent(sender.id, 'gifts', recipients.length);
+    for (const r of recipients) {
+      db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
+      awardXp(r.id, XP_REWARDS.GIFT_RECEIVED);
+    }
+
+    const level = currentLevel(sender.id);
+    const names = recipients.map((r) => r.username);
+    const shown = names.slice(0, 4).join(', ');
+    const rest = names.length > 4 ? ` and ${names.length - 4} others` : '';
+    const text = `<<🎁*GIFT SHOWER* ${sender.username} [${level}] gives a ${gift.name} ${gift.emoji} to ${shown}${rest}! Hurray!>>`;
+    postMessage(room.id, { userId: sender.id, username: sender.username, type: 'gift', content: text });
+    io.to(`room:${room.id}`).emit('gift_shower', { roomId: room.id, username: sender.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+    awardXp(sender.id, XP_REWARDS.GIFT_SHOWER);
+  }
+
+  function startBotGiftShowers() {
+    function tick() {
+      try { simulateOneBotGiftShower(); } catch (e) { /* never let a bad tick kill the loop */ }
+      const next = BOT_GIFT_SHOWER_MIN_GAP_MS + Math.random() * (BOT_GIFT_SHOWER_MAX_GAP_MS - BOT_GIFT_SHOWER_MIN_GAP_MS);
+      const t = setTimeout(tick, next);
+      t.unref?.();
+    }
+    const t = setTimeout(tick, 30_000);
+    t.unref?.();
+  }
+  startBotGiftShowers();
+
+  // Keeps every bot able to keep gifting indefinitely — tops any bot back up
+  // to 5000 coins once it's run low, so the ambient gift showers above never
+  // just stop happening because the pool quietly went broke.
+  const botTopUpTimer = setInterval(() => {
+    db.prepare('UPDATE users SET coins = 5000 WHERE is_bot = 1 AND coins < 1000').run();
+  }, 20 * 60_000);
+  botTopUpTimer.unref?.();
+
+  // ---------------------------------------------------------------------
+  function emitToUser(userId, event, payload) {
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data.user && s.data.user.id === userId) s.emit(event, payload);
+    }
+  }
+
+  // Dice-betting minigames (Legendary Bot, Luxury Bet) — each confined to
+  // its own dedicated room (seeded in db.js). Players bet coins on one of
+  // six "faces" (animals for Legendary Bot, characters for Luxury Bet);
+  // each round the bot rolls 6 dice (each landing on one of the six faces)
+  // and pays out based on how many of the 6 matched the face a player bet
+  // on. Entirely server-authoritative — coins are deducted the instant a
+  // bet is placed (so nobody can bet more than they have across several
+  // quick clicks) and the round timer runs independent of any one player's
+  // connection, same pattern as createEliminationGame below. Both games are
+  // identical in mechanics and only differ in their face set/bot identity —
+  // factored out once here rather than duplicated, same approach as the
+  // shared LowCard/Cricket engine.
+  function createDiceBettingGame({ gameKey, roomName, botName, messageType, faces, betAmounts, payoutTable, bettingMs, resultPauseMs, nextRoundDelayMs, botPlayersPerRound }) {
+    const faceByKey = new Map(faces.map((f) => [f.key, f]));
+    let roomId = null;
+    let phase = 'idle'; // 'idle' | 'betting' | 'resolving'
+    let endsAt = 0;
+    let bets = new Map(); // userId -> { username, isBot, byFace: Map<faceKey, amount> }
+    let faceTotals = new Map(); // faceKey -> total coins bet across everyone this round (insertion order = first-bet order)
+    let betCount = 0; // how many individual bet actions (real + bot) this round — drives the panel's round badge
+    let timer = null;
+
+    function getRoomId() {
+      if (roomId == null) {
+        const row = db.prepare('SELECT id FROM rooms WHERE name = ?').get(roomName);
+        roomId = row ? row.id : -1;
+      }
+      return roomId;
+    }
+    function botMessage(text) {
+      postMessage(getRoomId(), { userId: null, username: botName, type: messageType, content: text });
+    }
+    function broadcastState() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      const totals = {};
+      for (const [k, v] of faceTotals) totals[k] = v;
+      io.to(`room:${rid}`).emit('dicebet_state', { gameKey, phase, endsAt, totals, betCount });
+    }
+    // "Bets:" summary line — every face with a bet so far this round, in the
+    // order it was first bet on, each showing the running total across all
+    // bettors (not just the bet that was just placed).
+    function betsSummaryLine() {
+      const parts = [];
+      for (const [key, total] of faceTotals) {
+        if (total <= 0) continue;
+        const f = faceByKey.get(key);
+        parts.push(`${f.emoji} ${f.label} ${total}`);
+      }
+      return parts.join(' | ');
+    }
+
+    // Makes the room feel alive even when no real player has placed a bet
+    // yet — a handful of the room's own bot members place small, randomly-
+    // timed bets during the betting window, through the exact same placeBet
+    // path a real player uses (coins really move, same payout odds apply).
+    // Capped to a small sample (not all 200+ members) so this never floods
+    // the room with bot chat lines or hammers the DB every round.
+    function scheduleBotBets() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      const roomBots = db.prepare(`
+        SELECT u.id, u.username, u.coins FROM room_memberships rm
+        JOIN users u ON u.id = rm.user_id
+        WHERE rm.room_id = ? AND rm.active = 1 AND u.is_bot = 1
+        ORDER BY RANDOM() LIMIT ?
+      `).all(rid, botPlayersPerRound);
+      for (const bot of roomBots) {
+        const delay = 2_000 + Math.random() * Math.max(1000, bettingMs - 8_000);
+        const t = setTimeout(() => {
+          if (phase !== 'betting') return;
+          const affordable = betAmounts.filter((a) => a <= bot.coins);
+          if (!affordable.length) return;
+          const face = faces[Math.floor(Math.random() * faces.length)];
+          const amount = affordable[Math.floor(Math.random() * affordable.length)];
+          placeBet({ id: bot.id, username: bot.username, is_bot: 1 }, face.key, amount);
+        }, delay);
+        t.unref?.();
+      }
+    }
+
+    function startBettingRound() {
+      const rid = getRoomId();
+      if (rid < 0) return; // room not seeded yet (very old DB mid-migration) — skip quietly
+      if (timer) clearTimeout(timer);
+      phase = 'betting';
+      bets = new Map();
+      faceTotals = new Map();
+      betCount = 0;
+      endsAt = Date.now() + bettingMs;
+      botMessage(`🎲 Round in progress — ${Math.round(bettingMs / 1000)}s left to bid!`);
+      broadcastState();
+      scheduleBotBets();
+      timer = setTimeout(resolveRound, bettingMs);
+      timer.unref?.();
+    }
+
+    function resolveRound() {
+      phase = 'resolving';
+      broadcastState();
+      botMessage(`${botName} is calculating result... Please wait!`);
+
+      timer = setTimeout(() => {
+        // Roll 6 dice, each landing on one of the 6 faces.
+        const rolls = Array.from({ length: 6 }, () => faces[Math.floor(Math.random() * faces.length)]);
+        const matchCounts = new Map(faces.map((f) => [f.key, 0]));
+        for (const r of rolls) matchCounts.set(r.key, matchCounts.get(r.key) + 1);
+
+        const diceLine = rolls.map((r) => r.emoji).join(' ');
+        const tallyLines = faces
+          .filter((f) => matchCounts.get(f.key) > 0)
+          .map((f) => `- ${f.emoji} ${f.label}: ${matchCounts.get(f.key)}x`)
+          .join('\n');
+        botMessage(`Rolling Dice...\n${diceLine}\n\n${tallyLines}`);
+
+        // Pay out every bettor based on how many dice matched what they bet on.
+        let anyWinner = false;
+        for (const [userId, entry] of bets) {
+          for (const [faceKey, amount] of entry.byFace) {
+            const matches = matchCounts.get(faceKey) || 0;
+            const multiplier = payoutTable[matches] || 0;
+            if (multiplier <= 0) continue;
+            const winnings = Math.round(amount * multiplier);
+            db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(winnings, userId);
+            db.logCoinTx(userId, winnings, 'games', `${botName} win`);
+            emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
+            const f = faceByKey.get(faceKey);
+            botMessage(`- ${entry.username} has won ${winnings} coins for placing ${amount} coins on ${f.label} ${f.emoji}`);
+            if (!entry.isBot) { awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
+            anyWinner = true;
+          }
+        }
+        if (!anyWinner && bets.size > 0) {
+          botMessage('No winners this round — better luck next time!');
+        }
+        botMessage('Game over. Type !start to start a new round.');
+
+        phase = 'idle';
+        bets = new Map();
+        faceTotals = new Map();
+        broadcastState();
+
+        timer = setTimeout(() => {
+          if (phase === 'idle') startBettingRound();
+        }, nextRoundDelayMs);
+        timer.unref?.();
+      }, resultPauseMs);
+      timer.unref?.();
+    }
+
+    function tryStart() {
+      if (phase !== 'idle') return false;
+      if (timer) clearTimeout(timer);
+      startBettingRound();
+      return true;
+    }
+
+    function placeBet(user, faceKey, amount) {
+      const rid = getRoomId();
+      if (phase !== 'betting') return { ok: false, error: 'Betting is closed right now — wait for the next round.' };
+      if (!faceByKey.has(faceKey)) return { ok: false, error: 'Unknown character' };
+      amount = Number(amount);
+      if (!betAmounts.includes(amount)) return { ok: false, error: 'Invalid bet amount' };
+      if (!isActiveMember(user.id, rid)) return { ok: false, error: `Join the ${roomName} room first.` };
+
+      // Deduct atomically, checking the balance in the same statement so a
+      // burst of quick clicks can never overdraw a player's coins.
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(amount, user.id, amount);
+      if (result.changes === 0) return { ok: false, error: "You don't have enough coins for that bet." };
+      db.logCoinTx(user.id, -amount, 'games', `${botName} bet`);
+      emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+
+      if (!bets.has(user.id)) bets.set(user.id, { username: user.username, isBot: !!user.is_bot, byFace: new Map() });
+      const entry = bets.get(user.id);
+      entry.byFace.set(faceKey, (entry.byFace.get(faceKey) || 0) + amount);
+      faceTotals.set(faceKey, (faceTotals.get(faceKey) || 0) + amount);
+      betCount += 1;
+
+      const f = faceByKey.get(faceKey);
+      botMessage(`${user.username} placed ${amount} coins on ${f.emoji} ${f.label}.\nBets: ${betsSummaryLine()}`);
+      broadcastState();
+      if (!user.is_bot) awardXp(user.id, XP_REWARDS.GAME_PLAY);
+      return { ok: true };
+    }
+
+    function getState() {
+      const totals = {};
+      for (const [k, v] of faceTotals) totals[k] = v;
+      return { gameKey, phase, endsAt, totals, betCount };
+    }
+
+    function getBets() {
+      const bettors = [];
+      for (const [, entry] of bets) {
+        const list = [...entry.byFace].map(([key, amt]) => {
+          const f = faceByKey.get(key);
+          return { face: key, label: f ? f.label : key, emoji: f ? f.emoji : '', amount: amt };
+        });
+        bettors.push({ username: entry.username, isBot: !!entry.isBot, bets: list });
+      }
+      return bettors;
+    }
+
+    // Kick off the very first round shortly after boot so the room isn't
+    // sitting empty waiting for someone to type !start.
+    setTimeout(() => { if (getRoomId() >= 0) tryStart(); }, 15_000).unref?.();
+
+    return { gameKey, getRoomId, tryStart, placeBet, getState, getBets };
+  }
+
+  const DICE_BET_PAYOUT_TABLE = [0, 1, 2, 3, 4.5, 8, 15]; // indexed by dice matches (0..6) — 0 forfeits, a full sweep is the jackpot
+  const DICE_BET_AMOUNTS = [500, 1000, 2000, 5000, 10000, 15000, 20000];
+  const DICE_BET_BETTING_MS = 45_000;
+  const DICE_BET_RESULT_PAUSE_MS = 2_500; // "calculating..." / "rolling dice..." beats
+  const DICE_BET_NEXT_ROUND_DELAY_MS = 20_000; // auto-restarts if nobody types !start
+  const DICE_BET_BOT_PLAYERS_PER_ROUND = 6;
+
+  const LEGENDARY_FACES = [
+    { key: 'lion', label: 'Lion', emoji: '🦁' },
+    { key: 'tiger', label: 'Tiger', emoji: '🐯' },
+    { key: 'fox', label: 'Fox', emoji: '🦊' },
+    { key: 'wolf', label: 'Wolf', emoji: '🐺' },
+    { key: 'bear', label: 'Bear', emoji: '🐻' },
+    { key: 'panda', label: 'Panda', emoji: '🐼' },
+  ];
+  const legendaryGame = createDiceBettingGame({
+    gameKey: 'legendary', roomName: 'Legendary Bot Official', botName: 'Legendary Bot', messageType: 'legendary',
+    faces: LEGENDARY_FACES, betAmounts: DICE_BET_AMOUNTS, payoutTable: DICE_BET_PAYOUT_TABLE,
+    bettingMs: DICE_BET_BETTING_MS, resultPauseMs: DICE_BET_RESULT_PAUSE_MS,
+    nextRoundDelayMs: DICE_BET_NEXT_ROUND_DELAY_MS, botPlayersPerRound: DICE_BET_BOT_PLAYERS_PER_ROUND,
+  });
+
+  // Luxury Bet — same dice-betting mechanic as Legendary Bot above, reskinned
+  // with six human characters instead of animals (per the reference design).
+  const LUXURY_FACES = [
+    { key: 'laila', label: 'Laila', emoji: '🧕' },
+    { key: 'majnu', label: 'Majnu', emoji: '👱' },
+    { key: 'romeo', label: 'Romeo', emoji: '🤵' },
+    { key: 'juliet', label: 'Juliet', emoji: '👱‍♀️' },
+    { key: 'shirin', label: 'Shirin', emoji: '💃' },
+    { key: 'farhad', label: 'Farhad', emoji: '🕺' },
+  ];
+  const luxuryGame = createDiceBettingGame({
+    gameKey: 'luxury', roomName: 'Luxury Bet Official', botName: 'Luxury Bet', messageType: 'luxury',
+    faces: LUXURY_FACES, betAmounts: DICE_BET_AMOUNTS, payoutTable: DICE_BET_PAYOUT_TABLE,
+    bettingMs: DICE_BET_BETTING_MS, resultPauseMs: DICE_BET_RESULT_PAUSE_MS,
+    nextRoundDelayMs: DICE_BET_NEXT_ROUND_DELAY_MS, botPlayersPerRound: DICE_BET_BOT_PLAYERS_PER_ROUND,
+  });
+
+  const DICE_BET_GAMES = new Map([[legendaryGame.gameKey, legendaryGame], [luxuryGame.gameKey, luxuryGame]]);
+
+  // ---------- Generic "last player standing" bot games (LowCard, Cricket) ----------
+  // Both games share the same shape: "!start" opens a join window ("!j" to
+  // join, an entry fee escrowed from each joiner into the pot), then repeated
+  // rounds where every remaining player types "!d" once; a game-specific
+  // draw() decides whether that player survives the round. Play continues
+  // until one player remains, who takes the whole pot. Entirely
+  // server-authoritative and confined to each game's own dedicated room
+  // (seeded in db.js), same pattern as the Legendary Bot dice game above.
+  function createEliminationGame({ roomName, botName, entryFee, joinMs, roundMs, draw, decideSurvivors }) {
+    let roomId = null;
+    let phase = 'idle'; // 'idle' | 'joining' | 'drawing'
+    let round = 0;
+    let players = new Map(); // userId -> username
+    let draws = new Map(); // userId -> { survives, label }
+    let pot = 0;
+    let timer = null;
+    let totalJoined = 0; // how many joined this game (fixed once the join window closes; "X in" in the status bar)
+    let endsAt = 0; // join/round deadline, for a live countdown — same idea as legendaryEndsAt
+
+    function getRoomId() {
+      if (roomId == null) {
+        const row = db.prepare('SELECT id FROM rooms WHERE name = ?').get(roomName);
+        roomId = row ? row.id : -1;
+      }
+      return roomId;
+    }
+    function botMessage(text) {
+      postMessage(getRoomId(), { userId: null, username: botName, type: 'game_bot', content: text });
+    }
+    function creditCoins(userId, amount, description) {
+      db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(amount, userId);
+      db.logCoinTx(userId, amount, 'games', description || `${botName} payout`);
+      emitToUser(userId, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(userId).coins });
+    }
+    function refundAllPlayers() {
+      for (const userId of players.keys()) creditCoins(userId, entryFee, `${botName} entry refund`);
+    }
+    function clearTimer() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    function endGame() {
+      clearTimer();
+      phase = 'idle'; round = 0; players = new Map(); draws = new Map(); pot = 0; totalJoined = 0; endsAt = 0;
+      broadcastState();
+    }
+
+    // Live status-bar state for the room's game UI (e.g. the Cricket pitch
+    // bar) — mirrors broadcastLegendaryState's shape/purpose but for the
+    // shared elimination-game engine, so both LowCard and Cricket get it for
+    // free. "playersIn" is the total that joined this game (fixed once the
+    // join window closes); "playersLeft" is how many are still standing.
+    function getState() {
+      return {
+        roomId: getRoomId(), botName, phase, round,
+        playersIn: totalJoined, playersLeft: players.size, pot, endsAt,
+      };
+    }
+    function broadcastState() {
+      const rid = getRoomId();
+      if (rid < 0) return;
+      io.to(`room:${rid}`).emit('elimination_state', getState());
+    }
+
+    function tryStart() {
+      const rid = getRoomId();
+      if (rid < 0) return false; // room not seeded yet (very old DB mid-migration)
+      if (phase !== 'idle') return false;
+      clearTimer();
+      phase = 'joining'; players = new Map(); draws = new Map(); pot = 0; round = 0; totalJoined = 0;
+      endsAt = Date.now() + joinMs;
+      botMessage(`🎮 New game started! Type !j to join (Entry: ${entryFee} coins) — ${Math.round(joinMs / 1000)} seconds.`);
+      broadcastState();
+      timer = setTimeout(afterJoinWindow, joinMs);
+      timer.unref?.();
+      return true;
+    }
+
+    function join(user) {
+      const rid = getRoomId();
+      if (phase !== 'joining') return;
+      if (players.has(user.id)) return;
+      if (!isActiveMember(user.id, rid)) return;
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(entryFee, user.id, entryFee);
+      if (result.changes === 0) {
+        emitToUser(user.id, 'error_message', `You need ${entryFee} coins to join.`);
+        return;
+      }
+      db.logCoinTx(user.id, -entryFee, 'games', `${botName} entry fee`);
+      emitToUser(user.id, 'coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+      pot += entryFee;
+      players.set(user.id, user.username);
+      totalJoined = players.size;
+      botMessage(`${user.username} joined! (${players.size} player${players.size === 1 ? '' : 's'} in, pot: ${pot} coins)`);
+      broadcastState();
+      awardXp(user.id, XP_REWARDS.GAME_PLAY);
+    }
+
+    function afterJoinWindow() {
+      if (players.size < 2) {
+        botMessage(players.size === 0 ? 'No one joined — game cancelled.' : 'Not enough players joined (need at least 2) — game cancelled, entry fees refunded.');
+        refundAllPlayers();
+        endGame();
+        return;
+      }
+      startRound();
+    }
+
+    function startRound() {
+      round += 1;
+      phase = 'drawing';
+      draws = new Map();
+      endsAt = Date.now() + roundMs;
+      botMessage(`Round #${round}. Players !d to draw [${Math.round(roundMs / 1000)} seconds]`);
+      broadcastState();
+      timer = setTimeout(resolveRound, roundMs);
+      timer.unref?.();
+    }
+
+    function takeDraw(user) {
+      const rid = getRoomId();
+      if (phase !== 'drawing') return;
+      if (!players.has(user.id)) return;
+      if (draws.has(user.id)) return;
+      if (!isActiveMember(user.id, rid)) return;
+      const result = draw(user.username);
+      draws.set(user.id, result);
+      botMessage(result.label);
+    }
+
+    // Default: a draw survives on its own merit (result.survives) — right
+    // for Cricket (each ball is independently "out" or not). LowCard passes
+    // its own decideSurvivors that compares every draw against the round's
+    // lowest card instead.
+    function defaultDecideSurvivors() {
+      const survivorIds = new Set();
+      for (const [userId] of players) {
+        const d = draws.get(userId);
+        if (d && d.survives) survivorIds.add(userId);
+      }
+      return survivorIds;
+    }
+
+    function resolveRound() {
+      if (draws.size === 0) {
+        botMessage('No one drew this round — trying again!');
+        return startRound();
+      }
+      const survivorIds = (decideSurvivors || defaultDecideSurvivors)(players, draws);
+      const eliminatedNames = [...players.entries()].filter(([uid]) => !survivorIds.has(uid)).map(([, name]) => name);
+      if (eliminatedNames.length) botMessage(`Eliminated this round: ${eliminatedNames.join(', ')}`);
+
+      const survivors = new Map([...players].filter(([uid]) => survivorIds.has(uid)));
+
+      if (survivors.size === 0) {
+        // Everyone still in was eliminated together (a full tie/sweep) — split the pot evenly rather than losing it.
+        const names = [...players.values()];
+        const share = Math.floor(pot / players.size);
+        for (const userId of players.keys()) { creditCoins(userId, share, `${botName} split pot`); awardXp(userId, XP_REWARDS.GAME_WIN); recordGameWin(userId); }
+        botMessage(`Everyone was eliminated at once — the pot (${pot} coins) is split evenly between ${names.join(', ')} (${share} each)!`);
+        endGame();
+        return;
+      }
+      if (survivors.size === 1) {
+        const [[winnerId, winnerName]] = survivors;
+        creditCoins(winnerId, pot, `${botName} win`);
+        awardXp(winnerId, XP_REWARDS.GAME_WIN);
+        recordGameWin(winnerId);
+        botMessage(`🏆 ${winnerName} wins the pot of ${pot} coins! Type !start to play again.`);
+        endGame();
+        return;
+      }
+      players = survivors;
+      phase = 'drawing'; // between rounds — status bar shows the updated "left" count while the next round's draw window spins up
+      broadcastState();
+      timer = setTimeout(startRound, 2_000);
+      timer.unref?.();
+    }
+
+    // Kick off the very first round shortly after boot, same as Legendary Bot.
+    setTimeout(() => { if (getRoomId() >= 0) tryStart(); }, 15_000).unref?.();
+
+    return { getRoomId, tryStart, join, takeDraw, getState };
+  }
+
+  // LowCard — draw a card each round; whoever drew the lowest card (or
+  // didn't draw at all) is eliminated. Ties at the lowest value are all
+  // eliminated together.
+  function drawLowcard(username) {
+    const RANK_LABELS = { 11: 'J', 12: 'Q', 13: 'K', 14: 'A' };
+    const SUITS = ['♠', '♥', '♦', '♣'];
+    const value = 2 + Math.floor(Math.random() * 13); // 2–14
+    const rankLabel = RANK_LABELS[value] || String(value);
+    const suit = SUITS[Math.floor(Math.random() * SUITS.length)];
+    return { value, label: `${username}: ${rankLabel}${suit}` };
+  }
+  function lowcardDecideSurvivors(players, draws) {
+    let minVal = Infinity;
+    for (const d of draws.values()) if (d.value < minVal) minVal = d.value;
+    const survivorIds = new Set();
+    for (const [userId] of players) {
+      const d = draws.get(userId);
+      if (d && d.value > minVal) survivorIds.add(userId);
+    }
+    return survivorIds;
+  }
+  const lowcardGame = createEliminationGame({
+    roomName: 'Official LowCard Room', botName: 'LowCard Bot', entryFee: 50, joinMs: 20_000, roundMs: 15_000,
+    draw: drawLowcard, decideSurvivors: lowcardDecideSurvivors,
+  });
+
+  // Cricket — "bat" each round; a ball can score runs (you stay in) or get
+  // you OUT (eliminated). Roughly cricket-realistic scoring odds.
+  const CRICKET_OUTCOMES = [
+    { runs: 0, weight: 3, label: 'Dot ball.' },
+    { runs: 1, weight: 4, label: 'takes a single: 1' },
+    { runs: 2, weight: 3, label: 'runs a two: 2' },
+    { runs: 3, weight: 1, label: 'runs a three: 3' },
+    { runs: 4, weight: 3, label: 'hits a boundary: 4 Four!' },
+    { runs: 6, weight: 2, label: 'sends it out of the park: 6 Six!' },
+    { runs: -1, weight: 2, label: 'is OUT! 🏏' },
+  ];
+  const CRICKET_WEIGHT_TOTAL = CRICKET_OUTCOMES.reduce((sum, o) => sum + o.weight, 0);
+  function drawCricket(username) {
+    let roll = Math.random() * CRICKET_WEIGHT_TOTAL;
+    let picked = CRICKET_OUTCOMES[CRICKET_OUTCOMES.length - 1];
+    for (const o of CRICKET_OUTCOMES) {
+      if (roll < o.weight) { picked = o; break; }
+      roll -= o.weight;
+    }
+    const out = picked.runs < 0;
+    return { survives: !out, label: `${username} ${picked.label}` };
+  }
+  const cricketGame = createEliminationGame({
+    roomName: 'Official Cricket Room', botName: 'Cricket Bot', entryFee: 50, joinMs: 20_000, roundMs: 15_000,
+    draw: drawCricket,
+  });
+
+  io.on('connection', (socket) => {
+    const session = socket.request.session;
+    const user = session && session.user;
+    if (!user) {
+      socket.emit('error_message', 'Not authenticated');
+      socket.disconnect();
+      return;
+    }
+
+    socket.data.user = user;
+    // Was this user already reachable (another open tab/device, or they
+    // disconnected only moments ago — a refresh or brief network blip) right
+    // before THIS connection? Captured before markOnline() flips it to true,
+    // so join_room below can tell "just came back after being away" apart
+    // from "just switching tabs" or "page refresh" — see RECONNECT_GRACE_MS.
+    const wasReachableBefore = presence.wasOnlineRecently(user.id, RECONNECT_GRACE_MS);
+    presence.markOnline(user.id);
+    let announcedEntryThisConnection = false;
+
+    // A thrown exception inside a socket event handler (a bad DB write, a
+    // race, anything) used to disappear silently — the client would just see
+    // nothing happen, with the real cause visible only in the server's own
+    // console (if that). Wrap every handler below so a failure is logged
+    // server-side AND reported to the user as an error_message instead of
+    // vanishing.
+    function on(event, handler) {
+      socket.on(event, (...args) => {
+        try {
+          handler(...args);
+        } catch (err) {
+          console.error(`[socket:${event}] error for ${user.username}:`, err);
+          socket.emit('error_message', `Something went wrong running that (${err.message || err}). Please try again.`);
+        }
+      });
+    }
+
+    // `ack`, if the client passed one, lets the client know membership is
+    // actually established before it asks the REST API for chat history —
+    // GET /rooms/:id/messages requires active membership (see rooms.js), so
+    // without this handshake there'd be a race between the socket join and
+    // the REST call on a fresh join, and the history fetch could 403.
+    on('join_room', (roomId, ack) => {
+      roomId = Number(roomId);
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) {
+        socket.emit('error_message', 'Room not found');
+        if (typeof ack === 'function') ack({ ok: false, error: 'Room not found' });
+        return;
+      }
+
+      const block = checkRoomBlock(user.id, roomId);
+      if (block.blocked) {
+        const error = block.reason === 'ban'
+          ? `You are banned from ${room.name}`
+          : `You were ${block.reason === 'kick' ? 'kicked' : 'bumped'} from ${room.name} — try again in ${Math.ceil(block.secondsLeft / 60)} minute${Math.ceil(block.secondsLeft / 60) === 1 ? '' : 's'}`;
+        socket.emit('error_message', error);
+        if (typeof ack === 'function') ack({ ok: false, error });
+        return;
+      }
+
+      // Room Settings' Lock Level — a minimum level required to enter,
+      // 0 = open to everyone. Staff, Global Admin, the room's owner, and its
+      // moderators always bypass it (same exemption pattern as silence).
+      if (room.lock_level > 0) {
+        const myLevel = currentLevel(user.id);
+        const flags = freshRoleFlags(user.id);
+        const exempt = flags.is_staff || flags.is_global_admin || room.created_by === user.id || isRoomModerator(user.id, roomId);
+        if (!exempt && myLevel < room.lock_level) {
+          const error = `${room.name} requires level ${room.lock_level}+ to enter — you're level ${myLevel}`;
+          socket.emit('error_message', error);
+          if (typeof ack === 'function') ack({ ok: false, error });
+          return;
+        }
+      }
+
+      // Join this room's live channel WITHOUT leaving any other room this
+      // socket already joined — a connection can now have several floating
+      // chat windows open at once, each getting its own live messages
+      // simultaneously (Socket.IO natively supports one socket belonging to
+      // several rooms). This does NOT touch the user's persistent membership
+      // in any room either way — a refresh, a reconnect, or opening another
+      // room must never look like "leaving" to everyone else. Only an
+      // explicit leave_room, a kick, or 5 hours of inactivity does that.
+      socket.join(`room:${roomId}`);
+      // "Last room joined/focused" — still used for a handful of single-room
+      // conveniences (e.g. the rejoin-cooldown/announcement fallback on the
+      // now-unused standalone set_announcement/clear_announcement events).
+      // Nothing that matters for correctness with multiple rooms open reads
+      // this anymore; those places take an explicit roomId instead.
+      socket.data.roomId = roomId;
+
+      const level = currentLevel(user.id);
+      const badge = roleBadgeForRoom(user.id, roomId);
+
+      const { isNew } = ensureMembership(user.id, roomId);
+
+      db.prepare('INSERT INTO room_visits (user_id, room_id, visited_at) VALUES (?, ?, datetime(\'now\')) ON CONFLICT(user_id, room_id) DO UPDATE SET visited_at = datetime(\'now\')')
+        .run(user.id, roomId);
+
+      // Announce when: (a) this is genuinely the first time they've ever
+      // become an active member of this room (or they'd explicitly left/been
+      // removed and are rejoining), OR (b) they just came back after being
+      // fully offline (closed the app/tab, came back later) — even though
+      // their persistent membership never lapsed, from everyone else's
+      // perspective they were gone and are now visibly back. Only the FIRST
+      // join_room call on a given connection gets the "just came back" credit
+      // (announcedEntryThisConnection), so switching between room tabs you're
+      // already an active member of, or refreshing the page, stays silent.
+      const cameBackAfterBeingAway = !wasReachableBefore && !announcedEntryThisConnection;
+      const genuineEntry = isNew || cameBackAfterBeingAway;
+      if (genuineEntry) {
+        // Going Invisible (Staff/Global Admin only — see toggle_invisible)
+        // means entering a room never posts "has entered" for anyone else to
+        // see, on top of being left out of the member list broadcastRoomMembers
+        // already sends. The chat-visibility clock still resets either way.
+        if (!invisibleByUser.get(user.id)) {
+          io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${room.name}: ${user.username} [${level}]${badge} has entered` });
+        }
+        // A genuine entry (first time ever, rejoining after leaving/being
+        // kicked/bumped/timed out, or coming back after being fully away)
+        // resets the chat-visibility clock — same moment the room is told
+        // "has entered", nothing posted before now is handed back below.
+        markEntered(user.id, roomId);
+      }
+      announcedEntryThisConnection = true;
+      broadcastRoomMembers(roomId);
+
+      // Whatever's happened in the room since the last genuine entry — blank
+      // for a fresh entry (see markEntered just above), but exactly what was
+      // on screen before a plain page refresh or reconnect, so reloading the
+      // page never looks like leaving the room.
+      const history = historySinceEntry(user.id, roomId);
+
+      const activeVoucher = voucher.getActiveVoucher(roomId);
+      if (activeVoucher) {
+        const remaining = Math.max(0, Math.round((activeVoucher.expiresAt - Date.now()) / 1000));
+        socket.emit('system_message', { roomId, text: `A voucher is active in this room! Type /pick <code> within ${remaining}s to try (you'll need the code from chat).` });
+      }
+
+      // Show this room's current announcement (if any) to anyone entering it
+      // — same mig66/mig33-style behavior as the live broadcast when Staff
+      // first posts it (see trySetAnnouncement above). Scoped to this one
+      // room. Always emit (even when null) so switching from a room WITH an
+      // active announcement into one without doesn't leave the old room's
+      // banner stuck on screen — see currentAnnouncement in app.js.
+      const announcement = db.getAnnouncement(roomId);
+      socket.emit('announcement', announcement
+        ? { roomId, text: announcement.text, by: announcement.by, live: false }
+        : { roomId, text: null, live: false });
+
+      // Let a client joining (or refreshing into) a room mid-silence disable
+      // its chat input right away, instead of waiting for a room_silenced
+      // broadcast that already happened before they connected.
+      const silence = roomSilence.getSilence(roomId);
+
+      if (typeof ack === 'function') ack({ ok: true, history, silencedUntil: silence ? silence.until : null });
+    });
+
+    // Explicit "Leave Room" — the ONLY user-triggered way (besides a kick or
+    // the 5-hour idle timeout) that removes someone from the participant list.
+    on('leave_room', ({ roomId }) => {
+      roomId = Number(roomId);
+      const wasActive = leaveMembership(user.id, roomId);
+
+      // Unconditional now — with several rooms possibly joined at once (see
+      // join_room), this socket must stop getting THIS room's live messages
+      // regardless of which one happens to be "last focused".
+      socket.leave(`room:${roomId}`);
+      if (socket.data.roomId === roomId) socket.data.roomId = null;
+
+      if (wasActive) {
+        const level = currentLevel(user.id);
+        const badge = roleBadgeForRoom(user.id, roomId);
+        const name = roomName(roomId);
+        io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${name}: ${user.username} [${level}]${badge} has left` });
+        broadcastRoomMembers(roomId);
+      }
+    });
+
+    on('chat_message', ({ roomId, text, replyToId }) => {
+      roomId = Number(roomId);
+      if (!text || !text.trim()) return;
+      // "Reply" from the long-press menu — only honored if it actually
+      // points at a real message in THIS room (never trust the client's
+      // claim blindly; a stale/foreign id is just dropped, not rejected
+      // outright, so a reply whose original got deleted still sends as a
+      // normal message instead of failing silently).
+      let validReplyToId = null;
+      if (replyToId) {
+        const target = db.prepare('SELECT id FROM messages WHERE id = ? AND room_id = ?').get(Number(replyToId), roomId);
+        if (target) validReplyToId = target.id;
+      }
+
+      // A bumped/kicked user must not be able to keep chatting in that room
+      // just because their socket is still (or gets re-)focused on it — this
+      // is the real, server-side gate, independent of whatever the client
+      // shows. Being blocked from rejoining implies not being an active
+      // member either, so this also covers the rejoin-cooldown window.
+      if (!isActiveMember(user.id, roomId)) {
+        return socket.emit('error_message', "You're not currently in this room — open it from Room Browser to rejoin before chatting.");
+      }
+
+      // A silenced room blocks EVERYTHING from a normal user — not just plain
+      // chat, but every command too (/gift, /pick, and so on) — only Staff,
+      // Global Admin, the room's owner, and its moderator can still type at
+      // all while it's in effect.
+      const silence = roomSilence.getSilence(roomId);
+      if (silence && !canBypassSilence(user.id, roomId)) {
+        const remaining = Math.max(0, Math.ceil((silence.until - Date.now()) / 1000));
+        return socket.emit('error_message', `🔇 This room is silenced — you can't type at this moment (${remaining}s left).`);
+      }
+
+      const clean = text.trim().slice(0, 500);
+      touchActivity(user.id, roomId);
+
+      // "!start" — anyone in the Legendary Bot Official or Luxury Bet
+      // Official room can kick off a new betting round once the current one
+      // has finished (a no-op while one is already running, same as the
+      // reference bot's behavior).
+      for (const game of DICE_BET_GAMES.values()) {
+        if (roomId !== game.getRoomId()) continue;
+        if (/^!start$/i.test(clean)) {
+          if (!game.tryStart()) socket.emit('error_message', 'A round is already in progress.');
+          return;
+        }
+      }
+
+      // LowCard / Cricket — "!start" opens a join window, "!j" joins it
+      // (escrowing the entry fee), "!d" draws/bats once the round is live.
+      // Each game is confined to its own dedicated room; typing these
+      // elsewhere just falls through to a normal chat message below.
+      for (const game of [lowcardGame, cricketGame]) {
+        if (roomId !== game.getRoomId()) continue;
+        if (/^!start$/i.test(clean)) {
+          if (!game.tryStart()) socket.emit('error_message', 'A game is already in progress.');
+          return;
+        }
+        if (/^!j$/i.test(clean)) { game.join(user); return; }
+        if (/^!d$/i.test(clean)) { game.takeDraw(user); return; }
+      }
+
+      // "/silence <seconds>" / "/unsilence" — Staff or Global Admin only.
+      const silenceMatch = clean.match(SILENCE_COMMAND);
+      if (silenceMatch) {
+        return trySilenceRoom(roomId, silenceMatch[1]);
+      }
+      if (UNSILENCE_COMMAND.test(clean)) {
+        return tryUnsilenceRoom(roomId);
+      }
+
+      // "/mod <username>" / "/unmod <username>" — the room owner (or Staff/Global Admin);
+      // a room can have several moderators, added/removed one at a time.
+      const modMatch = clean.match(MOD_COMMAND);
+      if (modMatch) {
+        return trySetModerator(roomId, modMatch[1]);
+      }
+      const unmodMatch = clean.match(UNMOD_COMMAND);
+      if (unmodMatch) {
+        return tryRemoveModerator(roomId, unmodMatch[1]);
+      }
+
+      // "/pick <code>" — claim an active room voucher.
+      const pickMatch = clean.match(PICK_COMMAND);
+      if (pickMatch) {
+        return handlePick(roomId, pickMatch[1]);
+      }
+
+      // "/kick <username>" / "/bump <username>" — same permission + effect as
+      // the Participants panel buttons, just reachable from chat.
+      const kickMatch = clean.match(KICK_COMMAND);
+      if (kickMatch) {
+        return handleRemovalCommand(roomId, kickMatch[1], 'kick');
+      }
+      const bumpMatch = clean.match(BUMP_COMMAND);
+      if (bumpMatch) {
+        return handleRemovalCommand(roomId, bumpMatch[1], 'bump');
+      }
+
+      // "/ban <username>" / "/unban <username>" — same permission tier and
+      // effect as Room Settings' Banned tab, just reachable from chat.
+      const banMatch = clean.match(BAN_COMMAND);
+      if (banMatch) {
+        return handleRemovalCommand(roomId, banMatch[1], 'ban');
+      }
+      const unbanMatch = clean.match(UNBAN_COMMAND);
+      if (unbanMatch) {
+        return handleUnbanCommand(roomId, unbanMatch[1]);
+      }
+
+      // "/gift all" or "/gift all <gift name>" — shower to everyone currently in the room.
+      const allMatch = clean.match(GIFT_ALL_COMMAND);
+      if (allMatch) {
+        return triggerGiftShower(roomId, allMatch[1] ? allMatch[1].trim() : null);
+      }
+
+      // "/gift <username> <gift name>" — targeted gift sent via chat command.
+      const toMatch = clean.match(GIFT_TO_COMMAND);
+      if (toMatch && toMatch[1].toLowerCase() !== 'all') {
+        return handleGiftCommand(roomId, toMatch[1], toMatch[2].trim());
+      }
+
+      // Roleplay/emote commands ("/hug", "/dance", ...) and the "Special"
+      // tier ("/8ball", "/cupid", ...) — see roleplayCommands.js.
+      const rpMatch = clean.match(ROLEPLAY_COMMAND);
+      if (rpMatch) {
+        const cmd = rpMatch[1].toLowerCase();
+        const arg = rpMatch[2] ? rpMatch[2].trim() : '';
+        // "/purchase ..." — the effect store (see effectsCatalog.js).
+        if (cmd === 'purchase') {
+          return handlePurchaseCommand(roomId, arg);
+        }
+        // A bare, argument-less "/bomb", "/thunder", etc. from someone who
+        // actually owns that effect fires it. Checked BEFORE the roleplay
+        // map so an owned effect takes priority over a same-named free emote
+        // ("/love" is both) — a non-owner typing "/bomb" harmlessly falls
+        // through to "unrecognized command" same as before this feature existed.
+        if (EFFECTS_BY_KEY.has(cmd) && userOwnsEffect(user.id, cmd)) {
+          // "/missile <username>" — fire it AT that user (adds "at {target}"
+          // to the chat line and to the full-screen effect banner). Only
+          // for effect keys that aren't ALSO a free roleplay emote (like
+          // "love") — those keep their existing behavior of the targeted
+          // form always going to the free emote below, unchanged.
+          if (arg && !ROLEPLAY_MAP.has(cmd)) {
+            const target = db.prepare('SELECT username FROM users WHERE username = ? COLLATE NOCASE').get(arg.trim());
+            if (!target) return socket.emit('error_message', `No user named "${arg.trim()}"`);
+            return triggerPurchasedEffect(roomId, cmd, target.username);
+          }
+          if (!arg) return triggerPurchasedEffect(roomId, cmd);
+        }
+        if (SPECIAL_COMMANDS.has(cmd)) {
+          return handleSpecialCommand(roomId, cmd, arg);
+        }
+        if (ROLEPLAY_MAP.has(cmd)) {
+          return handleRoleplayCommand(roomId, cmd, arg);
+        }
+      }
+
+      // "/whois <username>" — quick info popup, any user.
+      const whoisMatch = clean.match(WHOIS_COMMAND);
+      if (whoisMatch) {
+        return handleWhoisCommand(whoisMatch[1]);
+      }
+
+      // "/announcement clear" / "/announcement <text>" — Staff/Global Admin
+      // only, site-wide. Checked as two separate patterns (clear first) so
+      // "/announcement clear" never gets swallowed as literal announcement text.
+      if (ANNOUNCEMENT_COMMAND.test(clean)) {
+        return tryClearAnnouncement(roomId);
+      }
+      const announceMatch = clean.match(ANNOUNCEMENT_SET_COMMAND);
+      if (announceMatch) {
+        return trySetAnnouncement(announceMatch[1], roomId);
+      }
+
+      // "/broadcast <text>" — Staff/Global Admin only, one-time flash push
+      // (see BROADCAST_COMMAND above — never persisted, unlike /announcement).
+      const broadcastMatch = clean.match(BROADCAST_COMMAND);
+      if (broadcastMatch) {
+        return tryBroadcast(broadcastMatch[1]);
+      }
+
+      // A message that starts with "/" but doesn't match any known command
+      // used to silently get posted to the room as plain text, which looked
+      // exactly like "nothing happened" for a typo'd or unrecognized command.
+      // Reject it with a clear error instead, so a mismatch is obvious.
+      if (/^\//.test(clean)) {
+        console.log(`[chat] unrecognized command from ${user.username} in room ${roomId}: ${JSON.stringify(clean)}`);
+        return socket.emit('error_message', `Unrecognized command: "${clean.split(/\s+/)[0]}"`);
+      }
+
+      // "@username" mentions (see the chat input's autocomplete popover in
+      // app.js) — notify every distinct, currently-active room member named
+      // this way, except the sender mentioning themself. The live chat
+      // bubble already highlights it in orange for anyone watching right
+      // now; this persisted alert is what still reaches the mentioned
+      // user(s) later via Notifications if they weren't.
+      const mentionedNames = new Set();
+      const mentionRe = /@([A-Za-z0-9_.-]+)/g;
+      let mentionMatch;
+      while ((mentionMatch = mentionRe.exec(clean))) mentionedNames.add(mentionMatch[1].toLowerCase());
+      if (mentionedNames.size) {
+        const members = db.prepare(`
+          SELECT u.id, u.username FROM room_memberships rm JOIN users u ON u.id = rm.user_id
+          WHERE rm.room_id = ? AND rm.active = 1
+        `).all(roomId);
+        for (const m of members) {
+          if (m.id === user.id) continue;
+          if (mentionedNames.has(m.username.toLowerCase())) notifyMention(roomId, m.id, user.username);
+        }
+      }
+
+      postMessage(roomId, { userId: user.id, username: user.username, type: 'text', content: clean, replyToId: validReplyToId });
+      awardXp(user.id, XP_REWARDS.CHAT_MESSAGE);
+    });
+
+    // Long-press "React" bar — one reaction per user per message: tapping a
+    // different emoji swaps it, tapping your own current one again removes
+    // it. Broadcasts the new aggregated counts to the whole room so every
+    // open client stays in sync, and acks the caller with their own current
+    // reaction so their chip highlights immediately.
+    on('toggle_reaction', ({ messageId, emoji }, ack) => {
+      messageId = Number(messageId);
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); };
+      if (!messageId || !emoji || typeof emoji !== 'string' || emoji.length > 8) return fail('Invalid reaction');
+      const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
+      if (!msg) return fail('Message not found');
+      if (!isActiveMember(user.id, msg.room_id)) return fail("You're not currently in this room");
+
+      const existing = db.prepare('SELECT emoji FROM message_reactions WHERE message_id = ? AND user_id = ?').get(messageId, user.id);
+      if (existing && existing.emoji === emoji) {
+        db.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?').run(messageId, user.id);
+      } else {
+        db.prepare(`
+          INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)
+          ON CONFLICT(message_id, user_id) DO UPDATE SET emoji = excluded.emoji, created_at = datetime('now')
+        `).run(messageId, user.id, emoji);
+      }
+
+      const rows = db.prepare('SELECT emoji, COUNT(*) c FROM message_reactions WHERE message_id = ? GROUP BY emoji').all(messageId);
+      const reactions = {};
+      rows.forEach((r) => { reactions[r.emoji] = r.c; });
+      const mine = db.prepare('SELECT emoji FROM message_reactions WHERE message_id = ? AND user_id = ?').get(messageId, user.id);
+      io.to(`room:${msg.room_id}`).emit('message_reactions_update', { messageId, reactions });
+      if (typeof ack === 'function') ack({ ok: true, reactions, myReaction: mine ? mine.emoji : null });
+    });
+
+    // "Report" in the long-press menu — durably filed, not yet surfaced in
+    // an Admin screen, but genuinely recorded rather than a no-op button.
+    on('report_message', ({ messageId }, ack) => {
+      messageId = Number(messageId);
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); };
+      const msg = db.prepare('SELECT id FROM messages WHERE id = ?').get(messageId);
+      if (!msg) return fail('Message not found');
+      db.prepare('INSERT INTO message_reports (message_id, reporter_id) VALUES (?, ?)').run(messageId, user.id);
+      if (typeof ack === 'function') ack({ ok: true });
+    });
+
+    // A shared picture or voice note — gated to trusted roles (see
+    // canSendMedia above). `data` arrives as a raw binary buffer (socket.io
+    // passes Buffers/ArrayBuffers through natively); `kind` is 'image' or
+    // 'voice', `mime` picks the file extension from MEDIA_EXT.
+    on('send_media_message', ({ roomId, kind, mime, data }, ack) => {
+      roomId = Number(roomId);
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); else socket.emit('error_message', error); };
+
+      if (kind !== 'image' && kind !== 'voice') return fail('Unknown media type');
+      if (!isActiveMember(user.id, roomId)) return fail("You're not currently in this room — open it from Room Browser to rejoin.");
+      const silence = roomSilence.getSilence(roomId);
+      if (silence && !canBypassSilence(user.id, roomId)) return fail('🔇 This room is silenced right now.');
+      if (!canSendMedia(user.id, roomId)) {
+        return fail(kind === 'image' ? 'Only Staff, Admin, this room\'s owner/moderators, Mentor, or Merchant can share pictures here.' : 'Only Staff, Admin, this room\'s owner/moderators, Mentor, or Merchant can send voice notes here.');
+      }
+      const ext = MEDIA_EXT[kind] && MEDIA_EXT[kind][mime];
+      if (!ext) return fail('Unsupported file type');
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (!buf.length) return fail('Empty file');
+      if (buf.length > MEDIA_MAX_BYTES) return fail(`File too large — max ${Math.floor(MEDIA_MAX_BYTES / 1024 / 1024)}MB`);
+
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      touchActivity(user.id, roomId);
+      postMessage(roomId, { userId: user.id, username: user.username, type: kind, content: `/uploads/${filename}` });
+      awardXp(user.id, XP_REWARDS.CHAT_MESSAGE);
+      if (typeof ack === 'function') ack({ ok: true });
+    });
+
+    // Profile photo upload (Avatar Maker / My Profile -> "Upload photo") —
+    // same binary-over-socket pattern as send_media_message above, just
+    // simpler: no room, no chat message, just a column on the user's own
+    // row. Shown by avatarPreviewHtml() in place of the colored-initial
+    // avatar wherever a user's big avatar renders (Avatar Maker, My
+    // Profile, any public profile view).
+    on('upload_avatar_photo', ({ mime, data }, ack) => {
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); else socket.emit('error_message', error); };
+      const ext = MEDIA_EXT.image && MEDIA_EXT.image[mime];
+      if (!ext) return fail('Unsupported file type — use PNG, JPEG, GIF, or WEBP');
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (!buf.length) return fail('Empty file');
+      if (buf.length > MEDIA_MAX_BYTES) return fail(`File too large — max ${Math.floor(MEDIA_MAX_BYTES / 1024 / 1024)}MB`);
+
+      const filename = `avatar-${user.id}-${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      const url = `/uploads/${filename}`;
+      db.prepare('UPDATE users SET avatar_photo_url = ? WHERE id = ?').run(url, user.id);
+      const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      refreshUserPresence(user.id);
+      if (typeof ack === 'function') ack({ ok: true, user: publicUser(updated) });
+    });
+
+    // Profile cover/banner photo upload (My Profile hero card) — same
+    // binary-over-socket pattern as upload_avatar_photo above, writing to
+    // its own column so a cover photo and a profile photo are independent.
+    on('upload_cover_photo', ({ mime, data }, ack) => {
+      const fail = (error) => { if (typeof ack === 'function') ack({ ok: false, error }); else socket.emit('error_message', error); };
+      const ext = MEDIA_EXT.image && MEDIA_EXT.image[mime];
+      if (!ext) return fail('Unsupported file type — use PNG, JPEG, GIF, or WEBP');
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (!buf.length) return fail('Empty file');
+      if (buf.length > MEDIA_MAX_BYTES) return fail(`File too large — max ${Math.floor(MEDIA_MAX_BYTES / 1024 / 1024)}MB`);
+
+      const filename = `cover-${user.id}-${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      const url = `/uploads/${filename}`;
+      db.prepare('UPDATE users SET cover_photo_url = ? WHERE id = ?').run(url, user.id);
+      const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      refreshUserPresence(user.id);
+      if (typeof ack === 'function') ack({ ok: true, user: publicUser(updated) });
+    });
+
+    // Explore -> Effect Shop card — the same catalog "/purchase effect"
+    // shows in chat, just reachable without needing to be in a room first
+    // (listing effects doesn't need one; only actually buying/firing one
+    // does, which still goes through the normal /purchase chat command).
+    on('request_effect_catalog', () => {
+      socket.emit('effect_catalog', { effects: effectCatalogForUser(user.id) });
+    });
+
+    function handleRemovalCommand(roomId, usernameArg, mode) {
+      const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      performRemoval(roomId, target.id, mode);
+    }
+
+    function handleUnbanCommand(roomId, usernameArg) {
+      const target = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      performUnban(roomId, target.id);
+    }
+
+    // Plain username, no "[level]" suffix — used by roleplay/emote commands
+    // (/hug, /brb, /cupid, /flame, ...) and other "special" commands. Kept
+    // as its own function (rather than inlining `username` at each call
+    // site) so the couple of remaining callers that DO still want the level
+    // bracket — kick/bump/ban/unban's own system messages, which build
+    // "username [level]" inline themselves — are easy to spot as the
+    // deliberate exception, not something this quietly also changed.
+    function nameWithLevel(userId, username) {
+      return username;
+    }
+
+    // Roleplay/emote commands — posts a canned third-person action line to
+    // the room, optionally naming a target. "/act <text>" is the one
+    // freeform command (selfTpl has a literal {arg} placeholder). Every one
+    // of these (and the "Special" tier below — 8ball, coffee, cupid, etc.)
+    // renders as a centered system announcement, same as "/brb", rather than
+    // a normal "username: text" chat bubble — none of it reads like
+    // something the user actually typed and sent. The only commands that
+    // still post as real chat/moderation-log lines are the ones with actual
+    // side effects (gift, kick, ban, unban, bump, silence, unsilence), which
+    // don't go through this function at all.
+    function announceRoleplay(roomId, text) {
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text });
+    }
+    function handleRoleplayCommand(roomId, cmd, arg) {
+      const entry = ROLEPLAY_MAP.get(cmd);
+      const me = nameWithLevel(user.id, user.username);
+
+      if (entry.isFreeform) {
+        if (!arg) return socket.emit('error_message', `Usage: /${cmd} <action text>`);
+        const text = entry.selfTpl.replace('{user}', me).replace('{arg}', arg.slice(0, 200));
+        return announceRoleplay(roomId, text);
+      }
+
+      if (arg && entry.targetTpl) {
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        const them = target.id === user.id ? me : nameWithLevel(target.id, target.username);
+        const text = entry.targetTpl.replace('{user}', me).replace('{target}', them);
+        return announceRoleplay(roomId, text);
+      }
+
+      if (!entry.selfTpl) return socket.emit('error_message', `Usage: /${cmd} <username>`);
+      const text = entry.selfTpl.replace('{user}', me);
+      return announceRoleplay(roomId, text);
+    }
+
+    // "Special" tier commands with real behavior, not just a canned line.
+    function handleSpecialCommand(roomId, cmd, arg) {
+      const me = nameWithLevel(user.id, user.username);
+      // Same system-announcement treatment as the roleplay/emote commands
+      // above (see announceRoleplay) — not a real chat message from the user.
+      const post = (content) => announceRoleplay(roomId, content);
+
+      if (cmd === '8ball') {
+        if (!arg) return socket.emit('error_message', 'Usage: /8ball <question>');
+        const answer = EIGHT_BALL_ANSWERS[Math.floor(Math.random() * EIGHT_BALL_ANSWERS.length)];
+        return post(`🎱 ${me} asks the Magic 8-Ball: "${arg}" — ${answer}`);
+      }
+
+      if (cmd === 'coffee') {
+        if (arg) {
+          const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+          if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+          const them = target.id === user.id ? me : nameWithLevel(target.id, target.username);
+          return post(`☕ ${me} shares a coffee with ${them}!`);
+        }
+        return post(`☕ ${me} brews a round of coffee for the room!`);
+      }
+
+      if (cmd === 'cupid') {
+        const names = arg.split(/\s+/).filter(Boolean);
+        if (!names.length) return socket.emit('error_message', 'Usage: /cupid <username> [<username2>]');
+        const findUser = (uname) => db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(uname);
+        const a = names[0] === user.username ? { id: user.id, username: user.username } : findUser(names[0]);
+        if (!a) return socket.emit('error_message', `No user named "${names[0]}"`);
+        const b = names[1] ? findUser(names[1]) : { id: user.id, username: user.username };
+        if (names[1] && !b) return socket.emit('error_message', `No user named "${names[1]}"`);
+        const pct = 40 + Math.floor(Math.random() * 61); // 40–100%
+        return post(`💘 Cupid strikes! ${nameWithLevel(a.id, a.username)} + ${nameWithLevel(b.id, b.username)} = ${pct}% match!`);
+      }
+
+      if (cmd === 'findmymatch') {
+        const room = db.prepare('SELECT is_official FROM rooms WHERE id = ?').get(roomId);
+        if (!room || !room.is_official) {
+          return socket.emit('error_message', '/findmymatch only works in official rooms.');
+        }
+        const others = activeMemberRows(roomId).filter((r) => r.id !== user.id && !r.is_bot);
+        if (!others.length) return socket.emit('error_message', 'No one else is here to match with right now.');
+        const pick = others[Math.floor(Math.random() * others.length)];
+        const pct = 40 + Math.floor(Math.random() * 61);
+        return post(`💘 ${me} used /findmymatch and got paired with ${nameWithLevel(pick.id, pick.username)} — ${pct}% match!`);
+      }
+
+      if (cmd === 'flame') {
+        if (!arg) return socket.emit('error_message', 'Usage: /flame <username>');
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        const line = FLAME_LINES[Math.floor(Math.random() * FLAME_LINES.length)];
+        return post(`🔥 ${me} flames ${nameWithLevel(target.id, target.username)}: ${line.replace('{target}', target.username)}`);
+      }
+
+      if (cmd === 'whackit') {
+        if (!arg) return socket.emit('error_message', 'Usage: /whackit <username>');
+        const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(arg);
+        if (!target) return socket.emit('error_message', `No user named "${arg}"`);
+        return post(`🔨 ${me} whacks ${nameWithLevel(target.id, target.username)} with a giant mallet!`);
+      }
+    }
+
+    // ---- "/purchase ..." — the chat effect store (see effectsCatalog.js) ----
+    function userOwnsEffect(userId, key) {
+      const row = db.prepare(
+        "SELECT 1 FROM user_effects WHERE user_id = ? AND effect_key = ? AND expires_at > datetime('now')"
+      ).get(userId, key);
+      return !!row;
+    }
+
+    function effectCatalogForUser(userId) {
+      const owned = new Map(
+        db.prepare("SELECT effect_key, expires_at FROM user_effects WHERE user_id = ? AND expires_at > datetime('now')")
+          .all(userId).map((r) => [r.effect_key, r.expires_at])
+      );
+      return EFFECTS.map((e) => ({
+        key: e.key, emoji: e.emoji, label: e.label, price: e.price, days: e.days,
+        owned: owned.has(e.key), expiresAt: owned.get(e.key) || null,
+      }));
+    }
+
+    function triggerPurchasedEffect(roomId, key, targetUsername) {
+      const entry = EFFECTS_BY_KEY.get(key);
+      const me = nameWithLevel(user.id, user.username);
+      const text = targetUsername && entry.textTargeted
+        ? entry.textTargeted.replace('{user}', me).replace('{target}', targetUsername)
+        : entry.text.replace('{user}', me);
+
+      // Persisted, full-width themed bar in the chat scrollback — same
+      // persistence as a gift/legendary-bot line (postMessage writes to the
+      // messages table and replays on the next join_room), unlike the
+      // lighter, never-replayed system_message the roleplay/emote commands
+      // use. type is "effect_<key>" purely so the client (buildMessageEl)
+      // can theme the bar per effect without extra payload fields; content
+      // leads with the effect's own emoji, which the client splits off into
+      // its own icon badge.
+      postMessage(roomId, { userId: user.id, username: user.username, type: `effect_${entry.key}`, content: `${entry.emoji} ${text}` });
+
+      // One-shot big full-screen animation — not persisted, just a live
+      // flourish. Scoped to this room only (same audience as the persisted
+      // chat bar above): someone who isn't in this room has no way to see
+      // who triggered it or what's going on, so broadcasting it to their
+      // screen too was confusing noise, not a "grand gesture" — only people
+      // actually in the room should see the bomb/missile/etc. go off.
+      io.to(`room:${roomId}`).emit('effect_triggered', {
+        key: entry.key, emoji: entry.emoji, label: entry.label,
+        username: user.username, level: currentLevel(user.id), roomId,
+        target: targetUsername || null,
+      });
+    }
+
+    function handlePurchaseCommand(roomId, arg) {
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const first = (parts[0] || '').toLowerCase();
+
+      if (!first || first === 'effect') {
+        const second = (parts[1] || '').toLowerCase();
+        if (second === 'info') {
+          const mine = effectCatalogForUser(user.id).filter((e) => e.owned);
+          return socket.emit('effect_my_list', { effects: mine });
+        }
+        if (!second) return socket.emit('effect_catalog', { effects: effectCatalogForUser(user.id) });
+        return startEffectPurchase(second);
+      }
+      if (first === 'confirm') return finalizeEffectPurchase();
+      return startEffectPurchase(first);
+    }
+
+    function startEffectPurchase(key) {
+      const entry = EFFECTS_BY_KEY.get(key);
+      if (!entry) {
+        return socket.emit('error_message', `Unknown effect "${key}" — type /purchase effect to see what's on sale.`);
+      }
+      const balance = db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins;
+      if (balance < entry.price) {
+        return socket.emit('error_message', `You need ${entry.price.toLocaleString()} coins to buy ${entry.emoji} /${entry.key} (you have ${balance.toLocaleString()}).`);
+      }
+      pendingEffectPurchases.set(user.id, { key, expiresAt: Date.now() + PURCHASE_CONFIRM_MS });
+      const already = userOwnsEffect(user.id, key);
+      const note = already
+        ? `${entry.emoji} /${entry.key} — ${entry.price.toLocaleString()} coins to extend your access by ${entry.days} more days. Type /purchase confirm within 60 seconds to buy.`
+        : `${entry.emoji} /${entry.key} — ${entry.price.toLocaleString()} coins for ${entry.days} days of use. Type /purchase confirm within 60 seconds to buy.`;
+      socket.emit('personal_notice', note);
+    }
+
+    function finalizeEffectPurchase() {
+      const pending = pendingEffectPurchases.get(user.id);
+      if (!pending || pending.expiresAt < Date.now()) {
+        pendingEffectPurchases.delete(user.id);
+        return socket.emit('error_message', 'Nothing to confirm — type /purchase <effect> first (e.g. /purchase bomb).');
+      }
+      const entry = EFFECTS_BY_KEY.get(pending.key);
+      pendingEffectPurchases.delete(user.id);
+      if (!entry) return socket.emit('error_message', 'That effect is no longer available.');
+
+      // Deduct atomically, checking the balance in the same statement so the
+      // 60-second confirm window can never be used to overdraw (e.g. the
+      // player spent coins elsewhere in another tab in the meantime).
+      const result = db.prepare('UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?').run(entry.price, user.id, entry.price);
+      if (result.changes === 0) {
+        return socket.emit('error_message', `You no longer have enough coins for ${entry.emoji} /${entry.key}.`);
+      }
+      db.logCoinTx(user.id, -entry.price, 'other', `Purchased effect: /${entry.key}`);
+      db.prepare(`
+        INSERT INTO user_effects (user_id, effect_key, purchased_at, expires_at)
+        VALUES (?, ?, datetime('now'), datetime('now', '+' || ? || ' days'))
+        ON CONFLICT(user_id, effect_key) DO UPDATE SET
+          expires_at = datetime('now', '+' || ? || ' days'),
+          purchased_at = datetime('now')
+      `).run(user.id, entry.key, entry.days, entry.days);
+
+      socket.emit('coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+      socket.emit('personal_notice', `✅ Purchased ${entry.emoji} /${entry.key} — usable for the next ${entry.days} days!`);
+    }
+
+    function handlePick(roomId, code) {
+      const result = voucher.claim(roomId, code, user.id);
+      if (result.error) return socket.emit('error_message', result.error);
+
+      // Deliberately NOT posted to the room chat (no one else needs to see
+      // who picked it) — just a private confirmation toast to the picker.
+      socket.emit('voucher_won', { amount: result.amount, code: result.code });
+      socket.emit('coins_update', { coins: db.prepare('SELECT coins FROM users WHERE id = ?').get(user.id).coins });
+      awardXp(user.id, XP_REWARDS.GIFT_RECEIVED);
+    }
+
+    function triggerGiftShower(roomId, giftNameArg) {
+      const gifts = db.prepare('SELECT * FROM gifts_catalog').all();
+      if (gifts.length === 0) return;
+
+      let specific = null;
+      if (giftNameArg) {
+        specific = gifts.find((g) => g.name.toLowerCase() === giftNameArg.toLowerCase());
+        if (!specific) return socket.emit('error_message', `No gift named "${giftNameArg}"`);
+      }
+      const gift = specific || gifts[Math.floor(Math.random() * gifts.length)];
+      const level = currentLevel(user.id);
+
+      // Recipients = everyone else currently listed as an active member of
+      // the room — the same DB-backed roster the Participants panel shows
+      // (activeMemberRows), NOT just live socket connections. Rooms are
+      // routinely full of ambient bot members (see simulateOneBotRoomMove
+      // above) who count as real, visible room members but never hold a
+      // live socket — scanning only io.sockets.sockets would treat a room
+      // that visibly has people in it as empty, silently giving a free,
+      // uncharged shower instead of actually billing the sender. If solo
+      // (truly nobody else, not even a bot, listed as active), it's a free
+      // celebratory effect only (nobody to actually gift).
+      const recipients = activeMemberRows(roomId).filter((r) => r.id !== user.id);
+
+      if (recipients.length === 0) {
+        const text = `${user.username} [${level}] triggered a ${gift.name} ${gift.emoji} GIFT SHOWER! 🎉🎁✨`;
+        postMessage(roomId, { userId: user.id, username: user.username, type: 'gift', content: text });
+        io.to(`room:${roomId}`).emit('gift_shower', { roomId, username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+        awardXp(user.id, XP_REWARDS.GIFT_SHOWER);
+        return;
+      }
+
+      const totalCost = gift.cost * recipients.length;
+      const sender = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      if (sender.coins < totalCost) {
+        return socket.emit('error_message', `Not enough coins — a shower of ${gift.name} to ${recipients.length} people costs ${totalCost} coins`);
+      }
+
+      db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + ? WHERE id = ?')
+        .run(totalCost, totalCost, recipients.length, sender.id);
+      db.checkEliteEligibility(sender.id);
+      db.logCoinTx(sender.id, -totalCost, 'gifts', `Gift shower: ${gift.name} to ${recipients.length} people`);
+      db.logLeaderboardEvent(sender.id, 'spend', totalCost);
+      db.logLeaderboardEvent(sender.id, 'gifts', recipients.length);
+      for (const r of recipients) {
+        db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, r.id);
+        db.logCoinTx(r.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username} (shower)`);
+        awardXp(r.id, XP_REWARDS.GIFT_RECEIVED);
+        // Gift showers deliberately don't create a persisted Alert (unlike a
+        // direct/private gift) — a shower already announces itself loudly in
+        // the room chat + the on-screen shower animation, and with several
+        // recipients per shower it would otherwise flood everyone's Alerts
+        // list. Alerts are reserved for private gifts (room gift bar, /gift
+        // <user> <gift>, and the Gift Store).
+      }
+
+      const names = recipients.map((r) => r.username);
+      const shown = names.slice(0, 4).join(', ');
+      const rest = names.length > 4 ? ` and ${names.length - 4} others` : '';
+      const text = `<<🎁*GIFT SHOWER* ${user.username} [${level}] gives a ${gift.name} ${gift.emoji} to ${shown}${rest}! Hurray!>>`;
+
+      postMessage(roomId, { userId: user.id, username: user.username, type: 'gift', content: text });
+      io.to(`room:${roomId}`).emit('gift_shower', { roomId, username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+      socket.emit('coins_update', { coins: sender.coins - totalCost });
+      awardXp(sender.id, XP_REWARDS.GIFT_SHOWER);
+    }
+
+    // "/whois <username>" — a quick, read-only info popup: level, country, and
+    // live status (online/away/busy/offline). Sent privately back to just the
+    // requester (never posted to the room), open to every user.
+    function handleWhoisCommand(usernameArg) {
+      let target = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      db.clearExpiredActiveColor(target.id);
+      target = db.prepare('SELECT * FROM users WHERE id = ?').get(target.id);
+      const rooms = db.prepare(`
+        SELECT r.name FROM room_memberships rm JOIN rooms r ON r.id = rm.room_id
+        WHERE rm.user_id = ? AND rm.active = 1 ORDER BY r.name COLLATE NOCASE
+      `).all(target.id).map((r) => r.name);
+      socket.emit('whois_result', {
+        username: target.username,
+        level: currentLevel(target.id),
+        country: target.country || null,
+        status: presence.effectiveStatus(target.id, target.status),
+        is_staff: !!target.is_staff,
+        is_global_admin: !!target.is_global_admin,
+        is_mentor: !!target.is_mentor,
+        is_merchant: !!target.is_merchant,
+        is_exec_board: !!target.is_exec_board,
+        is_country_rep: !!target.is_country_rep,
+        is_elite: !!target.is_elite,
+        is_vip_rainbow: !!target.is_vip_rainbow && (!target.vip_rainbow_expires_at || new Date(target.vip_rainbow_expires_at) > new Date()),
+        username_color: target.username_color || null,
+        active_color_key: target.active_color_key || null,
+        gender: target.gender || null,
+        avatar_photo_url: target.avatar_photo_url || null,
+        bio: target.bio || null,
+        created_at: target.created_at || null,
+        rooms,
+      });
+    }
+
+    function handleGiftCommand(roomId, usernameArg, giftNameArg) {
+      const recipient = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!recipient) return socket.emit('error_message', `No user named "${usernameArg}"`);
+      if (recipient.id === user.id) return socket.emit('error_message', "You can't send a gift to yourself");
+
+      const gift = db.prepare('SELECT * FROM gifts_catalog WHERE name = ? COLLATE NOCASE').get(giftNameArg);
+      if (!gift) return socket.emit('error_message', `No gift named "${giftNameArg}"`);
+
+      const sender = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      sendGift(roomId, sender, recipient, gift);
+    }
+
+    on('send_gift', ({ roomId, toUserId, giftId }) => {
+      roomId = Number(roomId);
+      if (!isActiveMember(user.id, roomId)) {
+        return socket.emit('error_message', "You're not currently in this room — open it from Room Browser to rejoin before sending gifts.");
+      }
+      const gift = db.prepare('SELECT * FROM gifts_catalog WHERE id = ?').get(giftId);
+      const recipient = db.prepare('SELECT * FROM users WHERE id = ?').get(toUserId);
+      const sender = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      if (!gift || !recipient || !sender) return socket.emit('error_message', 'Invalid gift or recipient');
+      sendGift(roomId, sender, recipient, gift);
+    });
+
+    on('send_gift_by_username', ({ roomId, toUsername, giftId }) => {
+      roomId = Number(roomId);
+      if (!isActiveMember(user.id, roomId)) {
+        return socket.emit('error_message', "You're not currently in this room — open it from Room Browser to rejoin before sending gifts.");
+      }
+      const gift = db.prepare('SELECT * FROM gifts_catalog WHERE id = ?').get(giftId);
+      const recipient = db.prepare('SELECT * FROM users WHERE username = ?').get((toUsername || '').trim());
+      const sender = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      if (!gift) return socket.emit('error_message', 'Invalid gift');
+      if (!recipient) return socket.emit('error_message', `No user named "${toUsername}"`);
+      if (recipient.id === sender.id) return socket.emit('error_message', "You can't send a gift to yourself");
+      sendGift(roomId, sender, recipient, gift);
+    });
+
+    function sendGift(roomId, sender, recipient, gift) {
+      if (sender.coins < gift.cost) return socket.emit('error_message', 'Not enough coins');
+      touchActivity(sender.id, roomId);
+
+      db.prepare('UPDATE users SET coins = coins - ?, total_spent = total_spent + ?, gifts_sent_count = gifts_sent_count + 1 WHERE id = ?')
+        .run(gift.cost, gift.cost, sender.id);
+      db.checkEliteEligibility(sender.id);
+      db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(gift.cost, recipient.id);
+      db.logCoinTx(sender.id, -gift.cost, 'gifts', `Sent ${gift.name} to ${recipient.username}`);
+      db.logCoinTx(recipient.id, gift.cost, 'gifts', `Received ${gift.name} from ${sender.username}`);
+      db.logLeaderboardEvent(sender.id, 'spend', gift.cost);
+      db.logLeaderboardEvent(sender.id, 'gifts', 1);
+
+      // Award xp first so the levels shown in the message reflect this gift's own reward.
+      const senderXp = awardXp(sender.id, XP_REWARDS.GIFT_SENT);
+      const recipientXp = awardXp(recipient.id, XP_REWARDS.GIFT_RECEIVED);
+
+      const text = `<<${sender.username} [${senderXp.level}] gives a ${gift.name} ${gift.emoji} to ${recipient.username} [${recipientXp.level}]!>>`;
+      postMessage(roomId, { userId: sender.id, username: sender.username, type: 'gift', content: text });
+      notifyGiftReceived(recipient.id, sender.username, gift, roomId);
+
+      // update sender's own session/socket with new balance
+      socket.emit('coins_update', { coins: sender.coins - gift.cost });
+    }
+
+    // ---- Invisible mode (Staff / Global Administrator only) ----
+    // Lets a moderator sit in a room without appearing in anyone else's
+    // participants list — re-checked fresh against the DB, not the cached
+    // session, same as every other permission check in this file.
+    on('toggle_invisible', (wantInvisible) => {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        return socket.emit('error_message', 'Only Staff or a Global Administrator can go invisible');
+      }
+      invisibleByUser.set(user.id, !!wantInvisible);
+      socket.emit('invisible_state', { invisible: !!wantInvisible });
+      for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
+    });
+
+    // ---- Presence status (online / away / busy) — anyone can set their own.
+    // "Offline" is never set here: it's purely a function of having no live
+    // socket at all (see presence.effectiveStatus), so it can't be chosen or
+    // faked — the moment every socket disconnects, everyone else sees you go
+    // offline regardless of what this was last set to.
+    const VALID_STATUSES = new Set(['online', 'away', 'busy']);
+    on('set_status', (wantStatus) => {
+      if (!VALID_STATUSES.has(wantStatus)) return;
+      db.prepare('UPDATE users SET status = ? WHERE id = ?').run(wantStatus, user.id);
+      socket.emit('status_state', { status: wantStatus });
+      for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
+      // Live-refresh anywhere else this user's status shows (Friends list,
+      // Home) for anyone with them open right now.
+      refreshUserPresence(user.id);
+    });
+
+    // ---- Room members + kick/bump/ban (Staff or Global Administrator only,
+    // or a room moderator for kick/bump) ----
+    // Membership is persistent now, so this works even if the target isn't
+    // currently connected/focused on the room — it just marks them inactive
+    // and, if they do have a live socket focused there, boots it too. A kick
+    // blocks the target from rejoining for 10 minutes, a bump for 5; a ban
+    // (Room Settings' Banned tab) is the same mechanism with an effectively
+    // permanent cooldown, lifted only by an explicit Unban.
+    const REMOVAL_MINUTES = { kick: 10, bump: 5, ban: 100 * 365 * 24 * 60 };
+    const REMOVAL_VERB = { kick: 'kicked', bump: 'bumped', ban: 'banned' };
+    function performRemoval(roomId, targetUserId, mode) {
+      roomId = Number(roomId);
+      targetUserId = Number(targetUserId);
+      const isBan = mode === 'ban';
+      const actionWord = isBan ? 'ban' : mode === 'kick' ? 'kick' : 'bump';
+      const minutes = REMOVAL_MINUTES[mode];
+      const verb = REMOVAL_VERB[mode];
+
+      const actorFlags = freshRoleFlags(user.id);
+      const actorIsModerator = isRoomModerator(user.id, roomId);
+      // Banning is a heavier, permanent action — reserved for Staff/Global
+      // Admin/the room's owner, unlike kick/bump which a plain moderator can
+      // also do.
+      const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
+      const actorIsOwner = !!room && room.created_by === user.id;
+      const allowed = isBan
+        ? (actorFlags.is_staff || actorFlags.is_global_admin || actorIsOwner)
+        : (actorFlags.is_staff || actorFlags.is_global_admin || actorIsModerator);
+      if (!allowed) {
+        const who = isBan ? "Only Staff, a Global Administrator, or this room's owner" : "Only Staff, a Global Administrator, or this room's moderator";
+        socket.emit('error_message', `${who} can ${actionWord} members`);
+        return false;
+      }
+      if (targetUserId === user.id) {
+        socket.emit('error_message', `You can't ${actionWord} yourself`);
+        return false;
+      }
+
+      // Staff is immune to kick/bump/ban, period — even a Global
+      // Administrator (who otherwise has full removal power) can't remove a
+      // Staff member from a room. Checked fresh against the DB, not a cached flag.
+      const targetFlags = freshRoleFlags(targetUserId);
+      if (targetFlags.is_staff) {
+        socket.emit('error_message', `${actionWord === 'kick' ? 'Kicking' : actionWord === 'bump' ? 'Bumping' : 'Banning'} Staff isn't allowed`);
+        return false;
+      }
+
+      // A Global Administrator is likewise protected from anyone who isn't
+      // themselves Staff or Global Admin — that includes a Staff actor and a
+      // moderator/owner-only actor. A Global Admin can still act on another
+      // Global Admin (or a plain user).
+      const actorIsPrivileged = actorFlags.is_staff || actorFlags.is_global_admin;
+      if (targetFlags.is_global_admin && (actorFlags.is_staff || !actorIsPrivileged)) {
+        const who = actorFlags.is_staff ? 'Staff' : isBan ? 'a room owner' : 'a room moderator';
+        socket.emit('error_message', `${actionWord === 'kick' ? 'Kicking' : actionWord === 'bump' ? 'Bumping' : 'Banning'} a Global Administrator isn't allowed for ${who}`);
+        return false;
+      }
+
+      const targetRow = db.prepare('SELECT username FROM users WHERE id = ?').get(targetUserId);
+      const wasMember = leaveMembership(targetUserId, roomId);
+      if (!wasMember && !isBan) {
+        socket.emit('error_message', 'That user is not in this room');
+        return false;
+      }
+      const targetUsername = targetRow ? targetRow.username : 'User';
+
+      blockFromRoom(targetUserId, roomId, minutes, mode);
+
+      for (const [, s] of io.sockets.sockets) {
+        if (s.data.user && s.data.user.id === targetUserId) {
+          if (s.data.roomId === roomId) {
+            s.leave(`room:${roomId}`);
+            s.data.roomId = null;
+          }
+          s.emit('kicked', { roomId, by: user.username, reason: mode });
+        }
+      }
+
+      const kickerLevel = currentLevel(user.id);
+      const targetLevel = currentLevel(targetUserId);
+      const durationText = isBan ? 'until unbanned' : `can't rejoin for ${minutes} minutes`;
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${targetUsername} [${targetLevel}] was ${verb} by ${user.username} [${kickerLevel}] — ${durationText}` });
+      broadcastRoomMembers(roomId);
+      return true;
+    }
+
+    on('kick_user', ({ roomId, targetUserId }) => performRemoval(roomId, targetUserId, 'kick'));
+    on('bump_user', ({ roomId, targetUserId }) => performRemoval(roomId, targetUserId, 'bump'));
+    on('ban_user', ({ roomId, targetUserId }) => performRemoval(roomId, targetUserId, 'ban'));
+
+    // Room Settings' Banned tab: list currently-banned users, and lift a ban.
+    on('get_room_bans', ({ roomId }, ack) => {
+      roomId = Number(roomId);
+      const rows = db.prepare(`
+        SELECT u.id, u.username FROM room_blocks b
+        JOIN users u ON u.id = b.user_id
+        WHERE b.room_id = ? AND b.reason = 'ban' AND b.blocked_until > datetime('now')
+        ORDER BY u.username COLLATE NOCASE
+      `).all(roomId);
+      if (typeof ack === 'function') ack({ ok: true, banned: rows });
+    });
+
+    // Shared by the Room Settings "Unban" button and the "/unban <username>"
+    // chat command.
+    function performUnban(roomId, targetUserId) {
+      roomId = Number(roomId);
+      targetUserId = Number(targetUserId);
+      const actorFlags = freshRoleFlags(user.id);
+      const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
+      const actorIsOwner = !!room && room.created_by === user.id;
+      if (!actorFlags.is_staff && !actorFlags.is_global_admin && !actorIsOwner) {
+        socket.emit('error_message', "Only Staff, a Global Administrator, or this room's owner can unban members");
+        return false;
+      }
+      db.prepare("DELETE FROM room_blocks WHERE user_id = ? AND room_id = ? AND reason = 'ban'").run(targetUserId, roomId);
+      const targetRow = db.prepare('SELECT username FROM users WHERE id = ?').get(targetUserId);
+      const targetUsername = targetRow ? targetRow.username : 'User';
+      io.to(`room:${roomId}`).emit('room_unbanned', { roomId, targetUserId, username: targetUsername });
+      // Mirror the "was banned by ..." system line so an unban is just as
+      // visible in the room's chat log, not just reflected silently in the
+      // Banned list.
+      const targetLevel = currentLevel(targetUserId);
+      const actorLevel = currentLevel(user.id);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${targetUsername} [${targetLevel}] was unbanned by ${user.username} [${actorLevel}]` });
+      return true;
+    }
+
+    on('unban_user', ({ roomId, targetUserId }) => performUnban(roomId, targetUserId));
+
+    // ---- Per-room announcement (Staff/Global Admin only) ----
+    // A mig66/mig33-style banner, scoped to whichever room the poster is
+    // currently in: set once, shown immediately to everyone else in THAT
+    // room via a dedicated 'announcement' event the client renders as its
+    // own banner (see renderAnnouncementBanner in app.js) — no duplicate
+    // line in the chat feed itself — and shown again to anyone who enters
+    // that same room afterwards while it's still active — see the
+    // 'announcement' emit in join_room. Persisted on the room itself so a
+    // restart doesn't silently drop it, and so it never leaks into other
+    // rooms the way a single site-wide setting would.
+    // roomId is passed in explicitly (the room the /announcement command was
+    // typed in — see its chat_message call site below) rather than read from
+    // socket.data.roomId, since a connection can now have more than one room
+    // open live at once (see join_room) and socket.data.roomId only ever
+    // reflects the last one joined.
+    function trySetAnnouncement(rawText, roomId) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can post an announcement');
+        return;
+      }
+      if (!roomId) {
+        socket.emit('error_message', 'Join a room before posting an announcement');
+        return;
+      }
+      const text = String(rawText || '').trim().slice(0, 500);
+      if (!text) {
+        socket.emit('error_message', 'Usage: /announcement <text> — or /announcement clear to remove it');
+        return;
+      }
+      db.setAnnouncement(roomId, text, user.username);
+      io.to(`room:${roomId}`).emit('announcement', { roomId, text, by: user.username, live: true });
+    }
+
+    function tryClearAnnouncement(roomId) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can clear the announcement');
+        return;
+      }
+      if (!roomId) {
+        socket.emit('error_message', 'Join a room before clearing its announcement');
+        return;
+      }
+      if (!db.getAnnouncement(roomId)) {
+        socket.emit('error_message', 'There is no active announcement to clear in this room');
+        return;
+      }
+      db.clearAnnouncement(roomId);
+      io.to(`room:${roomId}`).emit('announcement', { roomId, text: null, live: true });
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `📢 ${user.username} cleared this room's announcement` });
+    }
+
+    on('set_announcement', ({ text, roomId }) => trySetAnnouncement(text, roomId || socket.data.roomId));
+    on('clear_announcement', ({ roomId } = {}) => tryClearAnnouncement(roomId || socket.data.roomId));
+
+    // ---- Broadcast (Staff/Global Admin only) — a one-time flash push ----
+    // Unlike /announcement, this is never written to app_settings and never
+    // replayed to someone entering a room later: it's a "right now" push
+    // (the blue 📣 Broadcast banner on the client), not a standing notice.
+    function tryBroadcast(rawText) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', 'Only Staff or a Global Administrator can send a broadcast');
+        return;
+      }
+      const text = String(rawText || '').trim().slice(0, 500);
+      if (!text) {
+        socket.emit('error_message', 'Usage: /broadcast <text>');
+        return;
+      }
+      io.emit('broadcast', { text, by: user.username });
+    }
+
+    on('send_broadcast', ({ text }) => tryBroadcast(text));
+
+    // ---- Room silence (Staff, Global Administrator, or a room moderator) ----
+    // While a room is silenced, only Staff, Global Admin, the room's owner,
+    // and its moderators can post anything in it — see canBypassSilence and
+    // the chat_message gate below. Shared by both the /silence chat command
+    // and the Room Info screen's Silence button.
+    function trySilenceRoom(roomId, secondsArg) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin && !isRoomModerator(user.id, roomId)) {
+        socket.emit('error_message', "Only Staff, a Global Administrator, or this room's moderator can silence a room");
+        return;
+      }
+      const seconds = Math.floor(Number(secondsArg));
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        socket.emit('error_message', 'Usage: /silence <seconds> — e.g. /silence 600');
+        return;
+      }
+      silenceRoomFor(roomId, Math.min(seconds, MAX_SILENCE_SECONDS), user.username);
+    }
+
+    function tryUnsilenceRoom(roomId) {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin && !isRoomModerator(user.id, roomId)) {
+        socket.emit('error_message', "Only Staff, a Global Administrator, or this room's moderator can unsilence a room");
+        return;
+      }
+      if (!roomSilence.isSilenced(roomId)) {
+        socket.emit('error_message', 'This room is not currently silenced');
+        return;
+      }
+      unsilenceRoomFor(roomId, user.username);
+    }
+
+    on('silence_room', ({ roomId, seconds }) => trySilenceRoom(Number(roomId), seconds));
+    on('unsilence_room', ({ roomId }) => tryUnsilenceRoom(Number(roomId)));
+
+    // ---- Room moderators (added/removed by the room's owner, or Staff/Global Admin) ----
+    // A room can have any number of moderators — each can kick/bump members
+    // and silence/unsilence this one room, same as Staff/Global Admin/the
+    // owner can (see performRemoval and canBypassSilence). Shared by both
+    // the /mod, /unmod chat commands and the Room Info screen.
+    function trySetModerator(roomId, usernameArg) {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+
+      const flags = freshRoleFlags(user.id);
+      const isOwner = room.created_by === user.id;
+      if (!isOwner && !flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', "Only this room's owner (or Staff/Global Admin) can add a moderator");
+        return;
+      }
+
+      const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+
+      if (isRoomModerator(target.id, roomId)) {
+        socket.emit('error_message', `${target.username} is already a moderator of ${room.name}`);
+        return;
+      }
+
+      db.prepare('INSERT OR IGNORE INTO room_moderators (room_id, user_id, added_by) VALUES (?, ?, ?)').run(roomId, target.id, user.id);
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🔰 ${target.username} was made a moderator of ${room.name} by ${user.username}` });
+      io.to(`room:${roomId}`).emit('room_moderators_updated', { roomId, moderators: getRoomModerators(roomId).map((m) => m.username) });
+      broadcastRoomMembers(roomId);
+    }
+
+    function tryRemoveModerator(roomId, usernameArg) {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+
+      const flags = freshRoleFlags(user.id);
+      const isOwner = room.created_by === user.id;
+      if (!isOwner && !flags.is_staff && !flags.is_global_admin) {
+        socket.emit('error_message', "Only this room's owner (or Staff/Global Admin) can remove a moderator");
+        return;
+      }
+
+      const target = db.prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE').get(usernameArg);
+      if (!target) return socket.emit('error_message', `No user named "${usernameArg}"`);
+
+      const info = db.prepare('DELETE FROM room_moderators WHERE room_id = ? AND user_id = ?').run(roomId, target.id);
+      if (info.changes === 0) {
+        socket.emit('error_message', `${target.username} is not a moderator of ${room.name}`);
+        return;
+      }
+
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `${user.username} removed ${target.username} as a moderator of ${room.name}` });
+      io.to(`room:${roomId}`).emit('room_moderators_updated', { roomId, moderators: getRoomModerators(roomId).map((m) => m.username) });
+      broadcastRoomMembers(roomId);
+    }
+
+    on('set_moderator', ({ roomId, username }) => trySetModerator(Number(roomId), username));
+    on('remove_moderator', ({ roomId, username }) => tryRemoveModerator(Number(roomId), username));
+
+    // ---- Ghost Mode (Room Settings) — per user per room, any member ----
+    // "Join this room invisibly" — persisted on the membership row, so it
+    // survives disconnects; applied live in broadcastRoomMembers below
+    // (hidden from everyone else's Participants list, still visible to
+    // yourself). Unlike Staff/Global Admin's global invisible toggle above,
+    // any member can use this, and it's scoped to one room at a time.
+    // Ghost Mode (join a room invisibly, hidden from its participant list) —
+    // same Staff/Global Admin-only rule as toggle_invisible above: being the
+    // room's owner is not enough on its own, since going invisible is a
+    // privileged capability, not a room-ownership one. Re-checked fresh here
+    // (not from the session) since roles can change while a socket stays
+    // connected — see freshRoleFlags.
+    on('set_room_ghost_mode', ({ roomId, ghost }) => {
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        return socket.emit('error_message', 'Only Staff or a Global Administrator can use Ghost Mode');
+      }
+      roomId = Number(roomId);
+      db.prepare('UPDATE room_memberships SET ghost_mode = ? WHERE user_id = ? AND room_id = ?')
+        .run(ghost ? 1 : 0, user.id, roomId);
+      socket.emit('room_ghost_mode_state', { roomId, ghost: !!ghost });
+      broadcastRoomMembers(roomId);
+    });
+
+    // ---- Room Settings: description + level lock (Staff/Global Admin ONLY —
+    // being the room's owner is no longer sufficient on its own; matches the
+    // same Staff/Global-Admin-only rule already used for Ghost Mode/Going
+    // Invisible) ----
+    on('update_room_settings', ({ roomId, description, lockLevel }) => {
+      roomId = Number(roomId);
+      const room = db.prepare('SELECT created_by FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff && !flags.is_global_admin) {
+        return socket.emit('error_message', 'Only Staff or a Global Administrator can change Room Settings');
+      }
+      const desc = String(description || '').slice(0, 500);
+      const level = Math.max(0, Math.min(100, parseInt(lockLevel, 10) || 0));
+      db.prepare('UPDATE rooms SET description = ?, lock_level = ? WHERE id = ?').run(desc, level, roomId);
+      io.to(`room:${roomId}`).emit('room_settings_updated', { roomId, description: desc, lockLevel: level });
+      socket.emit('room_settings_saved', { roomId });
+    });
+
+    // ---- Room capacity — Staff ONLY (narrower than Room Settings editing
+    // above, which is Staff+Global Admin — a Global Admin cannot change a
+    // room's capacity, same restriction as Delete Room below). Every
+    // user-created room starts at a fixed default of 25 (see POST /rooms);
+    // this is the only way to raise or lower it afterward. Official rooms
+    // keep their own seeded capacities (200/300) but Staff can still retune
+    // them here if needed. ----
+    on('update_room_capacity', ({ roomId, capacity }) => {
+      roomId = Number(roomId);
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff) {
+        return socket.emit('error_message', 'Only Staff can change a room\'s capacity');
+      }
+      const room = db.prepare('SELECT id FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+      const cap = Math.round(Number(capacity));
+      if (!Number.isFinite(cap) || cap < 1 || cap > 1000) {
+        return socket.emit('error_message', 'Capacity must be a whole number between 1 and 1000');
+      }
+      db.prepare('UPDATE rooms SET capacity = ? WHERE id = ?').run(cap, roomId);
+      io.to(`room:${roomId}`).emit('room_capacity_updated', { roomId, capacity: cap });
+      socket.emit('room_settings_saved', { roomId });
+    });
+
+    // ---- Permanently delete a room — Staff ONLY (narrower than Room
+    // Settings editing, which is Staff+Global Admin — a Global Admin cannot
+    // delete a room), regardless of who created it. Official rooms (no
+    // owner, built-in) can't be deleted. Cascades every table that
+    // references the room, then tells everyone currently in it (and the
+    // deleting client) so clients can bounce out. ----
+    on('delete_room', ({ roomId }) => {
+      roomId = Number(roomId);
+      const flags = freshRoleFlags(user.id);
+      if (!flags.is_staff) {
+        return socket.emit('error_message', 'Only Staff can delete a room');
+      }
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return socket.emit('error_message', 'Room not found');
+      if (room.is_official) return socket.emit('error_message', 'Official rooms cannot be deleted');
+
+      io.to(`room:${roomId}`).emit('system_message', { roomId, text: `🗑️ This room was permanently deleted by ${user.username}.` });
+      io.to(`room:${roomId}`).emit('room_deleted', { roomId });
+
+      db.prepare('DELETE FROM room_moderators WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM messages WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_visits WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_favorites WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_memberships WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM room_blocks WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+
+      // Every connected socket currently subscribed to this room's channel
+      // (not just the members table) needs to actually leave it now that
+      // it's gone, so a stray broadcast doesn't target a dead room.
+      const subscribed = io.sockets.adapter.rooms.get(`room:${roomId}`);
+      if (subscribed) {
+        for (const sid of subscribed) {
+          const s = io.sockets.sockets.get(sid);
+          if (s) s.leave(`room:${roomId}`);
+        }
+      }
+
+      io.emit('room_list_changed');
+      socket.emit('room_delete_confirmed', { roomId });
+    });
+
+    // ---- Dice-betting games (Legendary Bot, Luxury Bet) — each confined to
+    // its own room, identified by gameKey ('legendary' | 'luxury'). ----
+    on('dicebet_place_bet', ({ gameKey, face, amount }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (!game) return typeof ack === 'function' && ack({ ok: false, error: 'Unknown game' });
+      const result = game.placeBet(user, face, amount);
+      if (typeof ack === 'function') ack(result);
+      else if (!result.ok) socket.emit('error_message', result.error);
+    });
+    on('dicebet_get_state', ({ gameKey }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (typeof ack === 'function') ack(game ? game.getState() : null);
+    });
+    // "👁 View bets" — what everyone else (including bots) has placed this
+    // round, so a player can see the other side of the board before betting.
+    on('dicebet_get_bets', ({ gameKey }, ack) => {
+      if (typeof ack !== 'function') return;
+      const game = DICE_BET_GAMES.get(gameKey);
+      if (!game) return ack({ phase: 'idle', bettors: [] });
+      ack({ phase: game.getState().phase, bettors: game.getBets() });
+    });
+    // Manual "Start" — same effect as typing !start in the room, exposed as a
+    // button so a player doesn't need to know the chat command to kick the
+    // next round off once the previous one has finished (phase === 'idle').
+    on('dicebet_start', ({ gameKey }, ack) => {
+      const game = DICE_BET_GAMES.get(gameKey);
+      const started = !!game && game.tryStart();
+      if (typeof ack === 'function') ack({ ok: started, error: started ? null : 'A round is already in progress.' });
+      else if (!started) socket.emit('error_message', 'A round is already in progress.');
+    });
+
+    // ---- LowCard / Cricket status bar — initial state on room entry, same
+    // purpose as dicebet_get_state (live updates after that come via the
+    // 'elimination_state' room broadcast). roomId identifies which of the
+    // two shared-engine games to read.
+    on('elimination_get_state', ({ roomId }, ack) => {
+      const game = [lowcardGame, cricketGame].find((g) => g.getRoomId() === roomId);
+      if (typeof ack === 'function') ack(game ? game.getState() : null);
+    });
+
+    socket.on('disconnect', () => {
+      // A disconnect (page refresh, brief network drop, closing the tab) is
+      // NOT a room-leave anymore — membership persists until an explicit
+      // leave_room, a kick, or the 5-hour idle sweep. We just stop pushing
+      // this socket live updates; the participant list is untouched.
+
+      // Only mark the user fully offline once their LAST socket has gone —
+      // they may have more than one tab/device connected.
+      let stillConnected = false;
+      for (const [, s] of io.sockets.sockets) {
+        if (s.id !== socket.id && s.data.user && s.data.user.id === user.id) { stillConnected = true; break; }
+      }
+      if (!stillConnected) {
+        presence.markOffline(user.id);
+        db.addOnlineSeconds(user.id, presence.endOnlineSession(user.id));
+        invisibleByUser.delete(user.id);
+        // Push a live Participants/room-banner refresh to whoever's still in
+        // any of this user's rooms — without this, everyone else keeps
+        // seeing this user's last-known (online) status until something
+        // unrelated happens to trigger a re-broadcast (someone else
+        // joining/leaving). That's what made a logged-out/disconnected user
+        // appear stuck "in the room". Every persistently active room, not
+        // just the last-focused one, since several can be open at once now.
+        for (const roomId of activeRoomIdsForUser(user.id)) broadcastRoomMembers(roomId);
+      }
+    });
+  });
+
+  // Exposed so REST routes (Color Shop, Avatar Maker, etc.) can push a live
+  // Participants-panel refresh right after changing a user's cosmetic info —
+  // e.g. buying a username color should show up for everyone currently in
+  // that user's room immediately, not just after they refresh. Finds every
+  // room this user's socket(s) are currently focused on and re-broadcasts.
+  function refreshUserPresence(userId) {
+    const roomIds = new Set();
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data.user && s.data.user.id === userId && s.data.roomId) roomIds.add(s.data.roomId);
+    }
+    for (const roomId of roomIds) broadcastRoomMembers(roomId);
+  }
+
+  // Exposed the same way as refreshUserPresence above — lets a plain HTTP
+  // route (POST /api/friends/request) push a live event straight to the
+  // target user's open socket(s), e.g. so their Friends icon can badge
+  // immediately instead of waiting for their next poll/action.
+  return { refreshUserPresence, emitToUser };
+}
+
+module.exports = { attachSocket };

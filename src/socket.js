@@ -803,7 +803,7 @@ function attachSocket(io, sessionMiddleware) {
     const rest = names.length > 4 ? ` and ${names.length - 4} others` : '';
     const text = `<<🎁*GIFT SHOWER* ${sender.username} [${level}] gives a ${gift.name} ${gift.emoji} to ${shown}${rest}! Hurray!>>`;
     postMessage(room.id, { userId: sender.id, username: sender.username, type: 'gift', content: text });
-    io.to(`room:${room.id}`).emit('gift_shower', { username: sender.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+    io.to(`room:${room.id}`).emit('gift_shower', { roomId: room.id, username: sender.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
     awardXp(sender.id, XP_REWARDS.GIFT_SHOWER);
   }
 
@@ -1999,13 +1999,12 @@ function attachSocket(io, sessionMiddleware) {
       postMessage(roomId, { userId: user.id, username: user.username, type: `effect_${entry.key}`, content: `${entry.emoji} ${text}` });
 
       // One-shot big full-screen animation — not persisted, just a live
-      // flourish for whoever's online right now. Broadcast to EVERY
-      // connected socket (not just this room) so a purchased effect reads
-      // as the grand, server-wide gesture it's priced as (50,000 coins /
-      // 30 days) — someone in a different room still sees the room name
-      // that triggered it, same as the persisted chat bar's audience is
-      // scoped to that room but the screen moment isn't.
-      io.emit('effect_triggered', {
+      // flourish. Scoped to this room only (same audience as the persisted
+      // chat bar above): someone who isn't in this room has no way to see
+      // who triggered it or what's going on, so broadcasting it to their
+      // screen too was confusing noise, not a "grand gesture" — only people
+      // actually in the room should see the bomb/missile/etc. go off.
+      io.to(`room:${roomId}`).emit('effect_triggered', {
         key: entry.key, emoji: entry.emoji, label: entry.label,
         username: user.username, level: currentLevel(user.id), roomId,
         target: targetUsername || null,
@@ -2114,7 +2113,7 @@ function attachSocket(io, sessionMiddleware) {
       if (recipients.length === 0) {
         const text = `${user.username} [${level}] triggered a ${gift.name} ${gift.emoji} GIFT SHOWER! 🎉🎁✨`;
         postMessage(roomId, { userId: user.id, username: user.username, type: 'gift', content: text });
-        io.to(`room:${roomId}`).emit('gift_shower', { username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+        io.to(`room:${roomId}`).emit('gift_shower', { roomId, username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
         awardXp(user.id, XP_REWARDS.GIFT_SHOWER);
         return;
       }
@@ -2149,7 +2148,7 @@ function attachSocket(io, sessionMiddleware) {
       const text = `<<🎁*GIFT SHOWER* ${user.username} [${level}] gives a ${gift.name} ${gift.emoji} to ${shown}${rest}! Hurray!>>`;
 
       postMessage(roomId, { userId: user.id, username: user.username, type: 'gift', content: text });
-      io.to(`room:${roomId}`).emit('gift_shower', { username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
+      io.to(`room:${roomId}`).emit('gift_shower', { roomId, username: user.username, level, giftName: gift.name, emojis: Array.from({ length: 12 }, () => gift.emoji) });
       socket.emit('coins_update', { coins: sender.coins - totalCost });
       awardXp(sender.id, XP_REWARDS.GIFT_SHOWER);
     }

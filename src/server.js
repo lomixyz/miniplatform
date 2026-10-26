@@ -4,6 +4,20 @@ const http = require('http');
 const express = require('express');
 const session = require('express-session');
 const { Server } = require('socket.io');
+const { restoreFromTursoIfMissing, startPeriodicBackup } = require('./backupTurso');
+
+// Everything below was previously top-level code; it's now wrapped in an
+// async main() so we can `await restoreFromTursoIfMissing()` BEFORE any
+// route file (and therefore db.js) is required — db.js seeds/migrates the
+// database the moment it's first required, so the restore has to win that
+// race on a fresh container. Nothing inside main() changed otherwise: same
+// requires, same middleware, same routes, same listen call, in the same
+// order.
+async function main() {
+  // Best-effort only: if Turso isn't configured, or the local DB file
+  // already exists, or anything about the restore fails, this is a no-op
+  // and db.js seeds a fresh database exactly like it always has.
+  await restoreFromTursoIfMissing();
 
 const authRoutes = require('./routes/auth');
 const roomRoutes = require('./routes/rooms');
@@ -89,4 +103,14 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`MiniPlatform running on http://localhost:${PORT}`);
   console.log('Build features: kick/bump chat commands (/kick <user>, /bump <user>) with 10min/5min rejoin cooldowns, unrecognized "/" commands now return an error instead of posting as plain text.');
+});
+
+  // Turso backup safety net (see src/backupTurso.js) — no-op unless
+  // TURSO_DATABASE_URL / TURSO_AUTH_TOKEN are set in the environment.
+  startPeriodicBackup();
+}
+
+main().catch((err) => {
+  console.error('Fatal startup error:', err);
+  process.exit(1);
 });

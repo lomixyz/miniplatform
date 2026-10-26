@@ -1226,13 +1226,21 @@ function connectSocket() {
       renderLevelScreen($('#subScreenContent'));
     }
   });
-  socket.on('gift_shower', (data) => playGiftShower(data));
+  // Both of these are full-screen/whole-chat effects broadcast to every
+  // socket subscribed to that room's channel — but a socket can be
+  // subscribed to more than one room at once (multi-room floating panels,
+  // or simply a room you joined earlier and haven't explicitly left — see
+  // leave_room in socket.js), so without this roomId check a bomb/missile/
+  // gift-shower fired in a room you're not currently viewing would still
+  // play its animation over whatever screen you're actually looking at.
+  // Same guard as the room_members handler right below.
+  socket.on('gift_shower', (data) => { if (data.roomId != null && data.roomId !== currentRoomId) return; playGiftShower(data); });
   // "/purchase effect" store (see effectsCatalog.js on the server) — catalog
   // listing, the caller's own owned effects, and the themed visual/chat line
   // when someone actually fires an owned effect ("/bomb", "/thunder", ...).
   socket.on('effect_catalog', ({ effects }) => showEffectStoreModal(effects, 'catalog'));
   socket.on('effect_my_list', ({ effects }) => showEffectStoreModal(effects, 'owned'));
-  socket.on('effect_triggered', (data) => playEffectImpact(data));
+  socket.on('effect_triggered', (data) => { if (data.roomId != null && data.roomId !== currentRoomId) return; playEffectImpact(data); });
   socket.on('whois_result', (data) => showWhoisPopup(data));
   // Now carries roomId (see broadcastRoomMembers in socket.js, needed once a
   // socket can be subscribed to several rooms' channels at once) — the
@@ -1649,8 +1657,10 @@ function fillRoomGrid(sel, rooms, emptyText) {
     card.className = 'room-card';
     card.innerHTML = `
       <div class="avatar-square" style="background:${colorFor(room.name)}">${escapeHtml(room.name.charAt(0).toUpperCase())}</div>
-      <div class="room-card-name">${escapeHtml(room.name)}${room.is_official ? ' ✅' : ''}${room.room_type === 'game' ? ' 🎮' : ''}</div>
-      <div class="room-card-meta">${room.memberCount}/${room.capacity} in room</div>
+      <div class="room-card-body">
+        <div class="room-card-name">${escapeHtml(room.name)}${room.is_official ? ' ✅' : ''}${room.room_type === 'game' ? ' 🎮' : ''}</div>
+        <div class="room-card-meta">${room.memberCount}/${room.capacity} in room</div>
+      </div>
       <button class="star-btn ${room.isFavorite ? 'favorited' : ''}" data-id="${room.id}">${room.isFavorite ? '★' : '☆'}</button>
     `;
     card.addEventListener('click', (e) => {
@@ -4181,8 +4191,11 @@ async function runAdminSearch() {
 
       card.innerHTML = `
         <div class="staff-user-head">
-          <div class="staff-user-id">#${u.id}</div>
-          <div class="staff-user-name">${usernameHtml(u)}</div>
+          <div class="staff-user-avatar" style="background:${colorFor(u.username)}">${escapeHtml((u.username || '?').charAt(0).toUpperCase())}</div>
+          <div class="staff-user-id-name">
+            <div class="staff-user-id">#${u.id}</div>
+            <div class="staff-user-name">${usernameHtml(u)}</div>
+          </div>
           <div class="staff-user-roles-summary">${rolesHtml}</div>
           <div class="staff-user-coins">🪙 ${Number(u.coins).toLocaleString()}</div>
         </div>
